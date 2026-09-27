@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import {
   BriefcaseBusiness,
   CalendarDays,
@@ -407,10 +407,12 @@ function RoleManagement({ roleKey }) {
   const [imageViewer, setImageViewer] = useState(null)
   const [isSaving, setIsSaving] = useState(false)
   const [isDeleting, setIsDeleting] = useState(false)
+  const deletingRef = useRef(false)
+  const [deleteError, setDeleteError] = useState('')
   const isAdmin = app.session?.role === 'admin'
   const isBusinessSupport = ['business_support', 'manager'].includes(app.session?.role)
   const canEdit = isAdmin || (isBusinessSupport && roleKey === ROLE_KEYS.storeManager)
-  const canDelete = isAdmin
+  const canDelete = isAdmin || (isBusinessSupport && roleKey === ROLE_KEYS.storeManager)
   const canCreate = isAdmin || (isBusinessSupport && roleKey === ROLE_KEYS.storeManager)
   const canView = isAdmin || isBusinessSupport
   const requiresPassword = !editingProfile || !(
@@ -564,18 +566,21 @@ function RoleManagement({ roleKey }) {
   }
 
   const confirmDelete = async () => {
-    if (!canEdit || !pendingDelete || isDeleting) return
+    if (!canDelete || !pendingDelete || deletingRef.current) return
     const specificAction = app[config.deleteMethod]
     const action = typeof specificAction === 'function' ? specificAction : app.deleteEmployee
     if (typeof action !== 'function') return app.notify?.(`Chức năng xóa ${config.singular} đang được kết nối.`, 'info')
+    deletingRef.current = true
     setIsDeleting(true)
+    setDeleteError('')
     try {
       const result = await action(pendingDelete.id || roleProfileCode(pendingDelete))
-      if (result?.ok === false) return app.notify?.(result.message || `Không thể xóa ${config.singular}.`, 'info')
+      if (result === false || result?.ok === false) return setDeleteError(result?.message || `Không thể xóa ${config.singular}.`)
       setPendingDelete(null)
     } catch (error) {
-      app.notify?.(error?.message || `Không thể xóa ${config.singular}.`, 'info')
+      setDeleteError(error?.message || `Không thể xóa ${config.singular}.`)
     } finally {
+      deletingRef.current = false
       setIsDeleting(false)
     }
   }
@@ -587,10 +592,10 @@ function RoleManagement({ roleKey }) {
   return <div className="page">
     <PageHeader title={config.title} subtitle={config.subtitle} icon={config.icon} actions={canCreate ? <Button icon={Plus} onClick={openCreate} disabled={roleKey === ROLE_KEYS.storeManager && !assignableStores.length}>Thêm tài khoản</Button> : null} />
     {!canCreate && <InfoNote>Chỉ Admin được quản lý tài khoản; Hỗ trợ KD được xem danh sách và lịch sử liên quan.</InfoNote>}
-    {isBusinessSupport && roleKey === ROLE_KEYS.storeManager && <InfoNote>Nhân viên Hỗ trợ KD được tạo hoặc sửa Quản lý cửa hàng; chỉ Admin được xóa tài khoản.</InfoNote>}
+    {isBusinessSupport && roleKey === ROLE_KEYS.storeManager && <InfoNote>Nhân viên Hỗ trợ KD được tạo, sửa và xóa hồ sơ Quản lý cửa hàng.</InfoNote>}
     {roleKey === ROLE_KEYS.storeManager && !assignableStores.length && <InfoNote tone="green">Mỗi cửa hàng hiện đã có đúng một Quản lý cửa hàng đang hoạt động. Muốn thay quản lý, hãy vô hiệu hóa hoặc xóa quyền quản lý hiện tại trước.</InfoNote>}
     {roleKey === ROLE_KEYS.businessSupport && <div className="tabs"><button type="button" className={tab === 'profiles' ? 'active' : ''} onClick={() => setTab('profiles')}><Users />Danh sách nhân viên</button><button type="button" className={tab === 'attendance' ? 'active' : ''} onClick={() => setTab('attendance')}><History />Chấm công</button><button type="button" className={tab === 'evaluation' ? 'active' : ''} onClick={() => setTab('evaluation')}><ShieldCheck />Chuyên cần</button>{canEdit && <button type="button" className={tab === 'work' ? 'active' : ''} onClick={() => setTab('work')}><ClipboardCheck />Công việc</button>}</div>}
-    {(roleKey !== ROLE_KEYS.businessSupport || tab === 'profiles') && <ProfileList allProfiles={allProfiles} canCreate={canCreate && (roleKey !== ROLE_KEYS.storeManager || assignableStores.length > 0)} canDelete={canDelete} canEdit={canEdit} config={config} imageBusyKey={imageBusyKey} onCreate={openCreate} onDelete={setPendingDelete} onEdit={openEdit} onViewImage={viewIdentityImage} profiles={profiles} roleKey={roleKey} stores={stores} />}
+    {(roleKey !== ROLE_KEYS.businessSupport || tab === 'profiles') && <ProfileList allProfiles={allProfiles} canCreate={canCreate && (roleKey !== ROLE_KEYS.storeManager || assignableStores.length > 0)} canDelete={canDelete} canEdit={canEdit} config={config} imageBusyKey={imageBusyKey} onCreate={openCreate} onDelete={(profile) => { if (!deletingRef.current) { setDeleteError(''); setPendingDelete(profile) } }} onEdit={openEdit} onViewImage={viewIdentityImage} profiles={profiles} roleKey={roleKey} stores={stores} />}
     {roleKey === ROLE_KEYS.businessSupport && tab === 'attendance' && <BusinessSupportAttendance attendance={attendance} policies={app.policies} profiles={profiles} />}
     {roleKey === ROLE_KEYS.businessSupport && tab === 'evaluation' && <BusinessSupportEvaluation attendance={attendance} policies={app.policies} profiles={profiles} />}
     {roleKey === ROLE_KEYS.businessSupport && tab === 'work' && canEdit && <SupportWorkEvaluationTable assignments={app.supportWorkAssignments || []} profiles={profiles} />}
@@ -598,7 +603,7 @@ function RoleManagement({ roleKey }) {
     <Modal wide open={Boolean(imageViewer)} onClose={closeImageViewer} title={imageViewer?.title || 'Hình ảnh CCCD'} footer={<Button variant="outline" onClick={closeImageViewer}>Đóng</Button>}>
       <IdentityDocumentViewer src={imageViewer?.url || ''} alt={imageViewer?.title || 'Hình ảnh CCCD'} />
     </Modal>
-    {canEdit && <Modal open={Boolean(pendingDelete)} onClose={() => setPendingDelete(null)} title={`Xóa ${config.singular}`} footer={<><Button variant="outline" onClick={() => setPendingDelete(null)} disabled={isDeleting}>Hủy</Button><Button variant="danger" icon={Trash2} loading={isDeleting} disabled={isDeleting} onClick={confirmDelete}>XÓA TÀI KHOẢN</Button></>}><InfoNote tone="orange">Xóa <strong>{pendingDelete?.name}</strong> khỏi danh sách? Lịch sử chấm công và nhật ký hệ thống vẫn được giữ lại.</InfoNote></Modal>}
+    {canDelete && <Modal open={Boolean(pendingDelete)} onClose={() => { if (!deletingRef.current) setPendingDelete(null) }} title={`Xóa ${config.singular}`} footer={<><Button variant="outline" onClick={() => setPendingDelete(null)} disabled={isDeleting}>Hủy</Button><Button variant="danger" icon={Trash2} loading={isDeleting} disabled={isDeleting} onClick={confirmDelete}>XÓA HỒ SƠ</Button></>}><InfoNote tone="orange">Xóa <strong>{pendingDelete?.name}</strong> khỏi danh sách? {pendingDelete?.linkedEmployeeId ? 'Chỉ gỡ vai trò này; tài khoản nguồn và các vai trò hợp lệ khác được giữ lại.' : 'Tài khoản của hồ sơ sẽ ngừng đăng nhập.'} Lịch sử chấm công và nhật ký hệ thống vẫn được giữ lại.</InfoNote>{deleteError && <div role="alert"><InfoNote tone="orange">{deleteError}</InfoNote></div>}</Modal>}
   </div>
 }
 

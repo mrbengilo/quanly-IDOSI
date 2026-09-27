@@ -71,11 +71,17 @@ Các lệnh chính:
   `operatingHours`, nên giờ hoạt động là dữ liệu đã lưu chứ không phải UI tĩnh.
 - `employee.create|update`: admin cho mọi nhóm; store_manager chỉ cho nhân viên
   `unit: store` thuộc đúng cửa hàng; business_support được thêm/cập nhật
-  `unit: store` ở mọi cửa hàng và vẫn được tạo mới `unit: store_manager|office`.
+  `unit: store` ở mọi cửa hàng và thêm/cập nhật `unit: store_manager|office`.
   Admin tạo mọi nhóm. Create nhận
   hồ sơ trực tiếp cùng `username`, `password`; Worker
   tự sinh mã cửa hàng, kiểm tra điện thoại `0` + 9 số và commit hồ sơ + tài khoản
-  đăng nhập trong cùng transaction. `employee.delete` chỉ admin. Update có thể
+  đăng nhập trong cùng transaction. `employee.delete`: admin giữ nguyên quyền;
+  business_support chỉ được xóa hồ sơ `unit: store|store_manager` đang hợp lệ,
+  không được xóa office/business_support hoặc khôi phục hồ sơ đã nghỉ việc.
+  Nhóm đích và cửa hàng lấy từ hồ sơ server; không tin các trường giả mạo từ client.
+  Xóa mềm giữ lịch sử, ghi audit, tăng auth version và thu hồi session.
+  Hồ sơ độc lập bị vô hiệu hóa tài khoản; hồ sơ liên kết chỉ gỡ vai trò đích,
+  giữ tài khoản nguồn và các vai trò hợp lệ còn lại. Update có thể
   nhận `username`, `password` để cập nhật credential nguyên tử với hồ sơ.
   Hồ sơ `unit: business_support` tự nhận `storeId: BUSINESS_SUPPORT`, role
   `business_support`, mã toàn cục `HTKD-001...`; hồ sơ `unit: store_manager`
