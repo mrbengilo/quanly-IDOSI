@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import {
   BarChart3,
@@ -387,10 +387,14 @@ export function StoreEmployees() {
   const [imageBusy, setImageBusy] = useState('')
   const [viewingImage, setViewingImage] = useState(null)
   const [viewingSide, setViewingSide] = useState('')
+  const [pendingDelete, setPendingDelete] = useState(null)
+  const [isDeleting, setIsDeleting] = useState(false)
+  const [deleteError, setDeleteError] = useState('')
+  const deletingRef = useRef(false)
   const canManageStore = ['admin', 'business_support', 'manager', 'store_manager'].includes(session?.role)
   const canCreateStoreEmployee = ['admin', 'business_support', 'manager', 'store_manager'].includes(session?.role)
   const isBusinessSupport = ['business_support', 'manager'].includes(session?.role)
-  const canDeleteEmployee = session?.role === 'admin'
+  const canDeleteEmployee = session?.role === 'admin' || isBusinessSupport
   const linkingExistingProfile = !editing && ['business_support', 'office'].includes(form.employeeSource)
   const editingSharedLogin = Boolean(editing?.linkedEmployeeId)
   const sharedLoginOwner = editingSharedLogin ? employeeFor(employees, editing.linkedEmployeeId) : null
@@ -413,6 +417,31 @@ export function StoreEmployees() {
     && (session?.role !== 'store_manager' || !employee.supportAssignment)
     && !activeSupportTransferFromStore(supportTransfers, employees, stores, employee, scopedStore, transferClock)
   )
+
+  const confirmDelete = async () => {
+    if (!canDeleteEmployee || !pendingDelete || deletingRef.current) return
+    const canonical = employeeFor(employees, pendingDelete.id || pendingDelete.code)
+    if (!canonical || !canEditEmployee(canonical)) {
+      setDeleteError('Hồ sơ đã thay đổi hoặc đang hỗ trợ tại cửa hàng khác. Vui lòng tải lại danh sách.')
+      return
+    }
+    deletingRef.current = true
+    setIsDeleting(true)
+    setDeleteError('')
+    try {
+      const result = await deleteEmployee(canonical.id || canonical.code)
+      if (result === false || result?.ok === false) {
+        setDeleteError(result?.message || 'Không thể xóa nhân viên.')
+        return
+      }
+      setPendingDelete(null)
+    } catch (error) {
+      setDeleteError(error?.message || 'Không thể xóa nhân viên.')
+    } finally {
+      deletingRef.current = false
+      setIsDeleting(false)
+    }
+  }
 
   const normalizedQuery = normalizeText(query)
   const filtered = scopedEmployees.filter((employee) => {
@@ -648,7 +677,7 @@ export function StoreEmployees() {
                     : <span className="orange-text">Cửa hàng chưa có chính sách lương</span>}</td>
                 <td>{employee.username || '—'}</td>
                 <td>{outboundTransfer ? <Badge tone="orange">Đang hỗ trợ</Badge> : <Badge tone={employeeStatusTone(normalizedStatus)}>{normalizedStatus}</Badge>}</td>
-                {canManageStore && <td>{canEditEmployee(employee) ? <div className="row-actions"><button onClick={() => openEdit(employee)} aria-label={`Sửa ${employee.name}`}><Edit3 /></button>{canDeleteEmployee && <button className="danger" onClick={() => window.confirm(`Xóa ${employee.name}?`) && deleteEmployee?.(employee.id)} aria-label={`Xóa ${employee.name}`}><Trash2 /></button>}</div> : <Badge tone="blue">Chỉ xem</Badge>}</td>}
+                {canManageStore && <td>{canEditEmployee(employee) ? <div className="row-actions"><button onClick={() => openEdit(employee)} aria-label={`Sửa ${employee.name}`}><Edit3 /></button>{canDeleteEmployee && (session?.role === 'admin' || !['Đã nghỉ việc', 'inactive'].includes(employee.status)) && <button className="danger" disabled={isDeleting} onClick={() => { setDeleteError(''); setPendingDelete(employeeFor(employees, employee.id || employee.code)) }} aria-label={`Xóa ${employee.name}`}><Trash2 /></button>}</div> : <Badge tone="blue">Chỉ xem</Badge>}</td>}
               </tr>
             })}
             {!filtered.length && <tr><td colSpan={canManageStore ? 12 : 11}>Không có nhân viên phù hợp.</td></tr>}
@@ -656,6 +685,10 @@ export function StoreEmployees() {
         </TableWrap>
         <TableFooter shown={filtered.length} total={filtered.length} />
       </Card>
+      {canDeleteEmployee && <Modal open={Boolean(pendingDelete)} onClose={() => { if (!deletingRef.current) setPendingDelete(null) }} title="Xóa nhân viên cửa hàng" footer={<><Button variant="outline" disabled={isDeleting} onClick={() => setPendingDelete(null)}>Hủy</Button><Button variant="danger" icon={Trash2} loading={isDeleting} disabled={isDeleting} onClick={confirmDelete}>XÓA NHÂN VIÊN</Button></>}>
+        <InfoNote tone="orange">Xóa hồ sơ <strong>{pendingDelete?.name}</strong> ({pendingDelete?.id || pendingDelete?.code}) tại <strong>{storeFor(stores, pendingDelete?.storeId)?.name || pendingDelete?.storeId}</strong>? {pendingDelete?.linkedEmployeeId ? 'Chỉ gỡ vai trò nhân viên cửa hàng này; tài khoản nguồn và các vai trò hợp lệ khác được giữ lại.' : 'Tài khoản của hồ sơ sẽ ngừng đăng nhập.'} Lịch sử chấm công, đơn hàng và lương được giữ lại.</InfoNote>
+        {deleteError && <div role="alert"><InfoNote tone="orange">{deleteError}</InfoNote></div>}
+      </Modal>}
       {canCreateStoreEmployee && <Modal wide open={open} onClose={closeDrawer} title={editing ? 'Cập nhật nhân viên' : 'Thêm nhân viên'} footer={<><Button type="button" variant="outline" onClick={closeDrawer} disabled={Boolean(imageBusy)}>Hủy bỏ</Button><Button type="button" icon={Save} onClick={save} disabled={Boolean(imageBusy)}>{editing ? 'Lưu thay đổi' : 'Lưu nhân viên'}</Button></>}>
         <form className="form-stack" onSubmit={save}>
           {errors.length > 0 && <InfoNote tone="orange"><strong>Thông tin chưa hợp lệ</strong><ul>{errors.map((error) => <li key={error}>{error}</li>)}</ul></InfoNote>}

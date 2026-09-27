@@ -882,6 +882,7 @@ const BUSINESS_SUPPORT_DOMAIN_COMMANDS = new Set([
   'store.update',
   'employee.create',
   'employee.update',
+  'employee.delete',
   'order_information.create',
   'order_information.update',
   'order_information.disable',
@@ -9908,7 +9909,9 @@ const employeeProfileCommand = async (db, actor, body, commandContext, env) => {
   if (!['create', 'update', 'delete'].includes(operation)) {
     throw new ApiError(400, 'COMMAND_UNKNOWN', 'Lệnh hồ sơ nhân viên không được hỗ trợ.')
   }
-  if (operation === 'delete') assertAdmin(actor, 'Chỉ Admin được xóa nhân viên khỏi hệ thống.')
+  if (operation === 'delete' && !['admin', 'business_support'].includes(actor.role)) {
+    throw new ApiError(403, 'EMPLOYEE_DELETE_FORBIDDEN', 'Chỉ Admin hoặc Hỗ trợ KD được xóa nhân viên cửa hàng và Quản lý cửa hàng.')
+  }
   const payload = isPlainRecord(body.payload) ? body.payload : {}
   const profilePayload = isPlainRecord(payload.employee) ? payload.employee : payload
   const { current, state } = await loadGlobalCommandState(db, body, actor)
@@ -9973,9 +9976,11 @@ const employeeProfileCommand = async (db, actor, body, commandContext, env) => {
   }
   const supportOperationAllowed = (
     ['store', 'office', 'store_manager'].includes(unit) && ['create', 'update'].includes(operation)
+  ) || (
+    ['store', 'store_manager'].includes(unit) && operation === 'delete'
   )
   if (actor.role === 'business_support' && !supportOperationAllowed) {
-    throw new ApiError(403, 'BUSINESS_SUPPORT_READ_ONLY', 'Nhân viên hỗ trợ KD chỉ được thêm hoặc cập nhật nhân viên cửa hàng, Khối văn phòng và Quản lý cửa hàng.')
+    throw new ApiError(403, 'BUSINESS_SUPPORT_READ_ONLY', 'Hỗ trợ KD được thêm/sửa nhân viên cửa hàng, Khối văn phòng và Quản lý cửa hàng; chỉ được xóa nhân viên cửa hàng và Quản lý cửa hàng.')
   }
   const requestedIdentityImages = identityImageInputs(profilePayload)
   const hasIdentityImagePayload = Object.values(requestedIdentityImages).some((input) => input.provided)

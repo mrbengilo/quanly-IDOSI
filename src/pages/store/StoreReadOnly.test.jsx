@@ -122,13 +122,13 @@ describe('business-support store workspace permissions', () => {
     vi.useRealTimers()
   })
 
-  it('lets Business Support add and edit store employees while keeping delete Admin-only', () => {
+  it('lets Business Support add, edit and delete store employees', () => {
     renderPage(StoreEmployees)
 
     expect(screen.getAllByText(employee.name).length).toBeGreaterThan(0)
     expect(screen.getByRole('button', { name: /Thêm nhân viên/i })).toBeTruthy()
     expect(screen.getByRole('button', { name: new RegExp(`Sửa ${employee.name}`, 'i') })).toBeTruthy()
-    expect(screen.queryByRole('button', { name: new RegExp(`Xóa ${employee.name}`, 'i') })).toBeNull()
+    expect(screen.getByRole('button', { name: new RegExp(`Xóa ${employee.name}`, 'i') })).toBeTruthy()
 
     fireEvent.click(screen.getByRole('button', { name: /Thêm nhân viên/i }))
     expect(screen.getByRole('dialog')).toBeTruthy()

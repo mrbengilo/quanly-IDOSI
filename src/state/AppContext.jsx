@@ -2182,6 +2182,8 @@ export function AppProvider({ children }) {
           if (type === 'employee.delete' && result.employee) {
             const deletedId = remoteResultRecordId(result.employee)
             next.employees = (current.employees || []).filter((record) => remoteResultRecordId(record) !== deletedId)
+            next.stores = countStoreEmployees(current.stores, next.employees)
+            next.schedule = (current.schedule || []).filter((record) => String(record.employeeId) !== deletedId)
           }
           if (type === 'store.delete' && result.store) {
             const deletedId = remoteResultRecordId(result.store)
@@ -3054,38 +3056,14 @@ export function AppProvider({ children }) {
   }
 
   const deleteEmployee = async (id) => {
-    if (state.session?.role !== 'admin') {
-      notify('Chỉ Admin được xóa nhân viên khỏi hệ thống.', 'info')
-      return false
-    }
-    const previous = state.employees.find((employee) => accountKey(employee) === String(id))
-    if (!previous) return false
-    const deletedAuthVersion = previous.authVersion
-    if (apiRef.current.enabled) {
-      try {
-        const result = await runRemoteDomainCommand('employee.delete', { employeeId: id })
-        notify('Đã xóa nhân viên.', 'info')
-        return { ok: true, employee: result.employee }
-      } catch (error) {
-        notify(error.message || 'Không thể vô hiệu hóa tài khoản nhân viên.', 'info')
-        return { ok: false, message: error.message }
-      }
-    }
-    setState((current) => {
-      const employees = current.employees.filter((employee) => accountKey(employee) !== String(id))
-      const timestamp = new Date().toISOString()
-      const actor = actorSnapshot(current.session)
-      return {
-        ...current,
-        employees,
-        stores: countStoreEmployees(current.stores, employees),
-        schedule: current.schedule.filter((item) => item.employeeId !== id),
-        deletedEmployees: [{ ...previous, authVersion: deletedAuthVersion, password: undefined, deletedAt: timestamp, deletedBy: actor }, ...current.deletedEmployees],
-        auditLogs: [{ id: uid('AUD'), entity: 'employee', entityId: id, action: 'delete', before: { ...previous, password: undefined }, after: null, actor, createdAt: timestamp }, ...current.auditLogs],
-      }
+    const { deleteEmployeeProfile } = await import('./employeeDeletion')
+    return deleteEmployeeProfile({
+      id,
+      previous: state.employees.find((employee) => accountKey(employee) === String(id)),
+      actorRole: normalizeAuthRole(state.session?.role),
+      remote: apiRef.current.enabled,
+      runRemoteDomainCommand, setState, notify, actorSnapshot, countStoreEmployees,
     })
-    notify('Đã xóa nhân viên.', 'info')
-    return true
   }
 
   const addBusinessSupport = (payload = {}) => addEmployee({
