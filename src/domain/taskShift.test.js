@@ -78,6 +78,17 @@ describe('explicit task shift scope', () => {
     expect(mergeTaskShiftProgress(attendance, { incompleteTaskIds: ['new'], incompleteReason: 'Lý do ca mới' }, ['shared', 'new']))
       .toMatchObject({ incompleteTaskIds: ['old', 'new'], incompleteReason: 'Lý do ca cũ\nLý do ca mới' })
   })
+  it('includes later manager assignments without regenerating a saved catalog snapshot', () => {
+    const state = fixture()
+    const night = context(state)
+    state.attendance[0] = bindTaskShiftContext(state.attendance[0], night)
+    const later = { id: 'later', employeeIds: ['E1'], storeId: 'S1', date: '2026-09-29', shiftId: 'ca3' }
+    state.tasks = [...night.tasks, later]
+    state.workCatalogItems.push({ ...state.workCatalogItems[2], id: 'new-catalog' })
+    expect(context(state).tasks).toEqual([...night.tasks, later])
+    state.tasks = [later]
+    expect(context(state).code).toBe('TASK_CONTEXT_CHANGED')
+  })
   it('offers immutable support shift metadata without inferring from its check-in', () => {
     const state = fixture()
     state.attendance[0] = { ...state.attendance[0], shiftId: 'SUPPORT_1', supportTransferId: 'TR1', shiftName: 'Ca hỗ trợ', shiftStart: '22:00', shiftEnd: '06:00' }

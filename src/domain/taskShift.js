@@ -67,12 +67,14 @@ export const taskShiftContext = ({ state, attendance, employeeId, selectedTaskSh
     if (task.checklistAttendanceId && !matches(state.attendance || [attendance], attendance, task.checklistAttendanceId)) return false
     const assignees = [task.employeeId, ...(task.employeeIds || []), ...(task.assigneeIds || []), ...(task.assignedEmployeeIds || [])].filter(Boolean)
     if (!assignees.some((id) => matches(state.employees, employee, id))) return false
-    if (boundIds) return boundIds.has(task.id)
+    if (boundIds?.has(task.id)) return true
     // Legacy rows retain their ids and completion; a captured catalog shift is
     // more precise than the attendance shift stamped on old generated rows.
     return shiftMatches(task.taskShiftId || task.catalogSnapshot?.shiftId || task.shiftId || task.shift)
   })
-  if (boundIds && persisted.length !== boundIds.size) return fail('Công việc đã lưu bị thiếu hoặc bị khóa. Vui lòng tải lại và liên hệ quản lý.', 'TASK_CONTEXT_CHANGED')
+  if (boundIds && [...boundIds].some((id) => !persisted.some((task) => task.id === id))) return fail('Công việc đã lưu bị thiếu hoặc bị khóa. Vui lòng tải lại và liên hệ quản lý.', 'TASK_CONTEXT_CHANGED')
+  // Freeze catalog snapshots, while still showing explicit assignments added
+  // later by a manager. Saving accepts those additional obligations atomically.
   if (boundIds) return { shift, tasks: persisted, date }
   let definitions
   try {
@@ -100,28 +102,4 @@ export const taskShiftContext = ({ state, attendance, employeeId, selectedTaskSh
   return { shift, tasks: [...persisted, ...generated], date }
 }
 
-export const bindTaskShiftContext = (attendance, context) => ({
-  ...attendance,
-  // Append obligations; neither changing tabs nor saving another shift erases
-  // the legacy snapshot or any previously accepted checklist.
-  taskShiftContexts: [...(attendance.taskShiftContexts || []).filter((entry) => entry.shiftId !== context.shift.id), {
-    shiftId: context.shift.id, shiftName: context.shift.name,
-    taskIds: context.tasks.map((task) => task.id),
-  }],
-})
-
-export const taskBelongsToAttendanceObligations = (task, attendance) => (
-  (attendance?.taskShiftContexts || []).some((context) => context.taskIds.includes(task.id))
-  || (attendance?.checklistSnapshot?.tasks || []).some((entry) => entry.id === task.id)
-)
-
-export const mergeTaskShiftProgress = (attendance, progress, taskIds) => {
-  const replaced = new Set(taskIds)
-  const previous = attendance.taskProgress
-  const remaining = (previous?.incompleteTaskIds || []).filter((id) => !replaced.has(id))
-  return {
-    ...progress,
-    incompleteTaskIds: [...new Set([...remaining, ...progress.incompleteTaskIds])],
-    incompleteReason: [...new Set([remaining.length ? previous.incompleteReason : '', progress.incompleteReason].filter(Boolean))].join('\n').slice(0, 1000),
-  }
-}
+export { bindTaskShiftContext, taskBelongsToAttendanceObligations, mergeTaskShiftProgress } from './taskProgress.js'

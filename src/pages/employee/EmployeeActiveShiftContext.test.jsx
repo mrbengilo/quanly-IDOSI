@@ -116,6 +116,7 @@ describe('employee active-shift context', () => {
     }]
 
     renderTasks()
+    fireEvent.change(screen.getByRole('combobox', { name: 'Chọn ca làm việc' }), { target: { value: 'SUPPORT_TRANSFER_TRANSFER-BC-01' } })
 
     const checkbox = screen.getByRole('checkbox', { name: /Hoàn tất công việc tại cửa hàng C/u })
     expect(checkbox.disabled).toBe(false)
