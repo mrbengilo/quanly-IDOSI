@@ -41,6 +41,14 @@ describe('explicit task shift scope', () => {
     expect(context(state, 'CA3').shift.id).toBe('ca3')
     expect(context(state, 'custom').tasks.map((task) => task.catalogItemId)).toEqual(['CAT-custom'])
   })
+  it('excludes shifts configured for another business date and rejects their direct selection', () => {
+    const state = fixture('00:01')
+    state.shiftDefinitions[2].date = '2026-09-30'
+    expect(taskShiftChoices(state, 'S1', '2026-09-29').map((shift) => shift.id)).not.toContain('ca3')
+    expect(context(state, 'ca3').code).toBe('TASK_SHIFT_INVALID')
+    state.shiftDefinitions[2].date = '2026-09-29'
+    expect(context(state, 'ca3').tasks.map((task) => task.catalogItemId)).toEqual(['CAT-ca3'])
+  })
   it('isolates employee, store, day, attendance and rewards', () => {
     const state = fixture()
     const row = { id: 'assigned', employeeIds: ['E1'], storeId: 'S1', date: '2026-09-29', shiftId: 'ca3' }
@@ -56,6 +64,20 @@ describe('explicit task shift scope', () => {
       employeeIds: ['E1'], storeId: 'S1', date: '2026-09-29', shiftId: 'ca3', checklistAttendanceId: 'A1', completedBy: { E1: true } }]
     expect(context(state, 'ca2').tasks).toEqual(state.tasks)
     expect(context(state).tasks.some((task) => task.id === 'legacy')).toBe(false)
+  })
+  it('reuses legacy canonical catalog rows when configuration uses UUID shift ids', () => {
+    const state = fixture()
+    state.shiftDefinitions[1].id = 'shift-afternoon-uuid'
+    state.shiftDefinitions[2].id = 'shift-night-uuid'
+    expect(taskShiftChoices(state, 'S1', '2026-09-29').map((shift) => shift.id)).not.toContain('ca2')
+    expect(taskShiftChoices(state, 'S1', '2026-09-29').map((shift) => shift.id)).not.toContain('ca3')
+    state.tasks = [{ id: 'legacy', catalogItemId: 'CAT-ca2', catalogSnapshot: { shiftId: 'ca2' },
+      employeeIds: ['E1'], storeId: 'S1', date: '2026-09-29', shiftId: 'shift-night-uuid', checklistAttendanceId: 'A1', completedBy: { E1: true } }]
+    expect(context(state, 'shift-afternoon-uuid').tasks).toEqual(state.tasks)
+    expect(context(state, 'shift-night-uuid').tasks.some((task) => task.id === 'legacy')).toBe(false)
+    state.tasks.push({ id: 'different-configured-shift', employeeIds: ['E1'], storeId: 'S1', date: '2026-09-29', shiftId: 'another-afternoon' })
+    state.shiftDefinitions.push({ id: 'another-afternoon', name: 'Ca Chiều', storeId: 'S1' })
+    expect(context(state, 'shift-afternoon-uuid').tasks.map((task) => task.id)).toEqual(['legacy'])
   })
   it('seals only saved tasks while preserving snapshots and all previously bound obligations', () => {
     const state = fixture()
