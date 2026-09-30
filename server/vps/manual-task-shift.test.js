@@ -48,6 +48,7 @@ it('persists manual shift progress atomically, isolates scopes, preserves legacy
         { id: 'ca2', storeId: 'S1', name: 'Ca Chiều', start: '12:00', end: '17:00', active: true },
         { id: 'ca3', storeId: 'S1', name: 'Ca Tối', start: '17:00', end: '21:00', active: true },
         { id: 'foreign', storeId: 'S2', name: 'Ca khác', start: '17:00', end: '21:00', active: true },
+        { id: 'other-date', storeId: 'S1', date: '2026-09-23', name: 'Ca ngày khác', start: '17:00', end: '21:00', active: true },
       ],
       workCatalogItems: ['ca2', 'ca3'].map((shiftId) => ({ id: `FIXED-${shiftId}`, code: `store.fixed.${shiftId}`,
         targetGroup: 'store', kind: 'FIXED_TASK', storeId: 'S1', shiftId, name: `Công việc ${shiftId}`,
@@ -71,6 +72,7 @@ it('persists manual shift progress atomically, isolates scopes, preserves legacy
     expect(version()).toBe(beforeVersion)
     const requestBody = payload(state, 'ca3', false)
     await command(employee, 'task.progress.save', { ...requestBody, selectedTaskShiftId: 'foreign' }, 409)
+    await command(employee, 'task.progress.save', { ...requestBody, selectedTaskShiftId: 'other-date' }, 409)
     await command(employee, 'task.progress.save', { ...requestBody, selectedTaskShiftId: '' }, 409)
     await command(employee, 'task.progress.save', { ...requestBody, employeeId: 'E2' }, 403)
     await command(employee, 'task.progress.save', { ...requestBody, storeId: 'S2' }, 403)

@@ -13,14 +13,16 @@ const matches = (records, target, reference) => Boolean(target && text(reference
 export const isMandatoryTask = (task) => task.rewardEligible !== true
   && (task.catalogKind || task.catalogSnapshot?.kind || task.kind) !== WORK_CATALOG_KIND.REWARD_TASK
 
-export const taskShiftChoices = (state, storeId) => {
+export const taskShiftChoices = (state, storeId, date = '') => {
   const stores = state.stores || []
   const store = resolve(stores, storeId)
   if (!store) return []
   const configured = (state.shiftDefinitions || []).filter((shift) => !shift.deletedAt && shift.active !== false
+    && (!date || !shift.date || text(shift.date).slice(0, 10) === date)
     && (!shift.storeId || matches(stores, store, shift.storeId)))
   const synthetic = (state.attendance || []).filter((record) => record.supportTransferId
     && !record.deletedAt && !record.checkOut && !record.checkOutAt
+    && (!date || text(record.date || record.workDate).slice(0, 10) === date)
     && matches(stores, store, record.storeId)
     && !configured.some((shift) => shift.id === (record.shiftId || record.shift)))
     .map((record) => ({ id: record.shiftId || record.shift, name: record.shiftName,
@@ -33,6 +35,11 @@ export const taskShiftChoices = (state, storeId) => {
     // A deleted configured shift must not be resurrected from its catalog rows.
     if ((state.shiftDefinitions || []).some((shift) => folded(shift.id) === folded(item.shiftId))
       || catalogChoices.some((shift) => shift.id === item.shiftId)) continue
+    // Do not offer a second catalog alias for the same configured shift. This
+    // avoids creating a second manual snapshot by selecting ca3 after its UUID.
+    if (configured.some((shift) => resolveStoreChecklistCatalogShift({
+      selectedTaskShiftId: shift.id, id: shift.id, name: shift.name, start: shift.start, end: shift.end,
+    })?.shiftId === item.shiftId)) continue
     catalogChoices.push({ id: item.shiftId, name: item.shiftName || resolveStoreChecklistCatalogShift({ id: item.shiftId })?.shiftName || item.shiftId, storeId })
   }
   return [...configured, ...synthetic, ...catalogChoices]
@@ -42,7 +49,10 @@ export const taskShiftChoices = (state, storeId) => {
 // The command builds the same list from server state and only persists it on Save.
 export const taskShiftContext = ({ state, attendance, employeeId, selectedTaskShiftId }) => {
   const fail = (message, code = 'TASK_SHIFT_INVALID') => ({ tasks: [], error: message, code })
-  const shifts = taskShiftChoices(state, attendance?.storeId)
+  // Date-specific shift definitions are valid only on the attendance business
+  // date, matching scheduling rules even for an overnight/early check-in.
+  const date = text(attendance?.date || attendance?.workDate).slice(0, 10)
+  const shifts = taskShiftChoices(state, attendance?.storeId, date)
   const shift = resolve(shifts, selectedTaskShiftId)
   if (!text(selectedTaskShiftId)) return fail('Vui lòng chọn ca làm việc để xem công việc được giao')
   if (!shift) return fail('Ca làm việc không còn hợp lệ hoặc mã ca không rõ ràng.')
@@ -50,13 +60,15 @@ export const taskShiftContext = ({ state, attendance, employeeId, selectedTaskSh
   const employee = resolve(state.employees || [], employeeId)
   const store = resolve(state.stores || [], attendance?.storeId)
   if (!employee || !store || !matches(state.employees, employee, attendance?.employeeId)) return fail('Không có quyền truy cập công việc.', 'TASK_SCOPE_FORBIDDEN')
-  const date = text(attendance.date || attendance.workDate).slice(0, 10)
   if (!/^\d{4}-\d{2}-\d{2}$/u.test(date)) return fail('Ngày làm việc không hợp lệ.')
   const canonical = resolveStoreChecklistCatalogShift({ selectedTaskShiftId: shift.id, id: shift.id, name: shift.name, start: shift.start, end: shift.end })
   const shiftMatches = (reference) => {
     if (!text(reference)) return false
     const configured = resolve(shifts, reference)
-    if (configured) return configured === shift
+    if (configured === shift) return true
+    // Catalog-only canonical choices are aliases for a configured shift, while
+    // two independently configured ids must remain distinct even if names match.
+    if (configured && (state.shiftDefinitions || []).includes(configured)) return false
     return Boolean(canonical && resolveStoreChecklistCatalogShift({ id: reference })?.shiftId === canonical.shiftId)
   }
   const bound = (attendance.taskShiftContexts || []).find((context) => context.shiftId === shift.id)

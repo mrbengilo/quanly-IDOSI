@@ -171,7 +171,7 @@ export function EmployeeAssignedTasksPage() {
   const scopeKey = JSON.stringify([employeeId, storeId, recordDate(attendance) || assignment?.date || today(), attendance?.id, assignment?.id])
   const [selection, setSelection] = useState({ scopeKey: '', id: '' })
   const selectedTaskShiftId = selection.scopeKey === scopeKey ? selection.id : ''
-  const shifts = taskShiftChoices(app, storeId)
+  const shifts = taskShiftChoices(app, storeId, recordDate(attendance) || assignment?.date || today())
   const previewAttendance = attendance || { id: '', employeeId, storeId, date: assignment?.date || today() }
   const context = selectedTaskShiftId ? taskShiftContext({
     state: assignment ? { ...app, tasks: assignment.tasks, workCatalogItems: [] } : app, attendance: previewAttendance, employeeId, selectedTaskShiftId,
