@@ -247,16 +247,20 @@ export const activeWorkCatalogItems = (items, {
   shiftStart = null,
   shiftEnd = null,
   shiftCheckInTime = null,
+  selectedTaskShiftId,
   date = new Date(),
   kinds = null,
 } = {}) => {
+  const manualSelection = selectedTaskShiftId !== undefined
+  if (manualSelection && !text(selectedTaskShiftId)) return []
+  if (manualSelection) shiftId = selectedTaskShiftId
   const normalizedTarget = normalizeTargetGroup(targetGroup)
   const normalizedDate = calendarDate(date, 'date')
   const requestedKinds = kinds == null
     ? null
     : new Set((Array.isArray(kinds) ? kinds : [kinds]).map(normalizeKind))
   const requestedStoreId = text(storeId) || null
-  const timeDerivedStoreShift = normalizedTarget === WORK_CATALOG_TARGET.STORE && text(shiftCheckInTime)
+  const timeDerivedStoreShift = !manualSelection && normalizedTarget === WORK_CATALOG_TARGET.STORE && text(shiftCheckInTime)
     ? resolveStoreChecklistCatalogShift({ checkInTime: shiftCheckInTime })
     : null
   const canonicalStoreShift = normalizedTarget === WORK_CATALOG_TARGET.STORE
@@ -265,7 +269,7 @@ export const activeWorkCatalogItems = (items, {
         name: shiftName,
         start: shiftStart,
         end: shiftEnd,
-        checkInTime: shiftCheckInTime,
+        ...(manualSelection ? { selectedTaskShiftId } : { checkInTime: shiftCheckInTime }),
       })
     : null
   const requestedShiftId = text(shiftId)

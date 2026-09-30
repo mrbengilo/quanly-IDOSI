@@ -576,3 +576,10 @@ describe('deterministic progress and reward claim identities', () => {
     expect(() => workCatalogProgressKey({ ...input, workDate: 'not-a-date' })).toThrow(/workDate/u)
   })
 })
+
+
+it.each(['11:59', '12:00', '16:48', '16:59', '17:00'])('explicit task shift remains stable at %s', (shiftCheckInTime) => {
+  const items = ['ca1', 'ca2', 'ca3'].map((shiftId) => definition({ id: shiftId, code: `fixed.${shiftId}`, shiftId, shiftName: null }))
+  expect(activeWorkCatalogItems(items, { targetGroup: 'store', storeId: 'STORE-01', selectedTaskShiftId: 'ca3', shiftCheckInTime, date: '2026-08-26' }).map((item) => item.id)).toEqual(['ca3'])
+  expect(activeWorkCatalogItems(items, { targetGroup: 'store', storeId: 'STORE-01', selectedTaskShiftId: '', shiftCheckInTime, date: '2026-08-26' })).toEqual([])
+})
