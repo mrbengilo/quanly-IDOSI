@@ -55,3 +55,23 @@ it('fails open to the server when browser storage is unavailable', async () => {
   expect(await cache.readWorkspaceCache()).toBeNull()
   expect(await cache.writeWorkspaceCache('orders', { version: 1 })).toBe(false)
 })
+
+it('rejects old projections that may contain client-injected catalog seeds', async () => {
+  await cache.writeWorkspaceCache('tasks', { state: { workCatalogItems: [{ id: 'old-seed' }] }, version: 4 })
+  const db = await new Promise((resolve) => {
+    const request = indexedDB.open('idosi-workspace-cache-v1', 1)
+    request.onsuccess = () => resolve(request.result)
+  })
+  await new Promise((resolve) => {
+    const transaction = db.transaction('views', 'readwrite')
+    const store = transaction.objectStore('views')
+    const request = store.openCursor()
+    request.onsuccess = () => {
+      const cursor = request.result
+      if (cursor) { cursor.update({ ...cursor.value, formatVersion: 1 }); cursor.continue() }
+    }
+    transaction.oncomplete = resolve
+  })
+  expect(await cache.readWorkspaceCache('tasks')).toBeNull()
+  db.close()
+})

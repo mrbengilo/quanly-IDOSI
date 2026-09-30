@@ -1,3 +1,4 @@
+import { taskBelongsToAttendanceObligations } from '../../domain/taskProgress'
 import { attendanceMatchesWindow, scheduleWindows, supportForScheduledWindow } from '../../domain/supportScheduling'
 import { useEffect, useRef, useState } from 'react'
 import {
@@ -334,7 +335,7 @@ export function EmployeeDashboardV2() {
     )) return false
     const taskShiftId = String(task.shiftId || task.shift || '')
     const activeShift = resolveTarget(app.shiftDefinitions, activeShiftId, shiftAliases, { id: activeShiftId })
-    return activeRecord && (!taskShiftId || referenceMatchesTarget(app.shiftDefinitions, activeShift, taskShiftId, shiftAliases))
+    return activeRecord && (taskBelongsToAttendanceObligations(task, activeRecord) || !taskShiftId || referenceMatchesTarget(app.shiftDefinitions, activeShift, taskShiftId, shiftAliases))
   })
   const incompleteTasks = activeShiftTasks.filter((task) => taskIsRequired(task) && !taskCompletedByEmployee(task, employeeId, app.employees))
   const incompleteRewardTasks = activeShiftTasks.filter((task) => !taskIsRequired(task) && !taskCompletedByEmployee(task, employeeId, app.employees))

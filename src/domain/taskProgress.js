@@ -47,3 +47,38 @@ export const savedTaskProgressCoversIncompleteTasks = ({
   return savedIds.length === expectedIds.length
     && savedIds.every((taskId, index) => taskId === expectedIds[index])
 }
+
+export const bindTaskShiftContext = (attendance, context) => ({
+  ...attendance,
+  // Append obligations; neither changing tabs nor saving another shift erases
+  // the legacy snapshot or any previously accepted checklist.
+  taskShiftContexts: [...(attendance.taskShiftContexts || []).filter((entry) => entry.shiftId !== context.shift.id), {
+    shiftId: context.shift.id, shiftName: context.shift.name,
+    taskIds: context.tasks.map((task) => task.id),
+  }],
+})
+
+export const taskBelongsToAttendanceObligations = (task, attendance) => (
+  (attendance?.taskShiftContexts || []).some((context) => context.taskIds.includes(task.id))
+  || (attendance?.checklistSnapshot?.tasks || []).some((entry) => entry.id === task.id)
+)
+
+export const mergeTaskShiftProgress = (attendance, progress, taskIds) => {
+  const replaced = new Set(taskIds)
+  const previous = attendance.taskProgress
+  const remaining = (previous?.incompleteTaskIds || []).filter((id) => !replaced.has(id))
+  // Store reasons against task identity so finishing one shift also removes its
+  // old reason without borrowing the note of another incomplete shift.
+  const incompleteReasonsByTaskId = Object.fromEntries([
+    ...remaining.map((id) => [id, previous.incompleteReasonsByTaskId?.[id] || previous.incompleteReason]),
+    ...progress.incompleteTaskIds.map((id) => [id, progress.incompleteReason]),
+  ])
+  return {
+    ...progress,
+    incompleteTaskIds: Object.keys(incompleteReasonsByTaskId),
+    incompleteReasonsByTaskId,
+    // Checkout's legacy summary has a 1000-character cap; full notes remain in
+    // the per-task map and immutable per-shift progress history.
+    incompleteReason: [...new Set(Object.values(incompleteReasonsByTaskId).filter(Boolean))].join('\n').slice(0, 1000),
+  }
+}

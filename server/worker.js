@@ -1,3 +1,4 @@
+import { taskShiftContext, bindTaskShiftContext, mergeTaskShiftProgress, taskBelongsToAttendanceObligations } from '../src/domain/taskShift.js'
 import { normalizeOrderItems as normalizedHistoricalOrderItems, resolveOrderItems as resolveConfiguredOrderItems, totalOrderItemQuantity, totalOrderItemWeightKg } from '../src/domain/orderItems.js'
 import { orderRevenueByType, validateOrderRevenue } from '../src/domain/orderRevenue.js'
 import { salesOverviewFromSummary } from '../src/domain/salesOverview.js'
@@ -240,7 +241,7 @@ const SYSTEM_SCREEN_COLLECTIONS = Object.freeze({
     'officeAdjustments', 'salaryAdjustments', 'payrollPeriods', 'shiftDefinitions', 'notifications',
   ],
   'employee-tasks': [
-    'stores', 'employees', 'tasks', 'taskAssignmentHistory', 'supportWorkAssignments',
+    'stores', 'employees', 'tasks', 'taskAssignmentHistory', 'supportWorkAssignments', 'shiftDefinitions',
     'workCatalogItems', 'workCatalogProgress', 'compensationEntries', 'attendance', 'notifications', 'violations',
   ],
   'employee-assigned-work': ['employees', 'supportWorkAssignments', 'notifications'],
@@ -4406,7 +4407,7 @@ const repairEmployeeScreenStateIfNeeded = async (db, actor, context, row, screen
   ))
   if (!employee || employeeUnit(employee) !== 'store') return row
   const pending = (Array.isArray(state.attendance) ? state.attendance : []).some((record) => (
-    record && !record.deletedAt && !record.checkOut && !record.checkOutAt
+    record && !record.deletedAt && !record.checkOut && !record.checkOutAt && !record.taskShiftContexts?.length
     && employeeIdentifierValues(employee).some((id) => sameIdentifier(id, record.employeeId || record.employee_id))
     && (Number(record.checklistSnapshot?.storeChecklistRepairVersion || 0) < STORE_ATTENDANCE_CHECKLIST_REPAIR_VERSION
       || record.checklistRepairError != null)
@@ -7869,7 +7870,7 @@ export const commandStateProjection = (body) => {
   if (type.startsWith('task.')) {
     return projection(
       'command-task-progress',
-      ['attendance', 'tasks', 'taskAssignmentHistory', 'notifications', 'workCatalogItems'],
+      ['attendance', 'tasks', 'taskAssignmentHistory', 'notifications', 'workCatalogItems', 'shiftDefinitions', 'stores', 'employees'],
       'taskAssignmentHistory',
       payload.assignmentId || payload.id,
       payload.employeeId,
@@ -15724,7 +15725,7 @@ function checklistSnapshotForAttendance({
 }
 
 export const openStoreChecklistRepairContext = (record, employees) => {
-  if (!isPlainRecord(record) || record.deletedAt || record.checkOutAt || record.checkOut) return null
+  if (!isPlainRecord(record) || record.deletedAt || record.checkOutAt || record.checkOut || record.taskShiftContexts?.length) return null
   const employeeId = String(record.employeeId || record.employee_id || '').trim()
   const employee = employees.find((candidate) => (
     employeeIdentifierValues(candidate).some((value) => sameIdentifier(value, employeeId))
@@ -16874,7 +16875,7 @@ const attendanceCommand = async (db, actor, body, commandContext, env) => {
     || (checklistSnapshot
       && (checklistSnapshot.source === 'work-catalog' || checklistSnapshot.templateId === 'WORK-CATALOG')
       && Number(checklistSnapshot.storeChecklistRepairVersion || 0) < STORE_ATTENDANCE_CHECKLIST_REPAIR_VERSION)
-  if (storeEmployee && (openRecord.checklistRepairError || workCatalogChecklistPending)) {
+  if (storeEmployee && (openRecord.checklistRepairError || (!openRecord.taskShiftContexts?.length && workCatalogChecklistPending))) {
     throw new ApiError(
       409,
       'CHECKLIST_REPAIR_PENDING',
@@ -16907,6 +16908,12 @@ const attendanceCommand = async (db, actor, body, commandContext, env) => {
         },
       })
     }
+  }
+  // Saved manual scopes are obligations too, including rows whose work shift
+  // differs from attendance. Missing/deleted rows fail closed at checkout.
+  const acceptedTaskIds = (openRecord.taskShiftContexts || []).flatMap((entry) => entry.taskIds || [])
+  if (acceptedTaskIds.some((id) => !(state.tasks || []).some((task) => task.id === id && !task.deletedAt && task.active !== false))) {
+    throw new ApiError(409, 'TASK_CONTEXT_CHANGED', 'Công việc đã lưu bị thiếu hoặc bị khóa; cần quản lý xử lý trước khi kết ca.')
   }
   const checklistTasks = Array.isArray(openRecord.checklistSnapshot?.tasks)
     ? (Array.isArray(state.tasks) ? state.tasks : []).filter((task) => (
@@ -16980,7 +16987,7 @@ const attendanceCommand = async (db, actor, body, commandContext, env) => {
         if (checklistAttendanceId && !attendanceReferenceMatches(checklistAttendanceId)) return false
         if (String(task.date || task.workDate || '') !== attendanceDate) return false
         const taskShiftId = String(task.shiftId || task.shift || '')
-        if (taskShiftId && !sameIdentifier(taskShiftId, attendanceShiftId)) return false
+        if (taskShiftId && !sameIdentifier(taskShiftId, attendanceShiftId) && !taskBelongsToAttendanceObligations(task, openRecord)) return false
         const completedBy = isPlainRecord(task.completedBy) ? task.completedBy : {}
         return completedByEmployeeValue(completedBy, employeeId) !== true && task.done !== true
       })
@@ -18917,7 +18924,9 @@ const taskProgressCommand = async (db, actor, body, commandContext) => {
     throw new ApiError(403, 'ROLE_FORBIDDEN', 'Chỉ nhân viên được gửi kết quả công việc trong ca.')
   }
   const payload = isPlainRecord(body.payload) ? body.payload : {}
-  const { current, state } = await loadGlobalCommandState(db, body, actor)
+  const loaded = await loadGlobalCommandState(db, body, actor)
+  const current = loaded.current
+  let state = loaded.state
   const employeeId = String(actor.employee_id || actor.user_id || '').trim()
   const employee = uniqueEmployeeIdentifierRecordMatch({
     records: state.employees,
@@ -18959,8 +18968,32 @@ const taskProgressCommand = async (db, actor, body, commandContext) => {
   })
   const storeId = String(openAttendance.storeId || '')
   const date = String(openAttendance.date || openAttendance.workDate || '').slice(0, 10)
-  const shiftId = String(openAttendance.shiftId || openAttendance.shift || '')
+  const selectedTaskShiftId = String(payload.selectedTaskShiftId || '').trim()
+  let manualContext = null
+  if (Object.hasOwn(payload, 'selectedTaskShiftId')) {
+    if (targetUnit !== 'store') throw new ApiError(400, 'TASK_SHIFT_INVALID', 'Lựa chọn ca chỉ dành cho nhân viên cửa hàng.')
+    if ((payload.employeeId && !employeeIdentifierValues(employee).includes(String(payload.employeeId)))
+      || (payload.storeId && String(payload.storeId) !== storeId)) throw new ApiError(403, 'TASK_SCOPE_FORBIDDEN', 'Thông tin nhân viên hoặc cửa hàng không thuộc lượt làm việc.')
+    assertNoCaseCollidingOperationalIdentifiers(state)
+    assertNoCaseCollidingActiveWorkCatalogIdentifiers(state)
+    manualContext = taskShiftContext({ state, attendance: openAttendance, employeeId, selectedTaskShiftId })
+    if (manualContext.error) throw new ApiError(409, manualContext.code, manualContext.error)
+    const existingIds = new Set((state.tasks || []).map((task) => task.id))
+    const newTasks = manualContext.tasks.filter((task) => !existingIds.has(task.id)).map((task) => ({ ...task, createdAt: commandContext.now, updatedAt: commandContext.now }))
+    const newAssignmentIds = [...new Set(newTasks.map((task) => task.assignmentId))]
+    state = {
+      ...state,
+      tasks: [...(state.tasks || []), ...newTasks],
+      taskAssignmentHistory: [...(state.taskAssignmentHistory || []), ...newAssignmentIds.map((id) => ({
+        id, assignmentId: id, employeeIds: [employeeId], storeId, date,
+        shiftId: manualContext.shift.id, shiftName: manualContext.shift.name,
+        tasks: newTasks.filter((task) => task.assignmentId === id), assignedAt: commandContext.now,
+      }))],
+    }
+  }
+  const shiftId = manualContext?.shift.id || String(openAttendance.shiftId || openAttendance.shift || '')
   const scopedTasks = (Array.isArray(state.tasks) ? state.tasks : []).filter((task) => {
+    if (manualContext) return manualContext.tasks.some((entry) => entry.id === task.id)
     if (task.deletedAt) return false
     if (!taskAppliesToEmployee(task, employeeId, storeId)) return false
     if (String(task.date || task.workDate || '').slice(0, 10) !== date) return false
@@ -19026,7 +19059,7 @@ const taskProgressCommand = async (db, actor, body, commandContext) => {
       completionRate: totalTasks ? Math.round((completedTasks / totalTasks) * 100) : 0,
     }
   }
-  const submissionFingerprint = JSON.stringify({ attendanceId: openAttendance.id, tasks: normalizedStatuses, incompleteReason })
+  const submissionFingerprint = JSON.stringify({ attendanceId: openAttendance.id, ...(manualContext ? { selectedTaskShiftId: shiftId } : {}), tasks: normalizedStatuses, incompleteReason })
   const histories = Array.isArray(state.taskAssignmentHistory) ? state.taskAssignmentHistory : []
   const assignmentIds = [...new Set(scopedTasks.map((task) => String(task.assignmentId || '')).filter(Boolean))]
   const assignmentIdKeys = new Set(assignmentIds.map(normalizeIdentifierKey))
@@ -19097,14 +19130,17 @@ const taskProgressCommand = async (db, actor, body, commandContext) => {
       submittedAt: existingSubmission.at,
     }
     if (!savedTaskProgressCoversIncompleteTasks({
-      progress: openAttendance.taskProgress,
+      progress: manualContext && openAttendance.taskProgress ? {
+        ...openAttendance.taskProgress,
+        incompleteTaskIds: (openAttendance.taskProgress.incompleteTaskIds || []).filter((id) => scopedById.has(normalizeIdentifierKey(id))),
+      } : openAttendance.taskProgress,
       attendanceId: openAttendance.id,
       employeeId,
       incompleteTaskIds,
     }) && incompleteTaskIds.length) {
       const restoredAttendance = {
         ...openAttendance,
-        taskProgress: restoredProgress,
+        taskProgress: manualContext ? mergeTaskShiftProgress(openAttendance, restoredProgress, scopedTasks.map((task) => task.id)) : restoredProgress,
         updatedAt: commandContext.now,
         updatedBy: serverActorSnapshot(actor),
       }
@@ -19264,8 +19300,8 @@ const taskProgressCommand = async (db, actor, body, commandContext) => {
     submittedAt: commandContext.now,
   })
   const updatedAttendance = {
-    ...openAttendance,
-    taskProgress,
+    ...(manualContext ? bindTaskShiftContext(openAttendance, manualContext) : openAttendance),
+    taskProgress: manualContext ? mergeTaskShiftProgress(openAttendance, taskProgress, scopedTasks.map((task) => task.id)) : taskProgress,
     updatedAt: commandContext.now,
     updatedBy: serverActorSnapshot(actor),
   }

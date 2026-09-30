@@ -1,9 +1,8 @@
 import { useMemo, useRef, useState } from 'react'
-import { ClipboardCheck, Clock3, ReceiptText, Save, Store } from 'lucide-react'
 import { useSearchParams } from 'react-router-dom'
-import { Badge, Button, Card, Field, InfoNote, Input, MoneyInput, PageHeader, Progress, TableWrap } from '../../components/UI'
-import { WORK_CATALOG_KIND } from '../../domain/workCatalog'
-import { resolveStoreChecklistTemplate, STORE_CHECKLIST_TEMPLATES } from '../../domain/storeShiftChecklist'
+import { ClipboardCheck, Clock3, ReceiptText, Save, Store } from 'lucide-react'
+import { Badge, Button, Card, Field, InfoNote, Input, MoneyInput, PageHeader, Progress, Select, TableWrap } from '../../components/UI'
+import { taskShiftChoices, taskShiftContext } from '../../domain/taskShift'
 import { useApp } from '../../state/AppContext'
 import {
   money,
@@ -13,10 +12,8 @@ import {
 } from '../../utils'
 import {
   employeeTaskAssignmentById,
-  taskAssignedToEmployee,
   taskCompletedByEmployee,
 } from './taskScope'
-import { referenceMatchesAttendanceShift } from './employeeShiftScope'
 
 const employeeKey = (record) => String(record?.id || record?.code || record?.employeeId || '')
 const employeeAliases = (record) => [record?.id, record?.code, record?.employeeId, record?.employeeCode]
@@ -25,24 +22,7 @@ const employeeAliases = (record) => [record?.id, record?.code, record?.employeeI
 const storeAliases = (record) => [record?.id, record?.code]
   .map((value) => String(value || '').trim())
   .filter(Boolean)
-const attendanceAliases = (record) => [record?.id, record?.code, record?.attendanceId]
-  .map((value) => String(value || '').trim())
-  .filter(Boolean)
 const recordDate = (record) => String(record?.date || record?.workDate || record?.checkInAt || record?.createdAt || '').slice(0, 10)
-const shiftIdOf = (record) => String(record?.shiftId || record?.shift || '')
-const taskKindOf = (task = {}) => String(task.catalogKind || task.catalogSnapshot?.kind || task.kind || '')
-const taskIsReward = (task = {}) => task.rewardEligible === true || taskKindOf(task) === WORK_CATALOG_KIND.REWARD_TASK
-const taskIsRequired = (task = {}) => task.required !== false
-const shiftTemplateOf = (record = {}) => resolveStoreChecklistTemplate({
-  id: shiftIdOf(record),
-  shiftId: shiftIdOf(record),
-  name: record.shiftName || record.name,
-  shiftName: record.shiftName,
-  start: record.shiftStart || record.start,
-  end: record.shiftEnd || record.end,
-  checkInTime: record.checkIn || record.checkInTime,
-})
-
 const resolveTarget = (records, reference, identifierOf, fallback = null) => {
   const source = Array.isArray(records) ? records : []
   if (!source.length) return fallback
@@ -89,31 +69,6 @@ const ownOpenAttendance = (attendance, employee, employees) => {
     && !record.checkOutAt
     && !record.checkOut
   )) || null
-}
-
-const taskMatchesAttendance = (task, attendance, employeeId, {
-  attendanceRecords = [],
-  employees = [],
-  stores = [],
-  shiftDefinitions = [],
-} = {}) => {
-  const store = resolveTarget(stores, attendance.storeId, storeAliases, { id: String(attendance.storeId || '') })
-  if (!store) return false
-  return !task.deletedAt
-    && referenceMatchesTarget(stores, store, task.storeId, storeAliases)
-    && recordDate(task) === recordDate(attendance)
-    && taskAssignedToEmployee(task, employeeId, employees)
-    && (!task.checklistAttendanceId || referenceMatchesTarget(
-      attendanceRecords,
-      attendance,
-      task.checklistAttendanceId,
-      attendanceAliases,
-    ))
-    && (!shiftIdOf(task) || referenceMatchesAttendanceShift({
-      attendance,
-      reference: shiftIdOf(task),
-      shiftDefinitions,
-    }))
 }
 
 export function EmployeeShiftExpensePage() {
@@ -206,153 +161,81 @@ export function EmployeeShiftExpensePage() {
 
 export function EmployeeAssignedTasksPage() {
   const app = useApp()
-  const [searchParams] = useSearchParams()
-  const requestedAssignmentId = String(searchParams.get('assignment') || '').trim()
   const employee = currentEmployeeOf(app)
   const employeeId = employeeKey(employee)
-  const attendance = useMemo(
-    () => ownOpenAttendance(app.attendance, employee, app.employees),
-    [app.attendance, app.employees, employee],
-  )
-  const attendanceTasks = useMemo(() => {
-    const tasks = Array.isArray(app.tasks) ? app.tasks : []
-    if (attendance) return tasks.filter((task) => taskMatchesAttendance(
-      task,
-      attendance,
-      employeeId,
-      {
-        attendanceRecords: (Array.isArray(app.attendance) ? app.attendance : []).filter((record) => !record.deletedAt),
-        employees: app.employees,
-        stores: app.stores,
-        shiftDefinitions: app.shiftDefinitions,
-      },
-    ))
-    if (requestedAssignmentId) return employeeTaskAssignmentById({
-      assignmentId: requestedAssignmentId,
-      taskAssignmentHistory: app.taskAssignmentHistory,
-      tasks,
-      employee,
-      employees: app.employees,
-      stores: app.stores,
-    })?.tasks || []
-    return tasks.filter((task) => (
-      !task.deletedAt
-      && recordDate(task) === today()
-      && taskAssignedToEmployee(task, employeeId, app.employees)
-    ))
-  }, [app.attendance, app.employees, app.shiftDefinitions, app.stores, app.taskAssignmentHistory, app.tasks, attendance, employee, employeeId, requestedAssignmentId])
-  const mandatoryTasks = useMemo(() => attendanceTasks.filter((task) => !taskIsReward(task)), [attendanceTasks])
-  const attendanceShiftKey = useMemo(() => shiftTemplateOf(attendance || {})?.key || '', [attendance])
-  const availableShiftKeys = useMemo(() => new Set(mandatoryTasks
-    .map((task) => shiftTemplateOf(task)?.key || attendanceShiftKey)
-    .filter(Boolean)), [attendanceShiftKey, mandatoryTasks])
-  const defaultShiftKey = attendanceShiftKey || [...availableShiftKeys][0] || STORE_CHECKLIST_TEMPLATES[0].key
-  const scopeKey = String(attendance?.id || requestedAssignmentId || `day:${recordDate(mandatoryTasks[0]) || today()}`)
-  const [shiftSelection, setShiftSelection] = useState({ scopeKey: '', key: '' })
-  const [statusDraft, setStatusDraft] = useState({ scopeKey: '', values: {} })
-  const [acknowledgedDraft, setAcknowledgedDraft] = useState({ scopeKey: '', values: new Set() })
-  const [reasonDraft, setReasonDraft] = useState({ scopeKey: '', value: '' })
+  const [params] = useSearchParams()
+  const assignment = !ownOpenAttendance(app.attendance, employee, app.employees) && params.get('assignment')
+    ? employeeTaskAssignmentById({ assignmentId: params.get('assignment'), taskAssignmentHistory: app.taskAssignmentHistory, tasks: app.tasks, employee, employees: app.employees, stores: app.stores }) : null
+  const attendance = ownOpenAttendance(app.attendance, employee, app.employees)
+  const storeId = attendance?.storeId || employee.storeId
+  const scopeKey = JSON.stringify([employeeId, storeId, recordDate(attendance) || assignment?.date || today(), attendance?.id, assignment?.id])
+  const [selection, setSelection] = useState({ scopeKey: '', id: '' })
+  const selectedTaskShiftId = selection.scopeKey === scopeKey ? selection.id : ''
+  const shifts = taskShiftChoices(app, storeId)
+  const previewAttendance = attendance || { id: '', employeeId, storeId, date: assignment?.date || today() }
+  const context = selectedTaskShiftId ? taskShiftContext({
+    state: assignment ? { ...app, tasks: assignment.tasks, workCatalogItems: [] } : app, attendance: previewAttendance, employeeId, selectedTaskShiftId,
+  }) : { tasks: [] }
+  const displayedTasks = context.tasks
+  // Drafts are keyed by identity, business date, attendance and task shift.
+  const draftKey = JSON.stringify([scopeKey, selectedTaskShiftId])
+  const [drafts, setDrafts] = useState({})
+  const draft = drafts[draftKey] || { statuses: {}, reason: '', acknowledged: [] }
+  const updateDraft = (patch) => setDrafts((current) => ({
+    ...current, [draftKey]: { ...(current[draftKey] || { statuses: {}, reason: '', acknowledged: [] }), ...patch },
+  }))
   const [saving, setSaving] = useState(false)
   const requestRef = useRef(null)
-  const selectedShiftKey = shiftSelection.scopeKey === scopeKey && shiftSelection.key
-    ? shiftSelection.key
-    : defaultShiftKey
-  const statuses = statusDraft.scopeKey === scopeKey ? statusDraft.values : {}
-  const acknowledgedTaskIds = acknowledgedDraft.scopeKey === scopeKey ? acknowledgedDraft.values : new Set()
-  const incompleteReason = reasonDraft.scopeKey === scopeKey ? reasonDraft.value : ''
-  const setStatuses = (updater) => setStatusDraft((current) => {
-    const values = current.scopeKey === scopeKey ? current.values : {}
-    return { scopeKey, values: typeof updater === 'function' ? updater(values) : updater }
-  })
-  const setAcknowledgedTaskIds = (updater) => setAcknowledgedDraft((current) => {
-    const values = current.scopeKey === scopeKey ? current.values : new Set()
-    return { scopeKey, values: typeof updater === 'function' ? updater(values) : updater }
-  })
-  const setIncompleteReason = (value) => setReasonDraft({ scopeKey, value })
-
-  const storedStatusFor = (task) => taskCompletedByEmployee(task, employeeId, app.employees)
-    || acknowledgedTaskIds.has(String(task.id))
-  const statusFor = (task) => Object.hasOwn(statuses, String(task.id))
-    ? statuses[String(task.id)]
-    : storedStatusFor(task)
-  const displayedTasks = mandatoryTasks.filter((task) => {
-    const taskShiftKey = shiftTemplateOf(task)?.key || defaultShiftKey
-    return taskShiftKey === selectedShiftKey
-  })
+  const busyRef = useRef(false)
+  const storedStatusFor = (task) => taskCompletedByEmployee(task, employeeId, app.employees) || draft.acknowledged.includes(task.id)
+  const statusFor = (task) => storedStatusFor(task) || draft.statuses[task.id] === true
   const completedTasks = displayedTasks.filter(statusFor).length
-  const completionRate = displayedTasks.length ? Math.round((completedTasks / displayedTasks.length) * 100) : 0
+  const completionRate = displayedTasks.length ? Math.round(completedTasks / displayedTasks.length * 100) : 0
   const allCompleted = displayedTasks.length > 0 && completedTasks === displayedTasks.length
-  const requiredTasks = mandatoryTasks.filter(taskIsRequired)
-  const incompleteRequiredTasks = requiredTasks.filter((task) => !statusFor(task))
+  const incompleteRequiredTasks = displayedTasks.filter((task) => task.required !== false && !statusFor(task))
   const noteRequired = incompleteRequiredTasks.length > 0
-  const newlyCompletedTasks = mandatoryTasks.filter((task) => !storedStatusFor(task) && statusFor(task))
-  // A legacy/custom attendance can be valid and open even when its shift name or
-  // interval does not map to one of the three display templates. The default
-  // tab already resolves from the attendance first and then from its tasks, so
-  // keep that tab editable until checkout instead of leaving Save disabled.
-  const selectedShiftIsOpen = Boolean(attendance && selectedShiftKey === defaultShiftKey)
-  const ready = Boolean(
-    selectedShiftIsOpen
-    && displayedTasks.length
-    && (newlyCompletedTasks.length || (noteRequired && incompleteReason.trim()))
-    && (!noteRequired || incompleteReason.trim()),
-  )
-  const history = useMemo(() => (app.taskAssignmentHistory || []).flatMap((assignment) => (
+  const incompleteReason = draft.reason
+  const newlyCompletedTasks = displayedTasks.filter((task) => !storedStatusFor(task) && statusFor(task))
+  const selectedShiftIsOpen = Boolean(attendance && selectedTaskShiftId && !context.error)
+  const ready = selectedShiftIsOpen && displayedTasks.length > 0
+    && (newlyCompletedTasks.length > 0 || (noteRequired && incompleteReason.trim()))
+    && (!noteRequired || incompleteReason.trim())
+  const history = (app.taskAssignmentHistory || []).flatMap((assignment) => (
     (assignment.progressHistory || []).filter((event) => (
       referenceMatchesTarget(app.employees, employee, event.employeeId, employeeAliases)
     )).map((event) => ({
       ...event,
       assignmentId: event.assignmentId || assignment.assignmentId || assignment.id,
     }))
-  )).sort((left, right) => String(right.at || '').localeCompare(String(left.at || ''))), [app.employees, app.taskAssignmentHistory, employee])
+  )).sort((left, right) => String(right.at || '').localeCompare(String(left.at || '')))
 
   const submit = async () => {
-    if (!ready || saving || typeof app.saveStoreTaskProgress !== 'function') return
-    // The server persists one atomic snapshot for the complete shift checklist.
-    // Reward rows stay on their dedicated screen, but their existing state must
-    // remain in this payload so saving mandatory work never clears or omits them.
-    const tasks = attendanceTasks.map((task) => ({ id: task.id, completed: statusFor(task) }))
+    if (!ready || busyRef.current || typeof app.saveStoreTaskProgress !== 'function') return
+    const tasks = displayedTasks.map((task) => ({ id: task.id, completed: statusFor(task) }))
     const normalizedReason = noteRequired ? incompleteReason.trim() : ''
-    const fingerprint = JSON.stringify({ attendanceId: attendance.id, tasks, incompleteReason: normalizedReason })
+    const fingerprint = JSON.stringify({ attendanceId: attendance.id, selectedTaskShiftId, tasks, incompleteReason: normalizedReason })
     if (!requestRef.current || requestRef.current.fingerprint !== fingerprint) {
       requestRef.current = { fingerprint, idempotencyKey: `task-progress:${crypto.randomUUID()}` }
     }
+    busyRef.current = true
     setSaving(true)
     try {
       const result = await app.saveStoreTaskProgress({
-        attendanceId: attendance.id,
-        tasks,
-        incompleteReason: normalizedReason,
-        idempotencyKey: requestRef.current.idempotencyKey,
+        attendanceId: attendance.id, selectedTaskShiftId, tasks,
+        incompleteReason: normalizedReason, idempotencyKey: requestRef.current.idempotencyKey,
       })
       if (result?.ok) {
-        // The progress command records the complete checklist in one atomic
-        // request. Reward claims are intentionally handled in the separate
-        // “Công việc tính thưởng” screen against the attendance snapshot.
-        if (app.apiStatus === 'local') {
-          try {
-            globalThis.sessionStorage?.setItem(`idosi:task-progress:${attendance.id}`, JSON.stringify({
-              attendanceId: attendance.id,
-              employeeId: attendance.employeeId || employeeId,
-              incompleteTaskIds: incompleteRequiredTasks.map((task) => String(task.id || '')).filter(Boolean),
-              incompleteReason: normalizedReason,
-              submittedAt: result.submittedAt || new Date().toISOString(),
-            }))
-          } catch {
-            // Session storage is only a compatibility bridge for local/demo mode.
-          }
-        }
-        setAcknowledgedTaskIds((current) => new Set([
-          ...current,
-          ...newlyCompletedTasks.map((task) => String(task.id)),
-        ]))
-        setStatuses({})
-        setIncompleteReason('')
+        // Apply the response only to the request's original context, even if
+        // session/attendance changed while the command was in flight.
+        setDrafts((current) => ({ ...current, [draftKey]: {
+          statuses: {}, reason: '', acknowledged: displayedTasks.filter(statusFor).map((task) => task.id),
+        } }))
         requestRef.current = null
-      } else {
-        app.notify?.(result?.message || 'Không thể lưu kết quả công việc. Vui lòng tải lại trang và thử lại.', 'info')
-      }
+      } else app.notify?.(result?.message || 'Không thể lưu kết quả công việc. Vui lòng tải lại và thử lại.', 'info')
+    } catch (error) {
+      app.notify?.(error.message || 'Không thể lưu kết quả công việc.', 'info')
     } finally {
+      busyRef.current = false
       setSaving(false)
     }
   }
@@ -360,31 +243,21 @@ export function EmployeeAssignedTasksPage() {
   return (
     <div className="page employee-assigned-tasks-page">
       <PageHeader title="CÔNG VIỆC ĐƯỢC GIAO" subtitle="Cập nhật kết quả trong ca và gửi tỷ lệ hoàn thành cho quản lý." icon={ClipboardCheck} />
-      {!attendance && <InfoNote tone="orange">Bạn có thể xem công việc hôm nay, nhưng chỉ được cập nhật sau khi điểm danh vào đúng ca.</InfoNote>}
+      {!attendance && <InfoNote tone="orange">Chưa điểm danh hoặc đã kết ca: bạn chỉ có thể xem công việc, không thể lưu kết quả.</InfoNote>}
       <Card title="Tiến độ công việc" action={<Badge tone={allCompleted ? 'green' : 'orange'}>{completedTasks}/{displayedTasks.length} · {completionRate}%</Badge>}>
         <Progress value={completionRate} color={allCompleted ? '#07883f' : '#f28b16'} />
-        <InfoNote>Đây là danh sách công việc bắt buộc của ca đã điểm danh và luôn hiển thị đến khi bạn bấm kết ca. Công việc nhận thưởng được tick và lưu riêng tại “Công việc tính thưởng”.</InfoNote>
-        <div className="shift-checklist-tabs" role="tablist" aria-label="Chọn ca làm việc">
-          {STORE_CHECKLIST_TEMPLATES.map((template) => {
-            const selected = selectedShiftKey === template.key
-            const available = availableShiftKeys.has(template.key)
-            return <button
-              type="button"
-              role="tab"
-              aria-selected={selected}
-              aria-controls="employee-shift-checklist"
-              className={selected ? 'is-selected' : ''}
-              onClick={() => setShiftSelection({ scopeKey, key: template.key })}
-              key={template.key}
-            >
-              <strong>{template.name}</strong>
-              <small>{template.start}–{template.end}</small>
-              <span>{available ? 'Có công việc' : 'Chưa điểm danh'}</span>
-            </button>
-          })}
-        </div>
-        {!selectedShiftIsOpen && attendance && <InfoNote tone="orange">Chỉ ca đang điểm danh mới được tick và lưu. Hãy chọn <strong>{shiftTemplateOf(attendance)?.name || attendance.shiftName || 'ca đang mở'}</strong> để cập nhật.</InfoNote>}
-        <div className="task-checklist" id="employee-shift-checklist" role="tabpanel">
+        <InfoNote>Chọn ca làm việc để xem và cập nhật công việc được giao. Danh sách công việc không phụ thuộc vào giờ điểm danh.</InfoNote>
+        <InfoNote>Công việc nhận thưởng được tick và lưu riêng tại “Công việc tính thưởng”.</InfoNote>
+        <Field label="Chọn ca làm việc">
+          <Select value={selectedTaskShiftId} disabled={saving} onChange={(event) => setSelection({ scopeKey, id: event.target.value })}>
+            <option value="">Vui lòng chọn ca làm việc</option>
+            {shifts.map((shift) => <option key={shift.id} value={shift.id}>{shift.name || shift.id}{shift.start && shift.end ? ` · ${shift.start}–${shift.end}` : ''}</option>)}
+          </Select>
+        </Field>
+        {!selectedTaskShiftId && <InfoNote>Vui lòng chọn ca làm việc để xem công việc được giao</InfoNote>}
+        {context.error && <InfoNote tone="orange">{context.error}</InfoNote>}
+        {!shifts.length && <InfoNote tone="orange">Chưa có cấu hình ca làm việc hợp lệ cho cửa hàng.</InfoNote>}
+        <div className="task-checklist" id="employee-shift-checklist">
           {displayedTasks.map((task) => {
             const checked = statusFor(task)
             const stored = storedStatusFor(task)
@@ -393,24 +266,24 @@ export function EmployeeAssignedTasksPage() {
                 type="checkbox"
                 checked={checked}
                 disabled={!selectedShiftIsOpen || saving || stored}
-                onChange={(event) => setStatuses((current) => ({ ...current, [String(task.id)]: event.target.checked }))}
+                onChange={(event) => updateDraft({ statuses: { ...draft.statuses, [task.id]: event.target.checked } })}
               />
               <span className="task-checklist__title">{task.title || task.name || 'Công việc'}</span>
               <Badge tone={checked ? 'green' : 'orange'}>{stored ? 'Đã lưu' : checked ? 'Chờ lưu' : 'Chưa hoàn thành'}</Badge>
             </label>
           })}
-          {!displayedTasks.length && <InfoNote>Chưa có công việc bắt buộc cho ca này trong phạm vi hôm nay.</InfoNote>}
+          {selectedTaskShiftId && !context.error && !displayedTasks.length && <InfoNote>Không có công việc bắt buộc cho ca này trong ngày làm việc được phép truy cập.</InfoNote>}
         </div>
         {selectedShiftIsOpen && noteRequired && <Field label="Lý do công việc bắt buộc chưa hoàn thành" required hint="Không cần nhập cho công việc nhận thưởng tùy chọn." error={!incompleteReason.trim() ? 'Bắt buộc nhập lý do nếu còn công việc bắt buộc chưa hoàn thành.' : ''}>
-          <textarea value={incompleteReason} maxLength="1000" onChange={(event) => setIncompleteReason(event.target.value)} placeholder="Nêu rõ lý do công việc bắt buộc chưa hoàn thành" />
+          <textarea value={incompleteReason} maxLength="1000" disabled={saving} onChange={(event) => updateDraft({ reason: event.target.value })} placeholder="Nêu rõ lý do công việc bắt buộc chưa hoàn thành" />
         </Field>}
         <Button icon={Save} loading={saving} disabled={!ready || saving} onClick={submit}>LƯU KẾT QUẢ</Button>
       </Card>
       <Card title="Lịch sử gửi kết quả">
         <TableWrap>
-          <thead><tr><th>Thời gian</th><th>Lượt giao</th><th>Hoàn thành</th><th>Tỷ lệ</th><th>Ghi chú</th></tr></thead>
+          <thead><tr><th>Thời gian</th><th>Ca / Lượt giao</th><th>Hoàn thành</th><th>Tỷ lệ</th><th>Ghi chú</th></tr></thead>
           <tbody>
-            {history.map((event, index) => <tr key={`${event.assignmentId || 'assignment'}-${event.at || index}`}><td>{shortDateTime24(event.at)}</td><td>{event.assignmentId || '—'}</td><td>{event.completedTasks || 0}/{event.totalTasks || 0}</td><td><Badge tone={Number(event.completionRate) === 100 ? 'green' : 'orange'}>{Number(event.completionRate) || 0}%</Badge></td><td>{event.incompleteReason || 'Đã hoàn thành tất cả'}</td></tr>)}
+            {history.map((event, index) => <tr key={`${event.assignmentId || 'assignment'}-${event.at || index}`}><td>{shortDateTime24(event.at)}</td><td>{event.shiftName || event.shiftId || '—'} · {event.assignmentId || '—'}</td><td>{event.completedTasks || 0}/{event.totalTasks || 0}</td><td><Badge tone={Number(event.completionRate) === 100 ? 'green' : 'orange'}>{Number(event.completionRate) || 0}%</Badge></td><td>{event.incompleteReason || 'Đã hoàn thành tất cả'}</td></tr>)}
             {!history.length && <tr><td colSpan="5">Chưa có lần gửi kết quả công việc.</td></tr>}
           </tbody>
         </TableWrap>

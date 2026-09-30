@@ -104,4 +104,14 @@ describe('work reward batch client command', () => {
     )
     expect(screen.getByLabelText('Số bản ghi thưởng').textContent).toBe('2:1:1')
   })
+  it.each([[], [{ id: 'server-only', code: 'server.fixed', targetGroup: 'store', kind: 'FIXED_TASK', name: 'Việc do server cấu hình', amountVnd: 0 }]])('keeps a projected server catalog authoritative without a seed-version marker', async (catalog) => {
+    const state = remoteState()
+    delete state.staffWorkCatalogSeedVersion
+    state.workCatalogItems = catalog
+    api.apiBootstrapState.mockResolvedValue({ user: supportUser, state, policies: [], version: 1 })
+    render(<AppProvider><AppProbe ref={appRef} /></AppProvider>)
+    await act(async () => { await appRef.current.login('support-one', 'password') })
+    expect(appRef.current.workCatalogItems).toEqual(catalog)
+  })
+
 })
