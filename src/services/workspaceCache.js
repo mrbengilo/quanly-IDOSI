@@ -2,6 +2,8 @@
 // pass server session/version checks before it is rendered or used for writes.
 const SESSION_KEY = 'idosi-workspace-cache-session-v1'
 const LAST_KEY = 'idosi-workspace-cache-last-v1'
+// v2 excludes projections hydrated with client-side catalog seeds.
+const CACHE_FORMAT_VERSION = 2
 const MAX_ENTRIES = 40
 const MAX_AGE_MS = 12 * 60 * 60 * 1000
 let databasePromise
@@ -44,7 +46,7 @@ export const readWorkspaceCache = async (key = '') => {
       const request = db.transaction('views').objectStore('views').get([id, requestedKey])
       request.onsuccess = () => {
         const record = request.result
-        resolve(sessionId() === id && record?.savedAt > Date.now() - MAX_AGE_MS ? record.entry : null)
+        resolve(sessionId() === id && record?.formatVersion === CACHE_FORMAT_VERSION && record.savedAt > Date.now() - MAX_AGE_MS ? record.entry : null)
       }
       request.onerror = () => resolve(null)
     })
@@ -59,7 +61,7 @@ export const writeWorkspaceCache = async (key, entry) => {
     return await new Promise((resolve) => {
       const transaction = db.transaction('views', 'readwrite')
       const store = transaction.objectStore('views')
-      store.put({ sessionId: id, key, entry, savedAt: Date.now() })
+      store.put({ sessionId: id, key, entry, savedAt: Date.now(), formatVersion: CACHE_FORMAT_VERSION })
       // Discard abandoned tabs after twelve hours; keep at most forty views in
       // this tab. Neither quota failures nor eviction can affect server data.
       const expired = store.index('savedAt').openCursor(IDBKeyRange.upperBound(Date.now() - MAX_AGE_MS))

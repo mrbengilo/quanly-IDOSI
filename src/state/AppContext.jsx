@@ -1074,6 +1074,9 @@ const hydrateRemoteState = (remoteState, remoteUser, policyRecords = [], preferr
   const hydrated = migrateDomainState(normalized, { stores, imports: normalized.imports })
   return {
     ...hydrated,
+    // A screen projection may omit migration markers. Never append demo seeds
+    // to an authoritative server catalog while hydrating production data.
+    workCatalogItems: safeRemote.workCatalogItems,
     session,
     activeStoreId: resolveRemoteActiveStoreId({
       stores: hydrated.stores,
