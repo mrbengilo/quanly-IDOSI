@@ -55,6 +55,8 @@ Related resolver defects reproduced separately with synthetic fixtures:
   SQLite regression in one atomic `fix(tasks)` commit. These parts require the
   same contract and cannot be shipped separately.
 - T3 (depends T2): technical/evidence documentation in `docs(tasks)` commit.
+- T3b (browser finding, depends T2): preserve stale version for incomplete task
+  command cache and refresh immediately; `fix(tasks): refresh history after task commands`.
 - T4 (depends T2/T3): final gates → PR verify → merge → exact main verify →
   automatic VPS deployment → exact SHA/finalizer evidence → read-only smoke.
 
@@ -82,6 +84,7 @@ support metadata is supplied exclusively by the current attendance.
 | `src/pages/employee/EmployeeShiftOperations.jsx` | Accessible period expansion, explicit interval action, server-confirmed lock |
 | `src/pages/employee/EmployeeShiftOperations.test.jsx` | No write on expansion, no premature checklist/lock, double-click guard, correct submitted ID and locked interval |
 | `server/vps/task-shift-lock.test.js` | Real HTTP + SQLite repeated persisted rows and independent intervals; select/replay/save/restart, preserved payroll shift |
+| `src/state/AppContext.jsx`, `src/state/AppContext.activeStore.test.jsx` | Task command deltas do not include assignment history; cache retains the previous authoritative version until immediate scoped refresh, including navigation/reload before refresh |
 
 Targeted domain/component/SQLite suite: 51 tests passed. Added regressions failed
 on the original resolver, including the production-shaped SM TNV case. Existing
@@ -97,6 +100,15 @@ the pre-selection snapshot, reject unfinished tasks, and leave attendance open.
 Its regression now verifies exactly that error/state and a new checkout after
 re-reading; the complete four-test SQLite lock file passed again. No production
 checkout guard was changed. The final revision must pass the full Linux CI gate.
+
+Browser follow-up: real local select/save/reload exposed missing history in the
+restored cache despite the persisted/API history being complete. The task delta
+had incorrectly labeled the partial cached projection with the new command
+version; a fast reload could then skip its deferred authoritative refresh.
+The scoped cache fix has two red-before/green-after regressions (select/save).
+Related domain/UI/state/cache/SQLite follow-up: 118 tests PASS. Browser checks
+at 1366, 1920 and 390 pixels show no document overflow, keyboard focus is visible,
+and local selection/save/reload retains the exact interval and progress.
 
 ## Data and rollback
 

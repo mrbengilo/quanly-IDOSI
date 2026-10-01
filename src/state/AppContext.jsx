@@ -2169,6 +2169,8 @@ export function AppProvider({ children }) {
 
   const runRemoteDomainCommand = async (type, payload, idempotencyKey = `${type}:${crypto.randomUUID()}`) => {
     const remote = apiRef.current
+    const partialTaskResult = type === 'task.shift.select' || type === 'task.progress.save'
+    const previousProjectionVersion = Number(remote.hydratedVersion || 0)
     cancelPrefetch(remote)
     const reconcileProjection = ({ blocking = false } = {}) => loadCompleteRemoteProjection(remote.user, {
       kind: remote.projection === 'store' ? 'store' : 'global',
@@ -2211,7 +2213,9 @@ export function AppProvider({ children }) {
             storeId: remote.projectionStoreId,
             screen: remote.projectionScreen,
             period: remote.projectionPeriod,
-          }, next, remote.version)
+          // Task deltas omit assignment history. Until the authoritative read
+          // finishes, reload/navigation must treat this cached copy as stale.
+          }, next, partialTaskResult ? previousProjectionVersion : remote.version)
           return next
         })
       }
@@ -2228,7 +2232,7 @@ export function AppProvider({ children }) {
         }).finally(() => {
           currentRemote.domainReconciliations = Math.max(0, currentRemote.domainReconciliations - 1)
         })
-      }, remote.projection === 'store' ? 1_500 : 15_000)
+      }, partialTaskResult ? 0 : remote.projection === 'store' ? 1_500 : 15_000)
       return result
     } catch (error) {
       if (isRemoteSessionInvalid(error)) {
