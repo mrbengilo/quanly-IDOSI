@@ -12177,6 +12177,10 @@ describe('IDOSI Worker security primitives', () => {
   }, 30_000)
 
   it('manages products and custom attributes while preserving immutable order snapshots and summaries', async () => {
+    // The summary below reads period 2026-09; pin the clock so new orders land in it.
+    vi.useFakeTimers({ toFake: ['Date'] })
+    vi.setSystemTime(new Date('2026-09-15T10:00:00+07:00'))
+    onTestFinished(() => vi.useRealTimers())
     const env = { DB: new MemoryD1(), BOOTSTRAP_TOKEN: 'bootstrap-order-products-custom-fields' }
     const bootstrap = await worker.fetch(jsonRequest('https://idosi.example/api/bootstrap', {
       username: 'admin.products', password: 'admin-products-password',
