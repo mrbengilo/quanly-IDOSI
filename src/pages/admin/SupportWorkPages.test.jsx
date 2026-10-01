@@ -132,12 +132,12 @@ describe('support work screens', () => {
     }]
     mocked.app.workCatalogItems = [{
       id: 'VIO-HTKD-LATE', code: 'htkd.violation.late', kind: 'VIOLATION', targetGroup: 'business_support',
-      name: 'HTKD đi trễ', amountVnd: 6_000, active: true, sortOrder: 1, version: 1,
+      name: 'HTKD đi trễ', amountVnd: 0, violationPoints: 0.5, active: true, sortOrder: 1, version: 1,
     }]
     mocked.app.violations = [{
       id: 'VIO-HISTORY-1', targetUnit: 'business_support', employeeId: 'HTKD-001', employeeName: 'Nguyễn Hỗ Trợ',
       occurredOn: '2026-08-27', shiftId: 'support_am', shiftName: 'Ca sáng', title: 'HTKD đi trễ',
-      amountVnd: 6_000, status: 'ACTIVE', version: 1,
+      amountVnd: 0, violationPoints: 1.5, status: 'ACTIVE', version: 1,
     }]
     render(<MemoryRouter><AdminSupportWorkPage /></MemoryRouter>)
 
@@ -145,7 +145,9 @@ describe('support work screens', () => {
     expect(screen.getByText('Ghi nhận vi phạm')).toBeTruthy()
     expect(screen.getByLabelText('Ngày vi phạm')).toBeTruthy()
     expect(screen.getByLabelText('Nhân viên vi phạm')).toBeTruthy()
-    expect(screen.getByText('Tổng:').parentElement.textContent).toContain('−6,000 đ')
+    fireEvent.change(screen.getByLabelText('Kỳ đánh giá vi phạm'), { target: { value: '2026-08' } })
+    expect(screen.getByText('Tổng:').parentElement.textContent).toContain('1,5 điểm')
+    expect(screen.getByText('−0,5 điểm')).toBeTruthy()
     fireEvent.change(screen.getByLabelText('Ngày vi phạm'), { target: { value: '2026-08-28' } })
     expect(screen.getByText('Không có lịch sử phù hợp bộ lọc.')).toBeTruthy()
     fireEvent.change(screen.getByLabelText('Ngày vi phạm'), { target: { value: '' } })
