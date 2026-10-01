@@ -1,5 +1,5 @@
-import { taskShiftContext } from '../domain/taskShift.js'
-import { bindTaskShiftContext, mergeTaskShiftProgress } from '../domain/taskProgress.js'
+import { selectAttendanceTaskShift, taskShiftContext } from '../domain/taskShift.js'
+import { attendanceTaskShiftLock, bindTaskShiftContext, mergeTaskShiftProgress, TASK_SHIFT_LOCK_STATUS, taskShiftLockAllows } from '../domain/taskProgress.js'
 import { operationalIdentifierEntry, operationalIdentifierReferenceMatchesRecord, uid } from '../utils'
 
 // Loaded only when saving work; catalog resolution is not part of the login bundle.
@@ -29,8 +29,16 @@ export async function saveStoreTaskProgressForState(payload, {
   if (!openAttendance) return { ok: false, message: 'Bạn cần điểm danh và đang trong ca để lưu kết quả công việc.' }
   const storeId = String(openAttendance.storeId || employee.storeId || '')
   const date = String(openAttendance.date || openAttendance.workDate || '').slice(0, 10)
-  const manualContext = Object.hasOwn(payload, 'selectedTaskShiftId') ? taskShiftContext({ state, attendance: openAttendance, employeeId, selectedTaskShiftId: payload.selectedTaskShiftId }) : null
+  // Same lock as the server: store work needs the attendance's selected shift.
+  const lock = attendanceTaskShiftLock(openAttendance)
+  if (!Object.hasOwn(payload, 'selectedTaskShiftId') || lock.status === TASK_SHIFT_LOCK_STATUS.NONE) {
+    return { ok: false, code: 'TASK_SHIFT_SELECTION_REQUIRED', message: 'Cần chọn ca công việc cho lượt điểm danh này trước khi lưu kết quả.' }
+  }
+  const manualContext = taskShiftContext({ state, attendance: openAttendance, employeeId, selectedTaskShiftId: payload.selectedTaskShiftId })
   if (manualContext?.error) return { ok: false, code: manualContext.code, message: manualContext.error }
+  if (!taskShiftLockAllows(lock, manualContext.shift.id)) {
+    return { ok: false, code: 'TASK_SHIFT_LOCKED', message: 'Lượt điểm danh này đã khóa ca công việc khác.' }
+  }
   const shiftId = manualContext?.shift.id || String(openAttendance.shiftId || openAttendance.shift || '')
   const scopedTasks = manualContext?.tasks || storeTasksForAttendance({
     tasks: state.tasks,
@@ -192,4 +200,69 @@ export async function saveStoreTaskProgressForState(payload, {
   }))
   notify(`Đã lưu kết quả: hoàn thành ${completionRate}%.`)
   return { ok: true, completedTasks, totalTasks, completionRate, incompleteReason, submittedAt: timestamp }
+}
+
+const UNCERTAIN_COMMAND_CODES = new Set(['TIMEOUT', 'NETWORK_ERROR'])
+const REFRESH_AFTER_CODES = new Set(['TASK_SHIFT_ALREADY_SELECTED', 'TASK_SHIFT_LEGACY_MULTI_CONTEXT', 'OPEN_ATTENDANCE_REQUIRED', 'VERSION_CONFLICT'])
+
+// Records the single task shift of the actor's open attendance. A timeout or
+// lost connection is "unknown": the projection is re-read from the server and
+// the caller keeps the same idempotency key/payload for any retry.
+export async function selectTaskShiftForState(payload, {
+  remoteEnabled, state, notify, setState, runRemoteDomainCommand, refreshRemoteProjection, resolveEmployeeIdentifier, normalizeAuthRole, isOfficeUnit, isBusinessSupportUnit, isStoreManagerUnit, accountKey, resolveOpenAttendanceIdentifier, actorSnapshot,
+}) {
+  const employeeId = String(state.session?.employeeId || state.session?.code || '')
+  const employeeMatch = resolveEmployeeIdentifier(state.employees, employeeId)
+  if (employeeMatch.ambiguous) {
+    return { ok: false, code: 'EMPLOYEE_IDENTIFIER_COLLISION', message: 'Không thể xác định nhân viên vì có mã trùng nhau khi không phân biệt chữ hoa/thường.' }
+  }
+  const employee = employeeMatch.record
+  const role = normalizeAuthRole(state.session?.role)
+  const employeeUnit = String(employee?.unit || employee?.unitType || employee?.department || '').trim()
+  if (role !== 'employee' || !employee || isOfficeUnit(employeeUnit) || isBusinessSupportUnit(employeeUnit) || isStoreManagerUnit(employeeUnit)) {
+    return { ok: false, code: 'ROLE_FORBIDDEN', message: 'Chức năng này chỉ dành cho nhân viên cửa hàng.' }
+  }
+  const attendanceMatch = resolveOpenAttendanceIdentifier(state.attendance, { employeeId: accountKey(employee), attendanceId: String(payload.attendanceId || '') })
+  if (attendanceMatch.ambiguous) {
+    return { ok: false, code: 'ATTENDANCE_IDENTIFIER_COLLISION', message: 'Không thể xác định ca đang mở vì có mã chấm công trùng nhau.' }
+  }
+  const openAttendance = attendanceMatch.record
+  if (!openAttendance) return { ok: false, code: 'OPEN_ATTENDANCE_REQUIRED', message: 'Bạn cần điểm danh trước khi chọn ca công việc.' }
+  const selectedTaskShiftId = String(payload.selectedTaskShiftId || '').trim()
+  if (remoteEnabled) {
+    try {
+      const result = await runRemoteDomainCommand('task.shift.select', {
+        attendanceId: openAttendance.id,
+        selectedTaskShiftId,
+      }, String(payload.idempotencyKey || `task-shift:${crypto.randomUUID()}`))
+      return { ok: true, ...result }
+    } catch (error) {
+      const uncertain = UNCERTAIN_COMMAND_CODES.has(error?.code) || Number(error?.status) >= 500
+      if (uncertain || REFRESH_AFTER_CODES.has(error?.code)) {
+        try {
+          await refreshRemoteProjection?.()
+        } catch {
+          // The page keeps showing "unknown" instead of guessing a result.
+        }
+      }
+      if (uncertain) {
+        return { ok: false, uncertain: true, code: error?.code || 'UNKNOWN', message: 'Chưa xác định được kết quả chọn ca do kết nối gián đoạn. Trạng thái đã được tải lại từ máy chủ; nếu ca vẫn chưa được khóa, hãy bấm lại đúng ca vừa chọn.' }
+      }
+      return { ok: false, code: error?.code, message: error?.message || 'Không thể chọn ca công việc.' }
+    }
+  }
+  const timestamp = new Date().toISOString()
+  const selection = selectAttendanceTaskShift({
+    state, attendance: openAttendance, employeeId, selectedTaskShiftId, now: timestamp, actor: actorSnapshot(state.session),
+  })
+  if (selection.error) return { ok: false, code: selection.code, message: selection.error }
+  if (selection.existing) return { ok: true, existing: true, attendance: openAttendance }
+  setState((current) => ({
+    ...current,
+    attendance: current.attendance.map((record) => record.id === openAttendance.id ? selection.attendance : record),
+    tasks: [...current.tasks, ...selection.newTasks.filter((task) => !current.tasks.some((row) => row.id === task.id))],
+    stateVersion: current.stateVersion + 1,
+  }))
+  notify?.(`Đã chọn ${selection.slot.label}.`)
+  return { ok: true, attendance: selection.attendance }
 }

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { taskShiftContext, bindTaskShiftContext, mergeTaskShiftProgress, taskShiftChoices } from './taskShift'
+import { taskShiftContext, bindTaskShiftContext, mergeTaskShiftProgress, taskShiftChoices, taskShiftSlots, selectAttendanceTaskShift, attendanceTaskShiftLock, taskIsAttendanceShiftObligation, taskProgressForObligations, taskShiftLockedTaskIds } from './taskShift'
 
 const fixture = (checkIn = '16:48') => ({
   stores: [{ id: 'S1' }, { id: 'S2' }], employees: [{ id: 'E1', code: 'NV1' }, { id: 'E2' }],
@@ -123,6 +123,96 @@ describe('explicit task shift scope', () => {
     expect(context(state).code).toBe('TASK_IDENTIFIER_COLLISION')
     state.tasks = [{ ...generated, deletedAt: '2026-09-29' }]
     expect(context(state).code).toBe('TASK_IDENTIFIER_COLLISION')
+  })
+
+  it('maps three slots to configured shifts with specificity and disables missing or ambiguous ones', () => {
+    const state = fixture()
+    expect(taskShiftSlots(state, 'S1', '2026-09-29').map((slot) => [slot.key, slot.status, slot.shift?.id])).toEqual([
+      ['morning', 'ready', 'ca1'], ['afternoon', 'ready', 'ca2'], ['night', 'ready', 'ca3'],
+    ])
+    // Generic (store-less) definitions lose to the store's own; date-specific wins on its date only.
+    state.shiftDefinitions.push({ id: 'global-am', name: 'Ca Sáng' }, { id: 'pm-29', storeId: 'S1', date: '2026-09-29', name: 'Ca Chiều' })
+    expect(taskShiftSlots(state, 'S1', '2026-09-29').map((slot) => slot.shift?.id)).toEqual(['ca1', 'pm-29', 'ca3'])
+    expect(taskShiftSlots(state, 'S1', '2026-09-30').map((slot) => slot.shift?.id)).toEqual(['ca1', 'ca2', 'ca3'])
+    state.shiftDefinitions.push({ id: 'night-2', storeId: 'S1', name: 'Ca tối 2', start: '17:00', end: '21:00' })
+    expect(taskShiftSlots(state, 'S1', '2026-09-29')[2]).toMatchObject({ status: 'ambiguous', shift: null })
+    state.shiftDefinitions = state.shiftDefinitions.filter((shift) => !['ca1', 'global-am'].includes(shift.id))
+    state.workCatalogItems = state.workCatalogItems.filter((item) => item.shiftId !== 'ca1')
+    expect(taskShiftSlots(state, 'S1', '2026-09-29')[0]).toMatchObject({ status: 'missing', shift: null })
+  })
+  it('selects one shift per attendance without completing work or touching the payroll shift', () => {
+    const state = fixture()
+    const attendance = state.attendance[0]
+    const before = structuredClone(state)
+    expect(attendanceTaskShiftLock(attendance).status).toBe('none')
+    const result = selectAttendanceTaskShift({ state, attendance, employeeId: 'E1', selectedTaskShiftId: 'ca2', now: '2026-09-29T10:00:00.000Z' })
+    expect(state).toEqual(before)
+    expect(result.existing).toBe(false)
+    expect(result.attendance).toMatchObject({ shiftId: 'ca3', taskShiftSelection: { shiftId: 'ca2', slot: 'afternoon', attendanceId: 'A1' },
+      taskShiftContexts: [{ shiftId: 'ca2', taskIds: [result.newTasks[0].id] }] })
+    expect(result.newTasks.map((task) => [task.catalogItemId, task.completedBy])).toEqual([['CAT-ca2', {}]])
+    const locked = { ...state, attendance: [result.attendance], tasks: result.newTasks }
+    const lock = attendanceTaskShiftLock(result.attendance)
+    expect(lock).toMatchObject({ status: 'selected', shiftId: 'ca2', legacy: false })
+    expect(selectAttendanceTaskShift({ state: locked, attendance: result.attendance, employeeId: 'E1', selectedTaskShiftId: 'CA2', now: 'x' }).existing).toBe(true)
+    expect(selectAttendanceTaskShift({ state: locked, attendance: result.attendance, employeeId: 'E1', selectedTaskShiftId: 'ca3', now: 'x' }).code).toBe('TASK_SHIFT_ALREADY_SELECTED')
+    expect(selectAttendanceTaskShift({ state, attendance: { ...attendance, checkOutAt: 'x' }, employeeId: 'E1', selectedTaskShiftId: 'ca2', now: 'x' }).code).toBe('OPEN_ATTENDANCE_REQUIRED')
+    expect(selectAttendanceTaskShift({ state, attendance, employeeId: 'E2', selectedTaskShiftId: 'ca2', now: 'x' }).code).toBe('TASK_SCOPE_FORBIDDEN')
+    // A configured non-slot shift (overnight custom) is valid config but not one of the three buttons.
+    expect(selectAttendanceTaskShift({ state, attendance, employeeId: 'E1', selectedTaskShiftId: 'custom', now: 'x' }).code).toBe('TASK_SHIFT_INVALID')
+  })
+  it('treats one legacy context as the lock and keeps several legacy contexts as fixed obligations', () => {
+    const single = { id: 'A', taskShiftContexts: [{ shiftId: 'ca2', taskIds: ['t2'] }] }
+    const multi = { id: 'A', taskShiftContexts: [{ shiftId: 'ca2', taskIds: ['t2'] }, { shiftId: 'ca3', taskIds: ['t3'] }] }
+    expect(attendanceTaskShiftLock(single)).toMatchObject({ status: 'selected', shiftId: 'ca2', legacy: true })
+    expect(attendanceTaskShiftLock(multi)).toMatchObject({ status: 'legacy-multi', shiftIds: ['ca2', 'ca3'] })
+    const state = fixture()
+    const legacy = { ...state.attendance[0], ...multi, id: 'A1' }
+    expect(selectAttendanceTaskShift({ state, attendance: legacy, employeeId: 'E1', selectedTaskShiftId: 'ca2', now: 'x' }).code).toBe('TASK_SHIFT_LEGACY_MULTI_CONTEXT')
+    state.tasks = [{ id: 't2', storeId: 'S1', date: '2026-09-29', shiftId: 'ca2', employeeIds: ['E1'], required: true, completedBy: {} }]
+    const adopted = selectAttendanceTaskShift({ state, attendance: { ...legacy, taskShiftContexts: single.taskShiftContexts }, employeeId: 'E1', selectedTaskShiftId: 'ca2', now: 'x' })
+    expect(adopted.attendance.taskShiftContexts).toEqual(single.taskShiftContexts)
+    expect(adopted.attendance.taskShiftSelection).toMatchObject({ shiftId: 'ca2', legacyContext: true })
+  })
+  it('owes the locked shift instead of an unselected check-in snapshot and keeps the old rule otherwise', () => {
+    const snapshotTask = { id: 'snap', shiftId: 'ca3' }
+    const lockedTask = { id: 'locked', shiftId: 'ca2' }
+    const shiftless = { id: 'free' }
+    const unlocked = { id: 'A1', shiftId: 'ca3', checklistSnapshot: { tasks: [{ id: 'snap' }] } }
+    const matchesAttendanceShift = (id) => id === 'ca3'
+    expect([snapshotTask, lockedTask, shiftless].map((task) => taskIsAttendanceShiftObligation({ task, attendance: unlocked, matchesAttendanceShift }))).toEqual([true, false, true])
+    const locked = { ...unlocked, taskShiftSelection: { shiftId: 'ca2' }, taskShiftContexts: [{ shiftId: 'ca2', taskIds: ['locked'] }] }
+    expect([snapshotTask, lockedTask, shiftless].map((task) => taskIsAttendanceShiftObligation({ task, attendance: locked, matchesAttendanceShift, lockedTaskIds: new Set(['free']) }))).toEqual([false, true, true])
+    expect(taskProgressForObligations({ incompleteTaskIds: ['snap', 'locked'], incompleteReason: 'x' }, ['locked']).incompleteTaskIds).toEqual(['locked'])
+  })
+  it('lists the locked shift tasks including later explicit and shift-less assignments', () => {
+    const state = fixture()
+    const result = selectAttendanceTaskShift({ state, attendance: state.attendance[0], employeeId: 'E1', selectedTaskShiftId: 'ca2', now: 'x' })
+    const later = { id: 'later', storeId: 'S1', date: '2026-09-29', shiftId: 'ca2', employeeIds: ['E1'], required: true }
+    const free = { id: 'free', storeId: 'S1', date: '2026-09-29', employeeIds: ['E1'], required: true }
+    const other = { id: 'other', storeId: 'S1', date: '2026-09-29', shiftId: 'ca1', employeeIds: ['E1'], required: true }
+    const next = { ...state, attendance: [result.attendance], tasks: [...result.newTasks, later, free, other] }
+    expect([...taskShiftLockedTaskIds({ state: next, attendance: result.attendance, employeeId: 'E1' })].toSorted())
+      .toEqual([result.newTasks[0].id, 'free', 'later'].toSorted())
+  })
+
+  it('reuses a catalog row already captured for the attendance instead of generating a duplicate checklist', () => {
+    const state = fixture()
+    // Legacy check-in captured the afternoon item under the attendance shift id.
+    state.tasks = [{ id: 'A1_CAT-ca2', checklistAttendanceId: 'A1', catalogItemId: 'CAT-ca2', catalogKind: 'FIXED_TASK',
+      catalogSnapshot: { shiftId: 'ca3' }, storeId: 'S1', employeeIds: ['E1'], date: '2026-09-29', shiftId: 'ca3', required: true, completedBy: {} }]
+    const selected = selectAttendanceTaskShift({ state, attendance: state.attendance[0], employeeId: 'E1', selectedTaskShiftId: 'ca2', now: 'x' })
+    expect(selected.context.tasks.map((task) => task.id)).toEqual(['A1_CAT-ca2'])
+    expect(selected.newTasks).toEqual([])
+    expect(selected.attendance.taskShiftContexts).toEqual([{ shiftId: 'ca2', shiftName: 'Ca Chiều', taskIds: ['A1_CAT-ca2'] }])
+  })
+  it('places a custom configured shift by its configured start below canonical matches', () => {
+    const state = fixture()
+    state.shiftDefinitions.push({ id: 'flex', storeId: 'S1', name: 'Ca linh hoạt', start: '13:30', end: '20:00' })
+    expect(taskShiftSlots(state, 'S1', '2026-09-29')[1].shift.id).toBe('ca2')
+    state.shiftDefinitions = state.shiftDefinitions.filter((shift) => shift.id !== 'ca2')
+    state.workCatalogItems = state.workCatalogItems.filter((item) => item.shiftId !== 'ca2')
+    expect(taskShiftSlots(state, 'S1', '2026-09-29')[1].shift.id).toBe('flex')
   })
 
 })

@@ -1,5 +1,6 @@
 import { activeWorkCatalogItems, WORK_CATALOG_KIND } from './workCatalog.js'
 import { resolveStoreChecklistCatalogShift } from './storeShiftChecklist.js'
+import { attendanceTaskShiftLock, bindTaskShiftContext, TASK_SHIFT_LOCK_STATUS, taskShiftLockAllows } from './taskProgress.js'
 
 const text = (value) => String(value || '').trim()
 const folded = (value) => text(value).toLowerCase()
@@ -63,7 +64,9 @@ export const taskShiftContext = ({ state, attendance, employeeId, selectedTaskSh
   if (!/^\d{4}-\d{2}-\d{2}$/u.test(date)) return fail('Ngày làm việc không hợp lệ.')
   const canonical = resolveStoreChecklistCatalogShift({ selectedTaskShiftId: shift.id, id: shift.id, name: shift.name, start: shift.start, end: shift.end })
   const shiftMatches = (reference) => {
-    if (!text(reference)) return false
+    // Explicit assignments without a work shift belong to whichever single
+    // shift this attendance works, matching the historical checkout rule.
+    if (!text(reference)) return true
     const configured = resolve(shifts, reference)
     if (configured === shift) return true
     // Catalog-only canonical choices are aliases for a configured shift, while
@@ -98,8 +101,22 @@ export const taskShiftContext = ({ state, attendance, employeeId, selectedTaskSh
     return fail('Danh mục công việc không hợp lệ.', 'WORK_CATALOG_DATA_INVALID')
   }
   const knownCatalogIds = new Set(persisted.map((task) => task.catalogItemId))
+  // A catalog item already captured for this attendance (for example by the
+  // check-in snapshot under another shift id/alias) is the same work: reuse
+  // that row instead of generating an equivalent duplicate checklist.
+  const capturedByCatalogId = new Map()
+  for (const task of state.tasks || []) {
+    if (task.deletedAt || task.active === false || !isMandatoryTask(task) || !text(task.catalogItemId)) continue
+    if (!text(task.checklistAttendanceId) || !matches(state.attendance || [attendance], attendance, task.checklistAttendanceId)) continue
+    if (!matches(state.stores, store, task.storeId) || text(task.date || task.workDate).slice(0, 10) !== date) continue
+    const assignees = [task.employeeId, ...(task.employeeIds || []), ...(task.assigneeIds || []), ...(task.assignedEmployeeIds || [])].filter(Boolean)
+    if (!assignees.some((id) => matches(state.employees, employee, id))) continue
+    if (!capturedByCatalogId.has(task.catalogItemId)) capturedByCatalogId.set(task.catalogItemId, task)
+  }
+  const reused = definitions.filter((item) => !knownCatalogIds.has(item.id) && capturedByCatalogId.has(item.id))
+    .map((item) => capturedByCatalogId.get(item.id))
   const assignmentId = `task_shift_${encodeURIComponent(attendance.id)}_${encodeURIComponent(shift.id)}`
-  const generated = definitions.filter((item) => !knownCatalogIds.has(item.id)).map((item) => ({
+  const generated = definitions.filter((item) => !knownCatalogIds.has(item.id) && !capturedByCatalogId.has(item.id)).map((item) => ({
     id: `${assignmentId}_${encodeURIComponent(item.id)}`, assignmentId,
     checklistAttendanceId: attendance.id, taskShiftId: shift.id,
     catalogItemId: item.id, catalogKind: item.kind, catalogVersion: item.version,
@@ -111,7 +128,106 @@ export const taskShiftContext = ({ state, attendance, employeeId, selectedTaskSh
   if (generated.some((task) => (state.tasks || []).some((row) => row.id === task.id))) {
     return fail('Mã công việc mới trùng dữ liệu đã tồn tại; cần quản lý xử lý.', 'TASK_IDENTIFIER_COLLISION')
   }
-  return { shift, tasks: [...persisted, ...generated], date }
+  return { shift, tasks: [...persisted, ...reused, ...generated], date }
 }
 
-export { bindTaskShiftContext, taskBelongsToAttendanceObligations, mergeTaskShiftProgress } from './taskProgress.js'
+export const TASK_SHIFT_SLOTS = Object.freeze([
+  Object.freeze({ key: 'morning', label: 'Ca sáng' }),
+  Object.freeze({ key: 'afternoon', label: 'Ca chiều' }),
+  Object.freeze({ key: 'night', label: 'Ca tối' }),
+])
+
+const slotKeyOf = (shift) => resolveStoreChecklistCatalogShift({
+  selectedTaskShiftId: shift.id, id: shift.id, name: shift.name, start: shift.start, end: shift.end,
+})?.templateKey || ''
+
+const ownSupportShift = (state, shift, attendance) => Boolean(attendance?.supportTransferId)
+  && folded(shift.id) === folded(attendance.shiftId || attendance.shift)
+  && !(state.shiftDefinitions || []).includes(shift)
+
+// A configured shift with custom name/hours and no canonical template is placed
+// by its configured start (configuration, not check-in or system time).
+const configuredStartSlot = (shift) => {
+  const match = text(shift?.start).match(/^(\d{1,2}):(\d{2})$/u)
+  if (!match) return ''
+  const minutes = Number(match[1]) * 60 + Number(match[2])
+  return minutes < 12 * 60 ? 'morning' : minutes < 17 * 60 ? 'afternoon' : 'night'
+}
+
+// Specificity, not a guess: the attendance's own support-transfer shift, then a
+// store/date-specific definition, then a canonical (alias/template) match over a
+// start-time placement. Equal top precedence is ambiguous and disabled.
+const slotRank = (state, shift, attendance) => {
+  if (ownSupportShift(state, shift, attendance)) return 100
+  const canonical = slotKeyOf(shift) ? 1 : 0
+  if (!(state.shiftDefinitions || []).includes(shift)) return canonical
+  return (1 + (text(shift.storeId) ? 2 : 0) + (text(shift.date) ? 1 : 0)) * 2 + canonical
+}
+
+export const taskShiftSlots = (state, storeId, date = '', attendance = null) => {
+  const choices = taskShiftChoices(state, storeId, date)
+  const configured = new Set(state.shiftDefinitions || [])
+  const keyOf = (shift) => slotKeyOf(shift)
+    || (configured.has(shift) || ownSupportShift(state, shift, attendance) ? configuredStartSlot(shift) : '')
+  return TASK_SHIFT_SLOTS.map((slot) => {
+    const candidates = choices.filter((shift) => keyOf(shift) === slot.key)
+    if (!candidates.length) return { ...slot, status: 'missing', shift: null }
+    const topRank = Math.max(...candidates.map((shift) => slotRank(state, shift, attendance)))
+    const best = candidates.filter((shift) => slotRank(state, shift, attendance) === topRank)
+    const ids = new Set(best.map((shift) => folded(shift.id)))
+    if (best.length !== 1 || ids.size !== 1) return { ...slot, status: 'ambiguous', shift: null }
+    return { ...slot, status: 'ready', shift: best[0] }
+  })
+}
+
+export const taskShiftSlotFor = (state, storeId, date, shiftId, attendance = null) => taskShiftSlots(state, storeId, date, attendance)
+  .find((slot) => slot.shift && folded(slot.shift.id) === folded(shiftId)) || null
+
+// Task ids the locked shift currently shows (persisted rows only). Null when the
+// attendance has no single selected lock or the context cannot be resolved.
+export const taskShiftLockedTaskIds = ({ state, attendance, employeeId }) => {
+  const lock = attendanceTaskShiftLock(attendance)
+  if (lock.status !== TASK_SHIFT_LOCK_STATUS.SELECTED) return null
+  const context = taskShiftContext({ state, attendance, employeeId, selectedTaskShiftId: lock.shiftId })
+  if (context.error) return new Set()
+  const persisted = new Set((state.tasks || []).map((task) => task.id))
+  return new Set(context.tasks.filter((task) => persisted.has(task.id)).map((task) => task.id))
+}
+
+// Pure validation + next attendance for the `task.shift.select` command and the
+// local demo fallback. It never marks work done, creates rewards or changes the
+// attendance (payroll) shift; it records one shift and binds its obligations.
+export const selectAttendanceTaskShift = ({ state, attendance, employeeId, selectedTaskShiftId, now, actor = null }) => {
+  const fail = (code, message, status = 409, details = null) => ({ error: message, code, status, details })
+  if (!attendance || attendance.deletedAt || attendance.checkOutAt || attendance.checkOut) {
+    return fail('OPEN_ATTENDANCE_REQUIRED', 'Bạn cần điểm danh và đang trong ca để chọn ca công việc.')
+  }
+  const lock = attendanceTaskShiftLock(attendance)
+  if (lock.status === TASK_SHIFT_LOCK_STATUS.LEGACY_MULTI) {
+    return fail('TASK_SHIFT_LEGACY_MULTI_CONTEXT', 'Lượt điểm danh này đã lưu công việc của nhiều ca trước khi áp dụng quy tắc một ca; chỉ được cập nhật các ca đã lưu.', 409, { shiftIds: lock.shiftIds })
+  }
+  const date = text(attendance.date || attendance.workDate).slice(0, 10)
+  const context = taskShiftContext({ state, attendance, employeeId, selectedTaskShiftId })
+  if (context.error) return fail(context.code, context.error, context.code === 'TASK_SCOPE_FORBIDDEN' ? 403 : 409)
+  const slot = taskShiftSlotFor(state, attendance.storeId, date, context.shift.id, attendance)
+  if (!slot) return fail('TASK_SHIFT_INVALID', 'Ca không thuộc Ca sáng, Ca chiều hoặc Ca tối hợp lệ của cửa hàng hôm nay.')
+  if (lock.status === TASK_SHIFT_LOCK_STATUS.SELECTED && !taskShiftLockAllows(lock, context.shift.id)) {
+    return fail('TASK_SHIFT_ALREADY_SELECTED', 'Lượt điểm danh này đã chọn ca công việc khác; không thể đổi ca.', 409, { shiftId: lock.shiftId })
+  }
+  if (attendance.taskShiftSelection?.shiftId) return { existing: true, shift: context.shift, slot, context, attendance, newTasks: [] }
+  const existingIds = new Set((state.tasks || []).map((task) => task.id))
+  const newTasks = context.tasks.filter((task) => !existingIds.has(task.id)).map((task) => ({ ...task, createdAt: now, updatedAt: now }))
+  const alreadyBound = (attendance.taskShiftContexts || []).some((entry) => folded(entry.shiftId) === folded(context.shift.id))
+  const next = {
+    ...(alreadyBound ? attendance : bindTaskShiftContext(attendance, context)),
+    taskShiftSelection: {
+      attendanceId: attendance.id, shiftId: context.shift.id, shiftName: context.shift.name || slot.label,
+      slot: slot.key, selectedAt: now, ...(actor ? { selectedBy: actor } : {}),
+      ...(lock.legacy ? { legacyContext: true } : {}),
+    },
+    updatedAt: now,
+  }
+  return { existing: false, shift: context.shift, slot, context, attendance: next, newTasks, date }
+}
+
+export { bindTaskShiftContext, taskBelongsToAttendanceObligations, mergeTaskShiftProgress, attendanceTaskShiftLock, taskShiftLockAllows, taskIsAttendanceShiftObligation, taskProgressForObligations, TASK_SHIFT_LOCK_STATUS } from './taskProgress.js'

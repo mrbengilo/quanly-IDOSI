@@ -1,4 +1,4 @@
-import { taskBelongsToAttendanceObligations } from '../domain/taskProgress'
+import { taskIsAttendanceShiftObligation } from '../domain/taskProgress'
 /* eslint-disable react-refresh/only-export-components */
 import { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react'
 import {
@@ -840,8 +840,11 @@ export const storeTasksForAttendance = ({
       attendance,
       checklistAttendanceId,
     )) return false
-    const taskShiftId = String(task.shiftId || task.shift || '')
-    if (taskShiftId && !operationalIdentifierReferenceMatchesRecord(shiftRecords, scopedShift, taskShiftId) && !taskBelongsToAttendanceObligations(task, attendance)) return false
+    if (!taskIsAttendanceShiftObligation({
+      task,
+      attendance,
+      matchesAttendanceShift: (taskShiftId) => operationalIdentifierReferenceMatchesRecord(shiftRecords, scopedShift, taskShiftId),
+    })) return false
     const assignmentId = String(task.assignmentId || task.taskAssignmentId || '').trim()
     if (assignmentId && taskAssignmentHistory.length) {
       const assignmentMatch = resolveRecordIdentifier(
@@ -1588,7 +1591,7 @@ const remoteCommandResultPatches = (type, result) => {
     add('supportSchedulePresetHistory', result.history)
   } else if (type.startsWith('support_schedule.')) add('supportWorkSchedules', result.schedule || result.schedules)
   if (type === 'task.done' || type === 'task.set_done') add('tasks', result.task)
-  if (type === 'task.progress.save') {
+  if (type === 'task.progress.save' || type === 'task.shift.select') {
     add('tasks', result.tasks)
     add('attendance', result.attendance)
   }
@@ -3314,6 +3317,30 @@ export function AppProvider({ children }) {
     })
     notify('Đã lưu chi phí trong ca.')
     return { ok: true, expense }
+  }
+
+  // Authoritative re-read used when a command outcome is unknown (timeout or
+  // lost connection): the UI must reflect the server, never assume either way.
+  const refreshRemoteProjection = async () => {
+    const remote = apiRef.current
+    if (!remote.enabled) return
+    await loadCompleteRemoteProjection(remote.user, {
+      kind: remote.projection === 'store' ? 'store' : 'global',
+      storeId: remote.projectionStoreId,
+      screen: remote.projectionScreen,
+      period: remote.projectionPeriod,
+      preferredActiveStoreId: activeStoreIdRef.current,
+      force: true,
+      blocking: true,
+    })
+  }
+
+  const selectTaskShift = async (payload = {}) => {
+    const { selectTaskShiftForState } = await import('./storeTaskProgress')
+    return selectTaskShiftForState(payload, {
+      remoteEnabled: apiRef.current.enabled,
+      state, notify, setState, runRemoteDomainCommand, refreshRemoteProjection, resolveEmployeeIdentifier, normalizeAuthRole, isOfficeUnit, isBusinessSupportUnit, isStoreManagerUnit, accountKey, resolveOpenAttendanceIdentifier, actorSnapshot,
+    })
   }
 
   const saveStoreTaskProgress = async (payload = {}) => {
@@ -6708,6 +6735,7 @@ export function AppProvider({ children }) {
     setTaskDone,
     addShiftExpense,
     saveStoreTaskProgress,
+    selectTaskShift,
     replaceTasks,
     assignSupportWork,
     updateSupportWork,

@@ -115,8 +115,13 @@ describe('employee active-shift context', () => {
       catalogKind: 'FIXED_TASK', completedBy: {},
     }]
 
-    renderTasks()
-    fireEvent.change(screen.getByRole('combobox', { name: 'Chọn ca làm việc' }), { target: { value: 'SUPPORT_TRANSFER_TRANSFER-BC-01' } })
+    mocked.app.selectTaskShift = vi.fn()
+    const view = renderTasks()
+    // The custom support window (08:15) maps to Ca sáng by its configured start.
+    fireEvent.click(screen.getByRole('button', { name: /Ca sáng/u }))
+    expect(mocked.app.selectTaskShift).toHaveBeenCalledWith(expect.objectContaining({ selectedTaskShiftId: 'SUPPORT_TRANSFER_TRANSFER-BC-01' }))
+    mocked.app.attendance = [{ ...mocked.app.attendance[0], taskShiftSelection: { shiftId: 'SUPPORT_TRANSFER_TRANSFER-BC-01' } }]
+    view.rerender(<MemoryRouter initialEntries={['/employee/tasks']}><EmployeeAssignedTasksPage /></MemoryRouter>)
 
     const checkbox = screen.getByRole('checkbox', { name: /Hoàn tất công việc tại cửa hàng C/u })
     expect(checkbox.disabled).toBe(false)

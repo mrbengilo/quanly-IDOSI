@@ -8342,7 +8342,8 @@ describe('IDOSI Worker security primitives', () => {
         transfer: 0,
         orderCount: 1,
       }],
-      tasks: [{ id: 'TASK-01', storeId: 'S01', employeeId: 'E01', title: 'Kiểm kê', completedBy: { e01: false } }],
+      // Optional (non-mandatory) work: mandatory store work is gated by the attendance task-shift lock.
+      tasks: [{ id: 'TASK-01', storeId: 'S01', employeeId: 'E01', title: 'Kiểm kê', required: false, completedBy: { e01: false } }],
       orderAudit: [],
       auditLogs: [],
       notifications: [],
@@ -9373,17 +9374,26 @@ describe('IDOSI Worker security primitives', () => {
       })
       const attendanceId = checkedInBody.attendance.id
       const checklistTasks = checkedInBody.attendance.checklistSnapshot.tasks
+      // One attendance owns one task shift; select it before saving work.
+      const storeShiftLocked = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+        type: 'task.shift.select', expectedVersion: 6,
+        payload: { attendanceId, selectedTaskShiftId: 'SHIFT-AM' },
+      }, { ...employeeAuthorization, 'idempotency-key': 'catalog-store-shift-lock' }), env)
+      expect(storeShiftLocked.status).toBe(200)
+      expect(await storeShiftLocked.json()).toMatchObject({ version: 7, taskShiftSelection: { shiftId: 'SHIFT-AM' } })
+      // Reward work is saved in its own flow; the locked checklist holds mandatory work only.
       const progressTasks = [
-        ...storeAssignedBody.tasks.map((task) => ({
+        ...storeAssignedBody.tasks.filter((task) => task.id !== 'STORE-REWARD-ASSIGNED').map((task) => ({
           id: task.id,
           completed: task.id === 'STORE-FIXED-ASSIGNED' ? true : task.id === 'STORE-MANUAL-ASSIGNED',
         })),
-        ...checklistTasks.map((task) => ({ id: task.id, completed: task.required === true })),
+        ...checklistTasks.filter((task) => task.required === true).map((task) => ({ id: task.id, completed: true })),
       ]
       const storeFixedReasonRequired = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
-        type: 'task.progress.save', expectedVersion: 6,
+        type: 'task.progress.save', expectedVersion: 7,
         payload: {
           attendanceId,
+          selectedTaskShiftId: 'SHIFT-AM',
           tasks: progressTasks.map((task) => task.id === 'STORE-FIXED-ASSIGNED' ? { ...task, completed: false } : task),
         },
       }, { ...employeeAuthorization, 'idempotency-key': 'catalog-store-fixed-reason-required' }), env)
@@ -9393,15 +9403,15 @@ describe('IDOSI Worker security primitives', () => {
       })
 
       const progressSaved = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
-        type: 'task.progress.save', expectedVersion: 6,
-        payload: { attendanceId, tasks: progressTasks },
+        type: 'task.progress.save', expectedVersion: 7,
+        payload: { attendanceId, selectedTaskShiftId: 'SHIFT-AM', tasks: progressTasks },
       }, { ...employeeAuthorization, 'idempotency-key': 'catalog-store-rewards-optional' }), env)
       expect(progressSaved.status).toBe(200)
       expect(await progressSaved.json()).toMatchObject({
-        version: 7,
+        version: 8,
         totalTasks: 3, completedTasks: 3, completionRate: 100,
         requiredTasks: 3, completedRequiredTasks: 3,
-        rewardTasks: 2, completedRewardTasks: 0, incompleteReason: '',
+        rewardTasks: 0, completedRewardTasks: 0, incompleteReason: '',
         assignments: expect.arrayContaining([
           expect.objectContaining({ assignmentId: storeAssignedBody.assignmentId, requiredTasks: 2, completedRequiredTasks: 2 }),
         ]),
@@ -9409,7 +9419,7 @@ describe('IDOSI Worker security primitives', () => {
 
       vi.setSystemTime(new Date('2026-08-26T10:00:00.000Z'))
       const checkedOut = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
-        type: 'attendance.check_out', expectedVersion: 7,
+        type: 'attendance.check_out', expectedVersion: 8,
         payload: {
           attendanceId, cashRevenue: 0, transferRevenue: 0,
           location: { latitude: 10.8, longitude: 106.7, accuracy: 8 },
@@ -9417,7 +9427,7 @@ describe('IDOSI Worker security primitives', () => {
       }, { ...employeeAuthorization, 'idempotency-key': 'catalog-store-check-out-with-rewards-open' }), env)
       expect(checkedOut.status).toBe(200)
       expect(await checkedOut.json()).toMatchObject({
-        version: 8,
+        version: 9,
         attendance: { id: attendanceId, incompleteTaskReason: null, incompleteTasksSnapshot: [] },
       })
 
@@ -11362,25 +11372,32 @@ describe('IDOSI Worker security primitives', () => {
       expect(checkedIn.status).toBe(201)
       const checkedInBody = await checkedIn.json()
       const attendanceId = checkedInBody.attendance.id
+      // One attendance owns one task shift; mandatory work requires the lock first.
+      const futureShiftLocked = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+        type: 'task.shift.select', expectedVersion: 5,
+        payload: { attendanceId, selectedTaskShiftId: 'SHIFT-FUTURE' },
+      }, { ...employeeAuthorization, 'idempotency-key': 'employee-future-shift-lock-0001' }), env)
+      expect(futureShiftLocked.status).toBe(200)
+      expect(await futureShiftLocked.json()).toMatchObject({ version: 6, taskShiftSelection: { shiftId: 'SHIFT-FUTURE', slot: 'morning' } })
       expect(checkedInBody.attendance.checklistSnapshot).toMatchObject({
         source: 'work-catalog',
         storeChecklistRepairVersion: 1,
         tasks: [],
       })
       const completedTask = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
-        type: 'task.done', expectedVersion: 5, payload: { taskId: 'TASK-FUTURE-01', done: true },
+        type: 'task.done', expectedVersion: 6, payload: { taskId: 'TASK-FUTURE-01', done: true },
       }, { ...employeeAuthorization, 'idempotency-key': 'employee-task-done-0001' }), env)
       expect(completedTask.status).toBe(200)
-      expect(await completedTask.json()).toMatchObject({ version: 6, task: { completedBy: { E01: true } } })
+      expect(await completedTask.json()).toMatchObject({ version: 7, task: { completedBy: { E01: true } } })
 
       const missingCustomerProfile = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
-        type: 'order.create', expectedVersion: 6,
+        type: 'order.create', expectedVersion: 7,
         payload: { storeId: 'S01', customerName: 'Thiếu hồ sơ', amount: 100_000, paymentMethod: 'Tiền mặt' },
       }, { ...employeeAuthorization, 'idempotency-key': 'employee-order-profile-required-0001' }), env)
       expect(missingCustomerProfile.status).toBe(400)
       expect(await missingCustomerProfile.json()).toMatchObject({ error: { code: 'ORDER_GENDER_INVALID' } })
       const invalidOccupation = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
-        type: 'order.create', expectedVersion: 6,
+        type: 'order.create', expectedVersion: 7,
         payload: {
           storeId: 'S01', customerName: 'Nghề ngoài danh mục', gender: 'Nữ', occupation: 'Kế toán',
           acquisitionChannel: 'Facebook', amount: 100_000, paymentMethod: 'Tiền mặt',
@@ -11389,7 +11406,7 @@ describe('IDOSI Worker security primitives', () => {
       expect(invalidOccupation.status).toBe(400)
       expect(await invalidOccupation.json()).toMatchObject({ error: { code: 'ORDER_OCCUPATION_INVALID' } })
       const spoofedOrder = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
-        type: 'order.create', expectedVersion: 6,
+        type: 'order.create', expectedVersion: 7,
         payload: {
           storeId: 'S02', employeeId: 'E02', attendanceId: 'ATT-SPOOF', customerName: 'Giả mạo',
           gender: 'Khác', occupation: 'Khác', acquisitionChannel: 'Khác', amount: 100_000, paymentMethod: 'Tiền mặt',
@@ -11399,7 +11416,7 @@ describe('IDOSI Worker security primitives', () => {
       expect(await spoofedOrder.json()).toMatchObject({ error: { code: 'STORE_FORBIDDEN' } })
 
       const cashOrder = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
-        type: 'order.create', expectedVersion: 6,
+        type: 'order.create', expectedVersion: 7,
         payload: {
           storeId: 'S01', employeeId: 'E02', attendanceId: 'ATT-SPOOF', customerName: 'Khách tiền mặt',
           gender: 'Nữ', occupation: 'Nhân viên VP', acquisitionChannel: 'Facebook', amount: 100_000, paymentMethod: 'Tiền mặt',
@@ -11408,14 +11425,14 @@ describe('IDOSI Worker security primitives', () => {
       expect(cashOrder.status).toBe(201)
       const cashOrderBody = await cashOrder.json()
       expect(cashOrderBody).toMatchObject({
-        version: 7,
+        version: 8,
         order: {
           storeId: 'S01', employeeId: 'E01', attendanceId, gender: 'Nữ', occupation: 'Nhân viên VP',
           acquisitionChannel: 'Facebook', paymentMethod: 'Tiền mặt', amount: 100_000,
         },
       })
       const transferOrder = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
-        type: 'order.create', expectedVersion: 7,
+        type: 'order.create', expectedVersion: 8,
         payload: {
           storeId: 'S01', customerName: 'Khách chuyển khoản', gender: 'Nam', occupation: 'Kỹ sư',
           acquisitionChannel: 'Tiktok', amount: 200_000, paymentMethod: 'Chuyển khoản',
@@ -11423,15 +11440,15 @@ describe('IDOSI Worker security primitives', () => {
       }, { ...employeeAuthorization, 'idempotency-key': 'employee-transfer-order-0001' }), env)
       expect(transferOrder.status).toBe(201)
       const transferOrderBody = await transferOrder.json()
-      expect(transferOrderBody).toMatchObject({ version: 8, order: { attendanceId, acquisitionChannel: 'Tiktok' } })
+      expect(transferOrderBody).toMatchObject({ version: 9, order: { attendanceId, acquisitionChannel: 'Tiktok' } })
       const invalidOccupationUpdate = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
-        type: 'order.update', expectedVersion: 8,
+        type: 'order.update', expectedVersion: 9,
         payload: { orderId: transferOrderBody.order.id, occupation: 'Kế toán', reason: 'Thử nghề ngoài danh mục' },
       }, { ...adminAuthorization, 'idempotency-key': 'admin-order-invalid-occupation-update-0001' }), env)
       expect(invalidOccupationUpdate.status).toBe(400)
       expect(await invalidOccupationUpdate.json()).toMatchObject({ error: { code: 'ORDER_OCCUPATION_INVALID' } })
       const updatedOrder = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
-        type: 'order.update', expectedVersion: 8,
+        type: 'order.update', expectedVersion: 9,
         payload: {
           orderId: transferOrderBody.order.id, gender: 'Khác', occupation: 'Giáo viên',
           acquisitionChannel: 'Zalo', reason: 'Bổ sung hồ sơ khách hàng',
@@ -11439,13 +11456,13 @@ describe('IDOSI Worker security primitives', () => {
       }, { ...adminAuthorization, 'idempotency-key': 'admin-order-profile-update-0001' }), env)
       expect(updatedOrder.status).toBe(200)
       expect(await updatedOrder.json()).toMatchObject({
-        version: 9,
+        version: 10,
         order: { gender: 'Khác', occupation: 'Giáo viên', acquisitionChannel: 'Zalo' },
         audit: { changedFields: ['gender', 'occupation', 'acquisitionChannel'] },
       })
 
       const mismatchCheckout = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
-        type: 'attendance.check_out', expectedVersion: 9,
+        type: 'attendance.check_out', expectedVersion: 10,
         payload: {
           attendanceId, cashRevenue: 50_000, transferRevenue: 200_000,
           incompleteTaskReason: 'Còn kiểm hàng',
@@ -11463,9 +11480,10 @@ describe('IDOSI Worker security primitives', () => {
         },
       })
       const taskProgressSaved = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
-        type: 'task.progress.save', expectedVersion: 9,
+        type: 'task.progress.save', expectedVersion: 10,
         payload: {
           attendanceId,
+          selectedTaskShiftId: 'SHIFT-FUTURE',
           tasks: [
             { id: 'TASK-FUTURE-01', completed: true },
             { id: 'TASK-FUTURE-02', completed: false },
@@ -11474,10 +11492,10 @@ describe('IDOSI Worker security primitives', () => {
         },
       }, { ...employeeAuthorization, 'idempotency-key': 'employee-checklist-complete-0001' }), env)
       expect(taskProgressSaved.status).toBe(200)
-      expect(await taskProgressSaved.json()).toMatchObject({ version: 10 })
+      expect(await taskProgressSaved.json()).toMatchObject({ version: 11 })
 
       const checkedOut = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
-        type: 'attendance.check_out', expectedVersion: 10,
+        type: 'attendance.check_out', expectedVersion: 11,
         payload: {
           attendanceId, cashRevenue: 100_000, transferRevenue: 200_000,
           location: { latitude: 10.8, longitude: 106.7, accuracy: 8 },
@@ -11485,7 +11503,7 @@ describe('IDOSI Worker security primitives', () => {
       }, { ...employeeAuthorization, 'idempotency-key': 'employee-checkout-success-0001' }), env)
       expect(checkedOut.status).toBe(200)
       expect(await checkedOut.json()).toMatchObject({
-        version: 11,
+        version: 12,
         attendance: {
           id: attendanceId, orderCount: 2, revenue: 300_000, cash: 100_000, transfer: 200_000,
           declaredRevenue: { cash: 100_000, transfer: 200_000, total: 300_000 },
@@ -11513,7 +11531,7 @@ describe('IDOSI Worker security primitives', () => {
       ])
 
       const transferCreated = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
-        type: 'support_transfer.create', expectedVersion: 11,
+        type: 'support_transfer.create', expectedVersion: 12,
         payload: {
           employeeId: 'E01', fromStoreId: 'S01', toStoreId: 'S02',
           startAt: '2026-08-21T08:00', endAt: '2026-08-21T12:00', hourlySupportRate: 45_000,
@@ -11523,7 +11541,7 @@ describe('IDOSI Worker security primitives', () => {
       expect(transferCreated.status).toBe(201)
       const transferCreatedBody = await transferCreated.json()
       expect(transferCreatedBody).toMatchObject({
-        version: 12,
+        version: 13,
         transfer: {
           employeeId: 'E01', toStoreId: 'S02',
           startAt: '2026-08-21T01:00:00.000Z', endAt: '2026-08-21T05:00:00.000Z',
@@ -11576,13 +11594,13 @@ describe('IDOSI Worker security primitives', () => {
       })
 
       const destinationCheckIn = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
-        type: 'attendance.check_in', expectedVersion: 12,
+        type: 'attendance.check_in', expectedVersion: 13,
         payload: { location: { latitude: 10.81, longitude: 106.68, accuracy: 7 } },
       }, { ...employeeAuthorization, 'idempotency-key': 'employee-support-check-in-0001' }), env)
       expect(destinationCheckIn.status).toBe(201)
       const destinationCheckInBody = await destinationCheckIn.json()
       expect(destinationCheckInBody).toMatchObject({
-        version: 13,
+        version: 14,
         attendance: {
           shiftName: 'Ca hỗ trợ cửa hàng', shiftSource: 'store-schedule',
           shiftStart: '08:00', shiftEnd: '12:00', arrivalTag: 'Đi đúng giờ', minutesLate: 0,
@@ -11632,7 +11650,7 @@ describe('IDOSI Worker security primitives', () => {
       expect((await destinationAtExclusiveEnd.json()).state.employees.some(({ id }) => id === 'E01')).toBe(true)
       vi.setSystemTime(new Date('2026-08-21T07:00:00.000Z'))
       const destinationOrderAfterTransferEnd = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
-        type: 'order.create', expectedVersion: 13,
+        type: 'order.create', expectedVersion: 14,
         payload: {
           storeId: 'S02', customerName: 'Khách sau giờ điều chuyển', gender: 'Nữ', occupation: 'Nhân viên VP',
           acquisitionChannel: 'Facebook', amount: 120_000, paymentMethod: 'Tiền mặt',
@@ -11640,14 +11658,14 @@ describe('IDOSI Worker security primitives', () => {
       }, { ...employeeAuthorization, 'idempotency-key': 'employee-support-order-after-transfer-end-0001' }), env)
       expect(destinationOrderAfterTransferEnd.status).toBe(201)
       expect(await destinationOrderAfterTransferEnd.json()).toMatchObject({
-        version: 14,
+        version: 15,
         order: {
           storeId: 'S02', employeeId: 'E01', attendanceId: destinationAttendanceId,
           supportTransferId: transferCreatedBody.transfer.id, amount: 120_000,
         },
       })
       const destinationCheckOut = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
-        type: 'attendance.check_out', expectedVersion: 14,
+        type: 'attendance.check_out', expectedVersion: 15,
         payload: {
           attendanceId: destinationAttendanceId, cashRevenue: 120_000, transferRevenue: 0,
           location: { latitude: 10.81, longitude: 106.68, accuracy: 7 },
@@ -11655,7 +11673,7 @@ describe('IDOSI Worker security primitives', () => {
       }, { ...employeeAuthorization, 'idempotency-key': 'employee-support-check-out-0001' }), env)
       expect(destinationCheckOut.status).toBe(200)
       expect(await destinationCheckOut.json()).toMatchObject({
-        version: 15,
+        version: 16,
         attendance: {
           storeId: 'S02', homeStoreId: 'S01', supportTransferId: transferCreatedBody.transfer.id,
           elapsedSeconds: 21_600, workedSeconds: 14_400, hours: 4,
@@ -11669,11 +11687,11 @@ describe('IDOSI Worker security primitives', () => {
       vi.setSystemTime(new Date('2026-08-31T17:00:00.000Z')) // 01/09 00:00 Vietnam
       supportAuthorization = await loginAs('support.ops', 'support-ops-password')
       const destinationPayroll = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
-        type: 'payroll.close', expectedVersion: 15, payload: { storeId: 'S02', period: '2026-08' },
+        type: 'payroll.close', expectedVersion: 16, payload: { storeId: 'S02', period: '2026-08' },
       }, { ...supportAuthorization, 'idempotency-key': 'support-destination-payroll-0001' }), env)
       expect(destinationPayroll.status).toBe(201)
       const destinationPayrollBody = await destinationPayroll.json()
-      expect(destinationPayrollBody).toMatchObject({ version: 16, period: { storeId: 'S02' } })
+      expect(destinationPayrollBody).toMatchObject({ version: 17, period: { storeId: 'S02' } })
       expect(destinationPayrollBody.period.rows.find(({ employeeId }) => employeeId === 'E01')).toMatchObject({
         employeeId: 'E01', hours: 4, baseSalary: 180_000, supportHourlyPay: 180_000,
         supportAllowance: 180_000, gross: 360_000,
@@ -11706,7 +11724,11 @@ describe('IDOSI Worker security primitives', () => {
           id: attendanceId, employeeId: 'E01', employeeName: 'Nhân viên hỗ trợ', storeId: 'S01',
           date: '2026-08-22', shiftId: 'SHIFT-OPS', shiftName: 'Ca sáng', shiftStart: '08:00', shiftEnd: '12:00',
           checkIn: '08:00', checkInAt: '2026-08-22T01:00:00.000Z', checkOut: null, checkOutAt: null,
+          // Task-shift lock already recorded for this attendance (one shift only).
+          taskShiftSelection: { attendanceId, shiftId: 'SHIFT-OPS', shiftName: 'Ca sáng', slot: 'morning' },
+          taskShiftContexts: [{ shiftId: 'SHIFT-OPS', shiftName: 'Ca sáng', taskIds: ['TASK-OPS-01', 'TASK-OPS-02'] }],
         }],
+        shiftDefinitions: [{ id: 'SHIFT-OPS', storeId: 'S01', name: 'Ca sáng', start: '08:00', end: '12:00', active: true }],
         tasks: [{
           id: 'TASK-OPS-01', assignmentId, storeId: 'S01', date: '2026-08-22', shiftId: 'SHIFT-OPS',
           employeeIds: ['E01'], title: 'Kiểm tra quầy', completedBy: {},
@@ -11783,6 +11805,7 @@ describe('IDOSI Worker security primitives', () => {
         type: 'task.progress.save', expectedVersion: 2,
         payload: {
           attendanceId,
+          selectedTaskShiftId: 'SHIFT-OPS',
           tasks: [{ id: 'TASK-OPS-01', completed: true }, { id: 'TASK-OPS-02', completed: false }],
           incompleteReason: 'Chưa kiểm xong kho cuối ca',
         },
@@ -11815,6 +11838,7 @@ describe('IDOSI Worker security primitives', () => {
         type: 'task.progress.save', expectedVersion: 2,
         payload: {
           attendanceId,
+          selectedTaskShiftId: 'SHIFT-OPS',
           tasks: [{ id: 'TASK-OPS-01', completed: true }, { id: 'TASK-OPS-02', completed: false }],
           incompleteReason: 'Chưa kiểm xong kho cuối ca',
         },
@@ -11828,7 +11852,7 @@ describe('IDOSI Worker security primitives', () => {
 
       const missingReason = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
         type: 'task.progress.save', expectedVersion: 2,
-        payload: { attendanceId, tasks: [{ id: 'TASK-OPS-01', completed: true }, { id: 'TASK-OPS-02', completed: false }] },
+        payload: { attendanceId, selectedTaskShiftId: 'SHIFT-OPS', tasks: [{ id: 'TASK-OPS-01', completed: true }, { id: 'TASK-OPS-02', completed: false }] },
       }, { ...employeeAuthorization, 'idempotency-key': 'task-progress-missing-reason-0001' }), env)
       expect(missingReason.status).toBe(400)
       expect(await missingReason.json()).toMatchObject({ error: { code: 'INCOMPLETE_TASK_REASON_REQUIRED' } })
@@ -11837,6 +11861,7 @@ describe('IDOSI Worker security primitives', () => {
         type: 'task.progress.save', expectedVersion: 2,
         payload: {
           attendanceId,
+          selectedTaskShiftId: 'SHIFT-OPS',
           tasks: [{ id: 'TASK-OPS-01', completed: true }, { id: 'TASK-OPS-02', completed: false }],
           incompleteReason: 'Chưa kiểm xong kho cuối ca',
         },
@@ -12177,6 +12202,10 @@ describe('IDOSI Worker security primitives', () => {
   }, 30_000)
 
   it('manages products and custom attributes while preserving immutable order snapshots and summaries', async () => {
+    // The summary below reads period 2026-09; pin the clock so new orders land in it.
+    vi.useFakeTimers({ toFake: ['Date'] })
+    vi.setSystemTime(new Date('2026-09-15T10:00:00+07:00'))
+    onTestFinished(() => vi.useRealTimers())
     const env = { DB: new MemoryD1(), BOOTSTRAP_TOKEN: 'bootstrap-order-products-custom-fields' }
     const bootstrap = await worker.fetch(jsonRequest('https://idosi.example/api/bootstrap', {
       username: 'admin.products', password: 'admin-products-password',
@@ -14842,7 +14871,7 @@ describe('IDOSI Worker security primitives', () => {
     })
     expect(checklistTasks).toHaveLength(2)
     const fixedTask = checklistTasks.find(({ catalogItemId }) => catalogItemId === 'CAT-CHECKLIST-FIXED')
-    const rewardTask = checklistTasks.find(({ catalogItemId }) => catalogItemId === 'CAT-CHECKLIST-REWARD')
+    expect(checklistTasks.some(({ catalogItemId }) => catalogItemId === 'CAT-CHECKLIST-REWARD')).toBe(true)
     const denied = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
       type: 'attendance.check_out', expectedVersion: 2,
       payload: {
@@ -14853,6 +14882,13 @@ describe('IDOSI Worker security primitives', () => {
     }, { ...employeeAuthorization, 'idempotency-key': 'canonical-checklist-bypass-denied-0001' }), env)
     expect(denied.status).toBe(409)
     expect(await denied.json()).toMatchObject({ error: { code: 'TASK_PROGRESS_REQUIRED' } })
+    // One attendance owns one task shift: lock it before saving checklist progress.
+    const lockedShift = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+      type: 'task.shift.select', expectedVersion: 2,
+      payload: { attendanceId: checkedInBody.attendance.id, selectedTaskShiftId: 'SHIFT-MORNING' },
+    }, { ...employeeAuthorization, 'idempotency-key': 'canonical-checklist-shift-lock-0001' }), env)
+    expect(lockedShift.status).toBe(200)
+    expect(await lockedShift.json()).toMatchObject({ version: 3, attendance: { taskShiftContexts: [{ shiftId: 'SHIFT-MORNING', taskIds: [expect.any(String)] }] } })
     const stateBeforeProgress = readHydratedState(env.DB.database)
     const persistedFixedTask = stateBeforeProgress.tasks.find(({ id }) => id === fixedTask.id)
     const foreignTaskId = fixedTask.id === fixedTask.id.toUpperCase()
@@ -14881,20 +14917,19 @@ describe('IDOSI Worker security primitives', () => {
       },
     ])
     const progress = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
-      type: 'task.progress.save', expectedVersion: 2,
+      type: 'task.progress.save', expectedVersion: 3,
       payload: {
         attendanceId: checkedInBody.attendance.id,
-        tasks: [
-          { id: fixedTask.id, completed: false },
-          { id: rewardTask.id, completed: false },
-        ],
+        selectedTaskShiftId: 'SHIFT-MORNING',
+        // Reward work is saved separately; the locked checklist is mandatory work only.
+        tasks: [{ id: fixedTask.id, completed: false }],
         incompleteReason: 'Khách đông nên chưa hoàn tất mở cửa',
       },
     }, { ...employeeAuthorization, 'idempotency-key': 'canonical-checklist-progress-0001' }), env)
     expect(progress.status).toBe(200)
     expect(await progress.json()).toMatchObject({
-      version: 3, totalTasks: 1, completedTasks: 0, completionRate: 0,
-      requiredTasks: 1, completedRequiredTasks: 0, rewardTasks: 1, completedRewardTasks: 0,
+      version: 4, totalTasks: 1, completedTasks: 0, completionRate: 0,
+      requiredTasks: 1, completedRequiredTasks: 0, rewardTasks: 0, completedRewardTasks: 0,
     })
     const stateAfterProgress = readHydratedState(env.DB.database)
     expect(stateAfterProgress.tasks.find(({ id }) => id === fixedTask.id)?.completedBy).toMatchObject({ E01: false })
@@ -14913,18 +14948,17 @@ describe('IDOSI Worker security primitives', () => {
       return legacyRecord
     }))
     const restoredProgress = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
-      type: 'task.progress.save', expectedVersion: 3,
+      type: 'task.progress.save', expectedVersion: 4,
       payload: {
         attendanceId: checkedInBody.attendance.id,
-        tasks: [
-          { id: fixedTask.id, completed: false },
-          { id: rewardTask.id, completed: false },
-        ],
+        selectedTaskShiftId: 'SHIFT-MORNING',
+        // Reward work is saved separately; the locked checklist is mandatory work only.
+        tasks: [{ id: fixedTask.id, completed: false }],
         incompleteReason: 'Khách đông nên chưa hoàn tất mở cửa',
       },
     }, { ...employeeAuthorization, 'idempotency-key': 'canonical-checklist-progress-restore-0001' }), env)
     expect(restoredProgress.status).toBe(200)
-    expect(await restoredProgress.json()).toMatchObject({ version: 4, existing: true, restored: true })
+    expect(await restoredProgress.json()).toMatchObject({ version: 5, existing: true, restored: true })
     expect(readHydratedState(env.DB.database).attendance
       .find(({ id }) => id === checkedInBody.attendance.id)?.taskProgress).toMatchObject({
         attendanceId: checkedInBody.attendance.id,
@@ -14949,7 +14983,7 @@ describe('IDOSI Worker security primitives', () => {
       }
     }))
     const collisionCheckout = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
-      type: 'attendance.check_out', expectedVersion: 4,
+      type: 'attendance.check_out', expectedVersion: 5,
       payload: {
         attendanceId: checkedInBody.attendance.id, cashRevenue: 0, transferRevenue: 0,
         location: { latitude: 10.8, longitude: 106.7, accuracy: 5 },
@@ -14960,7 +14994,7 @@ describe('IDOSI Worker security primitives', () => {
 
     replaceStateCollection(env.DB.database, 'tasks', stateAfterProgress.tasks)
     const checkedOut = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
-      type: 'attendance.check_out', expectedVersion: 4,
+      type: 'attendance.check_out', expectedVersion: 5,
       payload: {
         attendanceId: checkedInBody.attendance.id, cashRevenue: 0, transferRevenue: 0,
         location: { latitude: 10.8, longitude: 106.7, accuracy: 5 },
@@ -14968,7 +15002,7 @@ describe('IDOSI Worker security primitives', () => {
     }, { ...employeeAuthorization, 'idempotency-key': 'canonical-checklist-checkout-0001' }), env)
     expect(checkedOut.status).toBe(200)
     expect(await checkedOut.json()).toMatchObject({
-      version: 5,
+      version: 6,
       attendance: {
         id: checkedInBody.attendance.id,
         incompleteTaskReason: 'Khách đông nên chưa hoàn tất mở cửa',
@@ -16289,31 +16323,40 @@ describe('IDOSI Worker security primitives', () => {
         && String(task.shiftId || task.shift || '') === 'shift-production-flexible'
       ))
       expect(scopedEmployeeTasks).toHaveLength(101)
+      // One attendance owns one task shift. The 14:05 check-in snapshot captured the
+      // afternoon catalog (ca2), so the employee locks Ca chiều; the flexible shift's
+      // manual assignments belong to a different task shift and are not part of it.
+      const lockedAfternoon = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+        type: 'task.shift.select', expectedVersion: 4,
+        payload: { attendanceId, selectedTaskShiftId: 'ca2' },
+      }, { ...employeeAuthorization, 'idempotency-key': 'dynamic-checklist-shift-lock-0001' }), env)
+      expect(lockedAfternoon.status).toBe(200)
+      const lockedAfternoonBody = await lockedAfternoon.json()
+      expect(lockedAfternoonBody).toMatchObject({ version: 5, taskShiftSelection: { shiftId: 'ca2', slot: 'afternoon' } })
+      expect(lockedAfternoonBody.tasks.map(({ catalogItemId }) => catalogItemId)).toEqual(expectedAfternoonIds)
 
       const progressSaved = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
-        type: 'task.progress.save', expectedVersion: 4,
+        type: 'task.progress.save', expectedVersion: 5,
         payload: {
           attendanceId,
-          tasks: scopedEmployeeTasks.map((task) => ({
-            id: task.id,
-            completed: task.required !== false,
-          })),
+          selectedTaskShiftId: 'ca2',
+          tasks: lockedAfternoonBody.tasks.map((task) => ({ id: task.id, completed: true })),
         },
       }, { ...employeeAuthorization, 'idempotency-key': 'dynamic-checklist-progress-0001' }), env)
       expect(progressSaved.status).toBe(200)
       const progressSavedBody = await progressSaved.json()
       expect(progressSavedBody).toMatchObject({
-        version: 5,
-        requiredTasks: 68,
-        completedRequiredTasks: 68,
-        rewardTasks: expectedRewardCount,
+        version: 6,
+        requiredTasks: 19,
+        completedRequiredTasks: 19,
+        rewardTasks: 0,
         completedRewardTasks: 0,
         attendance: {
           id: attendanceId,
-          taskProgress: { completedTasks: 68, totalTasks: 68, incompleteTaskIds: [] },
+          taskProgress: { completedTasks: 19, totalTasks: 19, incompleteTaskIds: [] },
         },
       })
-      expect(progressSavedBody.tasks).toHaveLength(scopedEmployeeTasks.length)
+      expect(progressSavedBody.tasks).toHaveLength(19)
       expect(progressSavedBody.tasks
         .filter((task) => task.required !== false)
         .every((task) => task.completedBy?.E01 === true)).toBe(true)
@@ -16325,14 +16368,14 @@ describe('IDOSI Worker security primitives', () => {
       expect(persisted.filter((task) => task.catalogKind === 'REWARD_TASK')).toHaveLength(expectedRewardCount)
 
       const replaced = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
-        type: 'tasks.replace_scope', expectedVersion: 5,
+        type: 'tasks.replace_scope', expectedVersion: 6,
         payload: {
           storeId: 'S01', date: '2026-08-30', shiftId: 'shift-production-flexible',
           employeeIds: [], tasks: [],
         },
       }, { ...adminAuthorization, 'idempotency-key': 'dynamic-checklist-replace-scope-0001' }), env)
       expect(replaced.status).toBe(200)
-      expect(await replaced.json()).toMatchObject({ version: 6, tasks: [] })
+      expect(await replaced.json()).toMatchObject({ version: 7, tasks: [] })
       const afterReplaceState = readHydratedState(env.DB.database)
       const afterReplaceChecklistTasks = afterReplaceState.tasks.filter((task) => (
         String(task.checklistAttendanceId || '') === attendanceId
@@ -16390,21 +16433,21 @@ describe('IDOSI Worker security primitives', () => {
       ])
 
       const checkedOut = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
-        type: 'attendance.check_out', expectedVersion: 6,
+        type: 'attendance.check_out', expectedVersion: 7,
         payload: {
           attendanceId, cashRevenue: 0, transferRevenue: 0,
           location: { latitude: 10.8, longitude: 106.7, accuracy: 5 },
         },
       }, { ...employeeAuthorization, 'idempotency-key': 'dynamic-checklist-checkout-0001' }), env)
       expect(checkedOut.status).toBe(200)
-      expect(await checkedOut.json()).toMatchObject({ version: 7, attendance: { id: attendanceId } })
+      expect(await checkedOut.json()).toMatchObject({ version: 8, attendance: { id: attendanceId } })
 
       const beforeSecondAttendance = readHydratedState(env.DB.database)
       const firstAssignmentBefore = beforeSecondAttendance.taskAssignmentHistory.find((history) => (
         String(history.checklistAttendanceId || '') === attendanceId
       ))
       const secondCheckIn = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
-        type: 'attendance.check_in', expectedVersion: 7,
+        type: 'attendance.check_in', expectedVersion: 8,
         payload: {
           shiftId: 'shift-production-flexible',
           location: { latitude: 10.8, longitude: 106.7, accuracy: 5 },
@@ -16412,7 +16455,7 @@ describe('IDOSI Worker security primitives', () => {
       }, { ...employeeAuthorization, 'idempotency-key': 'dynamic-checklist-second-checkin-0001' }), env)
       expect(secondCheckIn.status).toBe(201)
       const secondCheckInBody = await secondCheckIn.json()
-      expect(secondCheckInBody).toMatchObject({ version: 8 })
+      expect(secondCheckInBody).toMatchObject({ version: 9 })
       const secondAttendanceId = secondCheckInBody.attendance.id
       expect(secondAttendanceId).not.toBe(attendanceId)
       const secondSnapshotTasks = secondCheckInBody.attendance.checklistSnapshot.tasks
@@ -16427,19 +16470,23 @@ describe('IDOSI Worker security primitives', () => {
         String(task.checklistAttendanceId || '') === secondAttendanceId
       ))
       expect(secondAttendanceTasks).toHaveLength(secondSnapshotTasks.length)
+      const secondLock = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+        type: 'task.shift.select', expectedVersion: 9,
+        payload: { attendanceId: secondAttendanceId, selectedTaskShiftId: 'ca2' },
+      }, { ...employeeAuthorization, 'idempotency-key': 'dynamic-checklist-second-shift-lock-0001' }), env)
+      expect(secondLock.status).toBe(200)
+      expect(await secondLock.json()).toMatchObject({ version: 10, taskShiftSelection: { attendanceId: secondAttendanceId, shiftId: 'ca2' } })
       const secondProgress = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
-        type: 'task.progress.save', expectedVersion: 8,
+        type: 'task.progress.save', expectedVersion: 10,
         payload: {
           attendanceId: secondAttendanceId,
-          tasks: secondAttendanceTasks.map((task) => ({
-            id: task.id,
-            completed: task.required !== false,
-          })),
+          selectedTaskShiftId: 'ca2',
+          tasks: secondAttendanceTasks.filter((task) => task.required !== false).map((task) => ({ id: task.id, completed: true })),
         },
       }, { ...employeeAuthorization, 'idempotency-key': 'dynamic-checklist-second-progress-0001' }), env)
       expect(secondProgress.status).toBe(200)
       expect(await secondProgress.json()).toMatchObject({
-        version: 9,
+        version: 11,
         requiredTasks: secondRequiredTaskCount,
         completedRequiredTasks: secondRequiredTaskCount,
       })
