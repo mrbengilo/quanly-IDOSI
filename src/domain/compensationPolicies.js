@@ -339,8 +339,8 @@ export const OFFICE_REWARDS = deepFreeze([
 ])
 
 export const OFFICE_VIOLATIONS = deepFreeze([
-  { code: 'office.violation.late', label: 'Đi trễ', amountVnd: 3_000 },
-  { code: 'office.violation.forgot_attendance', label: 'Quên điểm danh', amountVnd: 3_000 },
+  { code: 'office.violation.late', label: 'Đi trễ', amountVnd: 3_000, violationPoints: 0.5 },
+  { code: 'office.violation.forgot_attendance', label: 'Quên điểm danh', amountVnd: 3_000, violationPoints: 0.5 },
 ])
 
 export const HTKD_REWARDS = deepFreeze([
@@ -350,9 +350,9 @@ export const HTKD_REWARDS = deepFreeze([
 ])
 
 export const HTKD_VIOLATIONS = deepFreeze([
-  { code: 'htkd.violation.late', label: 'Đi trễ', amountVnd: 3_000 },
-  { code: 'htkd.violation.forgot_attendance', label: 'Quên điểm danh', amountVnd: 3_000 },
-  { code: 'htkd.violation.assigned_store_error_requires_admin', label: 'Cửa hàng phụ trách thao tác sai sót => kêu admin sửa', amountVnd: 5_000 },
+  { code: 'htkd.violation.late', label: 'Đi trễ', amountVnd: 3_000, violationPoints: 0.5 },
+  { code: 'htkd.violation.forgot_attendance', label: 'Quên điểm danh', amountVnd: 3_000, violationPoints: 0.5 },
+  { code: 'htkd.violation.assigned_store_error_requires_admin', label: 'Cửa hàng phụ trách thao tác sai sót => kêu admin sửa', amountVnd: 5_000, violationPoints: 0.5 },
 ])
 
 export const WORKBOOK_COMPENSATION_POLICY = deepFreeze({

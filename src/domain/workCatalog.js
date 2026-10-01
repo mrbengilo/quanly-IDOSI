@@ -135,8 +135,8 @@ export const normalizeWorkCatalogItem = (item = {}) => {
   const kind = normalizeKind(item.kind)
   const targetGroup = normalizeTargetGroup(item.targetGroup)
   const pointViolation = item.violationPoints != null
-  if (pointViolation && (kind !== WORK_CATALOG_KIND.VIOLATION || targetGroup !== WORK_CATALOG_TARGET.STORE)) {
-    throw new TypeError('Điểm vi phạm chỉ áp dụng cho vi phạm của nhân viên cửa hàng.')
+  if (pointViolation && kind !== WORK_CATALOG_KIND.VIOLATION) {
+    throw new TypeError('Điểm vi phạm chỉ áp dụng cho danh mục vi phạm.')
   }
   const code = normalizeCode(item.code)
   const id = stableToken(item.id || createWorkCatalogItemId({ targetGroup, kind, code }), 'id')
