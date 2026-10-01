@@ -2,7 +2,7 @@ import { useMemo, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { ClipboardCheck, Clock3, Lock, LogIn, ReceiptText, Save, Store } from 'lucide-react'
 import { Badge, Button, Card, Field, InfoNote, Input, MoneyInput, PageHeader, Progress, TableWrap } from '../../components/UI'
-import { attendanceTaskShiftLock, TASK_SHIFT_LOCK_STATUS, taskShiftContext, taskShiftLockAllows, taskShiftSlots } from '../../domain/taskShift'
+import { attendanceTaskShiftLock, TASK_SHIFT_LOCK_STATUS, taskShiftContext, taskShiftLockAllows, taskShiftSlotFor, taskShiftSlots } from '../../domain/taskShift'
 import { useApp } from '../../state/AppContext'
 import {
   money,
@@ -175,6 +175,7 @@ export function EmployeeAssignedTasksPage() {
   const slots = attendance ? taskShiftSlots(app, storeId, date, attendance) : []
   const scopeKey = JSON.stringify([employeeId, storeId, date, attendance?.id || ''])
   const [legacyView, setLegacyView] = useState({ scopeKey: '', id: '' })
+  const [expanded, setExpanded] = useState({ scopeKey: '', key: '' })
   const [pending, setPending] = useState({ scopeKey: '', slot: '' })
   const [notice, setNotice] = useState({ scopeKey: '', tone: 'orange', text: '' })
   const selectRequestRef = useRef(null)
@@ -188,7 +189,7 @@ export function EmployeeAssignedTasksPage() {
     state: app, attendance, employeeId, selectedTaskShiftId,
   }) : { tasks: [] }
   const lockedSlot = lock.status === TASK_SHIFT_LOCK_STATUS.SELECTED
-    ? slots.find((slot) => slot.shift && taskShiftLockAllows(lock, slot.shift.id)) || null
+    ? taskShiftSlotFor(app, storeId, date, lock.shiftId, attendance)
     : null
   const lockedLabel = lockedSlot?.label || attendance?.taskShiftSelection?.shiftName || context.shift?.name || lock.shiftId
   const displayedTasks = context.error ? [] : context.tasks
@@ -292,7 +293,7 @@ export function EmployeeAssignedTasksPage() {
     ? [lockedSlot || { key: 'locked', label: lockedLabel, status: 'ready', shift: context.shift || { id: lock.shiftId } }]
     : lock.status === TASK_SHIFT_LOCK_STATUS.LEGACY_MULTI
       ? lock.shiftIds.map((shiftId) => {
-          const slot = slots.find((item) => item.shift && taskShiftLockAllows({ shiftIds: [shiftId] }, item.shift.id))
+          const slot = taskShiftSlotFor(app, storeId, date, shiftId, attendance)
           return { key: shiftId, label: slot?.label || shiftId, status: 'ready', shift: slot?.shift || { id: shiftId } }
         })
       : slots
@@ -317,7 +318,8 @@ export function EmployeeAssignedTasksPage() {
             {visibleSlots.map((slot) => {
               const selected = lock.status === TASK_SHIFT_LOCK_STATUS.SELECTED
                 || (lock.status === TASK_SHIFT_LOCK_STATUS.LEGACY_MULTI && taskShiftLockAllows({ shiftIds: [selectedTaskShiftId] }, slot.shift?.id))
-              const unavailable = slot.status !== 'ready'
+              const multiple = slot.status === 'multiple' && !slot.shift
+              const unavailable = slot.status !== 'ready' && !multiple && !slot.shift
               const disabled = lock.status === TASK_SHIFT_LOCK_STATUS.SELECTED || unavailable || Boolean(pendingSlot) || saving
               return (
                 <button
@@ -325,19 +327,37 @@ export function EmployeeAssignedTasksPage() {
                   type="button"
                   className={`${selected ? 'is-selected' : ''}${unavailable ? ' is-unavailable' : ''}`}
                   aria-pressed={selected}
+                  aria-expanded={multiple ? expanded.scopeKey === scopeKey && expanded.key === slot.key : undefined}
+                  aria-controls={multiple ? `task-shift-options-${slot.key}` : undefined}
                   disabled={disabled}
-                  onClick={() => (lock.status === TASK_SHIFT_LOCK_STATUS.LEGACY_MULTI
+                  onClick={() => (multiple
+                    ? setExpanded({ scopeKey, key: expanded.scopeKey === scopeKey && expanded.key === slot.key ? '' : slot.key })
+                    : lock.status === TASK_SHIFT_LOCK_STATUS.LEGACY_MULTI
                     ? setLegacyView({ scopeKey, id: slot.shift.id })
                     : chooseSlot(slot))}
                 >
                   <strong>{slot.label}</strong>
-                  <small>{unavailable ? UNAVAILABLE_SLOT_TEXT[slot.status] : taskShiftTime(slot.shift) || 'Theo cấu hình cửa hàng'}</small>
+                  <small>{unavailable ? UNAVAILABLE_SLOT_TEXT[slot.status] : multiple ? `${slot.choices.length} ca · Chọn giờ làm` : taskShiftTime(slot.shift) || 'Theo cấu hình cửa hàng'}</small>
                   {selected && lock.status === TASK_SHIFT_LOCK_STATUS.SELECTED && <span><Lock size={12} aria-hidden="true" /> Đã chọn · đã khóa</span>}
                   {pendingSlot === slot.key && <span>Đang ghi nhận…</span>}
                 </button>
               )
             })}
           </div>
+          {lock.status === TASK_SHIFT_LOCK_STATUS.NONE && slots.filter((slot) => slot.status === 'multiple'
+            && expanded.scopeKey === scopeKey && expanded.key === slot.key).map((slot) => (
+            <div key={slot.key} id={`task-shift-options-${slot.key}`} className="task-shift-options" role="group" aria-label={`Chọn khung giờ ${slot.label.toLowerCase()}`}>
+              <p>Cửa hàng có nhiều {slot.label.toLowerCase()}. Chọn đúng khung giờ công việc; sau khi xác nhận, ca sẽ được khóa cho lượt điểm danh này.</p>
+              <div className="shift-checklist-tabs task-shift-buttons">
+                {slot.choices.map((shift) => <button key={shift.id} type="button" disabled={Boolean(pendingSlot) || saving}
+                  onClick={() => chooseSlot({ ...slot, shift })}>
+                  <strong>{shift.name || slot.label}</strong>
+                  <small>{taskShiftTime(shift) || 'Theo cấu hình cửa hàng'}</small>
+                  {pendingSlot === slot.key && <span>Đang ghi nhận…</span>}
+                </button>)}
+              </div>
+            </div>
+          ))}
           {lock.status === TASK_SHIFT_LOCK_STATUS.NONE && slots.some((slot) => slot.status === 'ambiguous') && <InfoNote tone="orange">Có ca đang bị cấu hình trùng cho cùng buổi; cần quản lý xử lý trước khi chọn ca đó.</InfoNote>}
           {lock.status === TASK_SHIFT_LOCK_STATUS.NONE && slots.length > 0 && slots.every((slot) => slot.status === 'missing') && <InfoNote tone="orange">Chưa có cấu hình Ca sáng/Ca chiều/Ca tối hợp lệ cho cửa hàng hôm nay.</InfoNote>}
           {scopedNotice?.text && <InfoNote tone={scopedNotice.tone}>{scopedNotice.text}</InfoNote>}

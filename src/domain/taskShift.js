@@ -14,14 +14,35 @@ const matches = (records, target, reference) => Boolean(target && text(reference
 export const isMandatoryTask = (task) => task.rewardEligible !== true
   && (task.catalogKind || task.catalogSnapshot?.kind || task.kind) !== WORK_CATALOG_KIND.REWARD_TASK
 
-export const taskShiftChoices = (state, storeId, date = '') => {
+// Preserve the original object (source identity is used by slotRank). Only
+// identical JSON records with the same exact id are copies of one entity;
+// name/time/template equivalence is not evidence that two definitions are one.
+const recordSignature = (value) => JSON.stringify(value, (_key, child) => (
+  child && typeof child === 'object' && !Array.isArray(child)
+    ? Object.fromEntries(Object.keys(child).sort().map((key) => [key, child[key]]))
+    : child
+))
+const distinctShiftCopies = (shifts) => {
+  const seen = new Set()
+  return shifts.filter((shift) => {
+    if (!text(shift.id)) return true
+    const signature = recordSignature(shift)
+    if (seen.has(signature)) return false
+    seen.add(signature)
+    return true
+  })
+}
+
+export const taskShiftChoices = (state, storeId, date = '', attendance = null) => {
   const stores = state.stores || []
   const store = resolve(stores, storeId)
   if (!store) return []
-  const configured = (state.shiftDefinitions || []).filter((shift) => !shift.deletedAt && shift.active !== false
+  const configured = distinctShiftCopies(state.shiftDefinitions || []).filter((shift) => !shift.deletedAt && shift.active !== false
     && (!date || !shift.date || text(shift.date).slice(0, 10) === date)
     && (!shift.storeId || matches(stores, store, shift.storeId)))
-  const synthetic = (state.attendance || []).filter((record) => record.supportTransferId
+  // Server state contains other employees' attendance; the employee projection
+  // does not. Only this attendance can supply its immutable support shift.
+  const synthetic = (attendance ? [attendance] : []).filter((record) => record.supportTransferId
     && !record.deletedAt && !record.checkOut && !record.checkOutAt
     && (!date || text(record.date || record.workDate).slice(0, 10) === date)
     && matches(stores, store, record.storeId)
@@ -46,14 +67,14 @@ export const taskShiftChoices = (state, storeId, date = '') => {
   return [...configured, ...synthetic, ...catalogChoices]
 }
 
-// Pure preview: selecting a shift cannot create attendance, obligations or rewards.
-// The command builds the same list from server state and only persists it on Save.
+// Pure preview: this helper never writes. task.shift.select persists the lock
+// and binds obligations; task.progress.save persists their completion later.
 export const taskShiftContext = ({ state, attendance, employeeId, selectedTaskShiftId }) => {
   const fail = (message, code = 'TASK_SHIFT_INVALID') => ({ tasks: [], error: message, code })
   // Date-specific shift definitions are valid only on the attendance business
   // date, matching scheduling rules even for an overnight/early check-in.
   const date = text(attendance?.date || attendance?.workDate).slice(0, 10)
-  const shifts = taskShiftChoices(state, attendance?.storeId, date)
+  const shifts = taskShiftChoices(state, attendance?.storeId, date, attendance)
   const shift = resolve(shifts, selectedTaskShiftId)
   if (!text(selectedTaskShiftId)) return fail('Vui lòng chọn ca làm việc để xem công việc được giao')
   if (!shift) return fail('Ca làm việc không còn hợp lệ hoặc mã ca không rõ ràng.')
@@ -156,7 +177,8 @@ const configuredStartSlot = (shift) => {
 
 // Specificity, not a guess: the attendance's own support-transfer shift, then a
 // store/date-specific definition, then a canonical (alias/template) match over a
-// start-time placement. Equal top precedence is ambiguous and disabled.
+// start-time placement. Independent top-precedence shifts remain explicit
+// choices; only conflicting identities or indistinguishable choices are blocked.
 const slotRank = (state, shift, attendance) => {
   if (ownSupportShift(state, shift, attendance)) return 100
   const canonical = slotKeyOf(shift) ? 1 : 0
@@ -165,7 +187,7 @@ const slotRank = (state, shift, attendance) => {
 }
 
 export const taskShiftSlots = (state, storeId, date = '', attendance = null) => {
-  const choices = taskShiftChoices(state, storeId, date)
+  const choices = taskShiftChoices(state, storeId, date, attendance)
   const configured = new Set(state.shiftDefinitions || [])
   const keyOf = (shift) => slotKeyOf(shift)
     || (configured.has(shift) || ownSupportShift(state, shift, attendance) ? configuredStartSlot(shift) : '')
@@ -174,14 +196,23 @@ export const taskShiftSlots = (state, storeId, date = '', attendance = null) => 
     if (!candidates.length) return { ...slot, status: 'missing', shift: null }
     const topRank = Math.max(...candidates.map((shift) => slotRank(state, shift, attendance)))
     const best = candidates.filter((shift) => slotRank(state, shift, attendance) === topRank)
-    const ids = new Set(best.map((shift) => folded(shift.id)))
-    if (best.length !== 1 || ids.size !== 1) return { ...slot, status: 'ambiguous', shift: null }
+    // A conflicting copy can map to another slot or rank. It still cannot be
+    // selected by id, so never advertise it as ready on the employee screen.
+    const labels = best.map((shift) => `${folded(shift.name)}|${text(shift.start)}|${text(shift.end)}`)
+    if (best.some((candidate) => !text(candidate.id) || choices.filter((shift) => folded(shift.id) === folded(candidate.id)).length !== 1)
+      || new Set(labels).size !== labels.length) {
+      return { ...slot, status: 'ambiguous', shift: null }
+    }
+    if (best.length > 1) return { ...slot, status: 'multiple', shift: null,
+      choices: best.toSorted((left, right) => text(left.start).localeCompare(text(right.start))
+        || text(left.end).localeCompare(text(right.end)) || text(left.name).localeCompare(text(right.name))) }
     return { ...slot, status: 'ready', shift: best[0] }
   })
 }
 
 export const taskShiftSlotFor = (state, storeId, date, shiftId, attendance = null) => taskShiftSlots(state, storeId, date, attendance)
-  .find((slot) => slot.shift && folded(slot.shift.id) === folded(shiftId)) || null
+  .flatMap((slot) => (slot.shift ? [slot] : (slot.choices || []).map((shift) => ({ ...slot, shift }))))
+  .find((slot) => folded(slot.shift.id) === folded(shiftId)) || null
 
 // Task ids the locked shift currently shows (persisted rows only). Null when the
 // attendance has no single selected lock or the context cannot be resolved.

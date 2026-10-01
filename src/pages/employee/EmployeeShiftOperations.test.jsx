@@ -41,6 +41,48 @@ const renderAssignedTasks = (initialEntries = ['/employee/tasks'], lock = true) 
 }
 
 describe('employee shift operations', () => {
+  it('opens independent time choices without writing or showing tasks, then locks only after server confirmation', async () => {
+    mocked.app.shiftDefinitions = [
+      ['AM1', 'Ca sáng', '08:00', '12:00'], ['AM2', 'Ca sáng', '08:30', '12:00'],
+      ['PM1', 'Ca chiều', '12:00', '18:00'], ['PM2', 'Ca chiều', '13:30', '18:00'],
+      ['N1', 'Ca tối', '17:00', '21:00'], ['N2', 'Ca tối', '19:00', '21:00'],
+    ].map(([id, name, start, end]) => ({ id, name, start, end, storeId: 'S01' }))
+    let finish
+    mocked.app.selectTaskShift = vi.fn(() => new Promise((resolve) => { finish = resolve }))
+    const view = renderAssignedTasks(['/employee/tasks'], false)
+    const morning = screen.getByRole('button', { name: /Ca sáng 2 ca/u })
+    expect(morning.disabled).toBe(false)
+    fireEvent.click(morning)
+    expect(morning.getAttribute('aria-expanded')).toBe('true')
+    expect(mocked.app.selectTaskShift).not.toHaveBeenCalled()
+    expect(screen.queryByRole('button', { name: 'LƯU' })).toBeNull()
+    const choice = screen.getByRole('button', { name: 'Ca sáng 08:30–12:00' })
+    fireEvent.click(choice)
+    fireEvent.click(choice)
+    expect(mocked.app.selectTaskShift).toHaveBeenCalledTimes(1)
+    expect(mocked.app.selectTaskShift).toHaveBeenCalledWith(expect.objectContaining({ selectedTaskShiftId: 'AM2' }))
+    expect(screen.queryByText(/Đã chọn · đã khóa/u)).toBeNull()
+    lockAttendance('AM2')
+    finish({ ok: true })
+    view.rerender(<MemoryRouter><EmployeeAssignedTasksPage /></MemoryRouter>)
+    await waitFor(() => expect(screen.getByText(/Đã chọn · đã khóa/u)).toBeTruthy())
+    expect(screen.getByRole('button', { name: /Ca sáng 08:30–12:00/u }).disabled).toBe(true)
+    expect(screen.queryByRole('button', { name: /Ca chiều/u })).toBeNull()
+  })
+  it('keeps all three choices usable when the configuration contains repeated copies without showing a checklist', async () => {
+    mocked.app.shiftDefinitions.push(...structuredClone(mocked.app.shiftDefinitions))
+    mocked.app.selectTaskShift = vi.fn().mockResolvedValue({ ok: false, uncertain: true, message: 'Chưa xác định kết quả' })
+    renderAssignedTasks(['/employee/tasks'], false)
+    for (const label of ['Ca sáng', 'Ca chiều', 'Ca tối']) {
+      expect(screen.getByRole('button', { name: new RegExp(label, 'u') }).disabled).toBe(false)
+    }
+    expect(screen.queryByText('Cấu hình trùng')).toBeNull()
+    expect(screen.queryByRole('button', { name: 'LƯU' })).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: /Ca chiều/u }))
+    await waitFor(() => expect(mocked.app.selectTaskShift).toHaveBeenCalledTimes(1))
+    expect(mocked.app.selectTaskShift).toHaveBeenCalledWith(expect.objectContaining({ attendanceId: 'ATT-01', selectedTaskShiftId: 'CA-2' }))
+    expect(screen.queryByText(/Đã chọn · đã khóa/u)).toBeNull()
+  })
   beforeEach(() => {
     globalThis.sessionStorage.clear()
     mocked.app = baseApp()
@@ -353,7 +395,7 @@ describe('employee shift operations', () => {
   it('disables missing or ambiguous shift configuration without guessing', () => {
     mocked.app.shiftDefinitions = [
       { id: 'A1', storeId: 'S01', name: 'Ca Sáng', start: '08:00', end: '12:00' },
-      { id: 'A2', storeId: 'S01', name: 'Ca sáng 2', start: '08:00', end: '12:00' },
+      { id: 'A2', storeId: 'S01', name: 'Ca Sáng', start: '08:00', end: '12:00' },
       { id: 'CA-3', storeId: 'S01', name: 'Ca Tối', start: '17:00', end: '21:00' },
     ]
     mocked.app.selectTaskShift = vi.fn()
