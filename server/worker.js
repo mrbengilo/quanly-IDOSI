@@ -1,4 +1,4 @@
-import { taskShiftContext, bindTaskShiftContext, mergeTaskShiftProgress, taskBelongsToAttendanceObligations } from '../src/domain/taskShift.js'
+import { taskShiftContext, bindTaskShiftContext, mergeTaskShiftProgress, attendanceTaskShiftLock, taskShiftLockAllows, taskIsAttendanceShiftObligation, taskProgressForObligations, taskShiftLockedTaskIds, selectAttendanceTaskShift, TASK_SHIFT_LOCK_STATUS } from '../src/domain/taskShift.js'
 import { normalizeOrderItems as normalizedHistoricalOrderItems, resolveOrderItems as resolveConfiguredOrderItems, totalOrderItemQuantity, totalOrderItemWeightKg } from '../src/domain/orderItems.js'
 import { orderRevenueByType, validateOrderRevenue } from '../src/domain/orderRevenue.js'
 import { salesOverviewFromSummary } from '../src/domain/salesOverview.js'
@@ -7980,6 +7980,7 @@ export const STALE_VERSION_REBASE_COMMANDS = new Set([
   'shift_expense.create',
   'task.done',
   'task.set_done',
+  'task.shift.select',
   'notification.mark_read',
   'notification.mark_all_read',
 ])
@@ -16978,7 +16979,13 @@ const attendanceCommand = async (db, actor, body, commandContext, env) => {
       })
     }
   }
-  const incompleteTasks = storeEmployee
+  // A selected task-shift lock owes exactly the locked shift's checklist; the
+  // historical attendance-shift rule still applies to unlocked/legacy-multi rows.
+  const checkoutTaskShiftLock = storeEmployee ? attendanceTaskShiftLock(openRecord) : null
+  const lockedTaskIds = checkoutTaskShiftLock?.status === TASK_SHIFT_LOCK_STATUS.SELECTED
+    ? taskShiftLockedTaskIds({ state, attendance: openRecord, employeeId })
+    : null
+  const owedTasks = storeEmployee
       ? (Array.isArray(state.tasks) ? state.tasks : []).filter((task) => {
         if (task.deletedAt) return false
         if (!workTaskIsRequired(task)) return false
@@ -16986,15 +16993,21 @@ const attendanceCommand = async (db, actor, body, commandContext, env) => {
         const checklistAttendanceId = String(task.checklistAttendanceId || '').trim()
         if (checklistAttendanceId && !attendanceReferenceMatches(checklistAttendanceId)) return false
         if (String(task.date || task.workDate || '') !== attendanceDate) return false
-        const taskShiftId = String(task.shiftId || task.shift || '')
-        if (taskShiftId && !sameIdentifier(taskShiftId, attendanceShiftId) && !taskBelongsToAttendanceObligations(task, openRecord)) return false
-        const completedBy = isPlainRecord(task.completedBy) ? task.completedBy : {}
-        return completedByEmployeeValue(completedBy, employeeId) !== true && task.done !== true
+        return taskIsAttendanceShiftObligation({
+          task,
+          attendance: openRecord,
+          matchesAttendanceShift: (taskShiftId) => sameIdentifier(taskShiftId, attendanceShiftId),
+          lockedTaskIds,
+        })
       })
     : []
+  const incompleteTasks = owedTasks.filter((task) => {
+    const completedBy = isPlainRecord(task.completedBy) ? task.completedBy : {}
+    return completedByEmployeeValue(completedBy, employeeId) !== true && task.done !== true
+  })
   const incompleteTaskIds = incompleteTasks.map((task) => String(task.id || '')).filter(Boolean)
   const savedIncompleteProgress = savedTaskProgressCoversIncompleteTasks({
-    progress: openRecord.taskProgress,
+    progress: lockedTaskIds ? taskProgressForObligations(openRecord.taskProgress, owedTasks.map((task) => task.id)) : openRecord.taskProgress,
     attendanceId: openRecord.id,
     employeeId,
     incompleteTaskIds,
@@ -18801,14 +18814,37 @@ const taskDoneCommand = async (db, actor, body, commandContext) => {
     throw new ApiError(409, 'TASK_DATE_INVALID', 'Chỉ được cập nhật công việc của ngày hiện tại.')
   }
   const taskShiftId = String(previous.shiftId || previous.shift || '')
-  if (taskShiftId) {
-    const openAttendance = (Array.isArray(state.attendance) ? state.attendance : []).find((record) => (
-      belongsToEmployee(record, employeeId)
-      && !record.deletedAt
-      && !record.checkOutAt
-      && !record.checkOut
-    ))
-    if (!openAttendance || !sameIdentifier(openAttendance.shiftId || openAttendance.shift, taskShiftId)) {
+  const doneOpenAttendance = (Array.isArray(state.attendance) ? state.attendance : []).find((record) => (
+    belongsToEmployee(record, employeeId)
+    && !record.deletedAt
+    && !record.checkOutAt
+    && !record.checkOut
+  )) || null
+  const doneEmployee = uniqueEmployeeIdentifierRecordMatch({
+    records: state.employees,
+    identifier: employeeId,
+    predicate: (record) => !record.deletedAt,
+  })?.record || null
+  if (doneEmployee && employeeUnit(doneEmployee) === 'store' && workTaskIsRequired(previous)) {
+    // Mandatory store work follows the attendance's single locked task shift;
+    // this command must not become a second write path around that lock.
+    if (!doneOpenAttendance) {
+      throw new ApiError(409, 'OPEN_ATTENDANCE_REQUIRED', 'Bạn cần điểm danh và đang trong ca để cập nhật công việc.')
+    }
+    const lock = attendanceTaskShiftLock(doneOpenAttendance)
+    if (lock.status === TASK_SHIFT_LOCK_STATUS.NONE) {
+      throw new ApiError(409, 'TASK_SHIFT_SELECTION_REQUIRED', 'Cần chọn ca công việc cho lượt điểm danh này trước khi cập nhật công việc.')
+    }
+    if (!taskIsAttendanceShiftObligation({
+      task: previous,
+      attendance: doneOpenAttendance,
+      matchesAttendanceShift: (reference) => sameIdentifier(reference, doneOpenAttendance.shiftId || doneOpenAttendance.shift),
+      lockedTaskIds: taskShiftLockedTaskIds({ state, attendance: doneOpenAttendance, employeeId }),
+    })) {
+      throw new ApiError(409, 'TASK_SHIFT_LOCKED', 'Công việc không thuộc ca công việc đã chọn của lượt điểm danh này.')
+    }
+  } else if (taskShiftId) {
+    if (!doneOpenAttendance || !sameIdentifier(doneOpenAttendance.shiftId || doneOpenAttendance.shift, taskShiftId)) {
       throw new ApiError(409, 'TASK_SHIFT_INVALID', 'Công việc không thuộc ca đang mở của bạn.')
     }
   }
@@ -18919,6 +18955,100 @@ const taskDoneCommand = async (db, actor, body, commandContext) => {
   }, commandContext)
 }
 
+// New command `task.shift.select`: records the single work-task shift of the
+// actor's own open store attendance. It re-validates against the state it
+// loads (rebase-safe), binds that shift's checklist once and never marks work
+// done, creates rewards or changes the attendance/payroll shift.
+const taskShiftSelectCommand = async (db, actor, body, commandContext) => {
+  if (actor.role !== 'employee') {
+    throw new ApiError(403, 'ROLE_FORBIDDEN', 'Chỉ nhân viên cửa hàng được chọn ca công việc.')
+  }
+  const payload = isPlainRecord(body.payload) ? body.payload : {}
+  const { current, state } = await loadGlobalCommandState(db, body, actor)
+  const employeeId = String(actor.employee_id || '').trim()
+  const employee = uniqueEmployeeIdentifierRecordMatch({
+    records: state.employees,
+    identifier: employeeId,
+    predicate: (record) => !record.deletedAt,
+  })?.record || null
+  if (!employee || employeeUnit(employee) !== 'store') {
+    throw new ApiError(403, 'EMPLOYEE_PROFILE_REQUIRED', 'Chức năng chọn ca công việc chỉ dành cho nhân viên cửa hàng.')
+  }
+  if ((payload.employeeId && !employeeIdentifierValues(employee).some((id) => sameIdentifier(id, payload.employeeId)))) {
+    throw new ApiError(403, 'TASK_SCOPE_FORBIDDEN', 'Thông tin nhân viên không thuộc lượt làm việc.')
+  }
+  const attendanceId = String(payload.attendanceId || '').trim()
+  if (!attendanceId) throw new ApiError(400, 'ATTENDANCE_ID_REQUIRED', 'Cần chỉ rõ lượt điểm danh.')
+  const attendance = Array.isArray(state.attendance) ? state.attendance : []
+  const ownAttendance = attendance.filter((record) => belongsToEmployee(record, employeeId) && !record.deletedAt)
+  const targetAttendance = uniqueIdentifierRecordMatch({
+    records: ownAttendance,
+    identifier: attendanceId,
+    collisionCode: 'ATTENDANCE_IDENTIFIER_COLLISION',
+    collisionMessage: 'Mã chấm công đang trùng với nhiều bản ghi; không thể chọn ca an toàn.',
+  })?.record || null
+  if (!targetAttendance || targetAttendance.checkOutAt || targetAttendance.checkOut) {
+    throw new ApiError(409, 'OPEN_ATTENDANCE_REQUIRED', 'Bạn cần điểm danh và đang trong ca để chọn ca công việc.')
+  }
+  if (payload.storeId && !sameIdentifier(payload.storeId, targetAttendance.storeId)) {
+    throw new ApiError(403, 'TASK_SCOPE_FORBIDDEN', 'Lượt điểm danh không thuộc cửa hàng của tài khoản.')
+  }
+  assertNoCaseCollidingOperationalIdentifiers(state)
+  assertNoCaseCollidingActiveWorkCatalogIdentifiers(state)
+  const selection = selectAttendanceTaskShift({
+    state,
+    attendance: targetAttendance,
+    employeeId,
+    selectedTaskShiftId: String(payload.selectedTaskShiftId || payload.shiftId || '').trim(),
+    now: commandContext.now,
+    actor: serverActorSnapshot(actor),
+  })
+  if (selection.error) {
+    throw new ApiError(selection.status || 409, selection.code, selection.error, selection.details || undefined)
+  }
+  const responseFor = (record, tasks) => ({
+    command: body.type,
+    attendanceId: record.id,
+    taskShiftSelection: record.taskShiftSelection,
+    attendance: record,
+    tasks,
+  })
+  if (selection.existing) {
+    return recordNoopCommand(db, actor, {
+      ...responseFor(targetAttendance, selection.context.tasks),
+      version: Number(current.version),
+      existing: true,
+    }, 200, commandContext)
+  }
+  const newAssignmentIds = [...new Set(selection.newTasks.map((task) => task.assignmentId))]
+  const nextTasks = [...(Array.isArray(state.tasks) ? state.tasks : []), ...selection.newTasks]
+  const boundIds = new Set(selection.context.tasks.map((task) => task.id))
+  const nextState = {
+    ...state,
+    attendance: attendance.map((record) => record === targetAttendance ? selection.attendance : record),
+    tasks: nextTasks,
+    taskAssignmentHistory: [...(Array.isArray(state.taskAssignmentHistory) ? state.taskAssignmentHistory : []), ...newAssignmentIds.map((id) => ({
+      id, assignmentId: id, employeeIds: [employeeId], storeId: targetAttendance.storeId, date: selection.date,
+      shiftId: selection.shift.id, shiftName: selection.shift.name,
+      tasks: selection.newTasks.filter((task) => task.assignmentId === id), assignedAt: commandContext.now,
+    }))],
+    stateVersion: Math.max(1, Number(state.stateVersion) || 1) + 1,
+  }
+  return commitGlobalStateDomainCommand(db, actor, current, nextState, {
+    action: body.type,
+    entityType: 'attendance-task-shift',
+    entityId: `${targetAttendance.id}:${employeeId}`,
+    before: { taskShiftSelection: targetAttendance.taskShiftSelection || null, taskShiftContexts: targetAttendance.taskShiftContexts || [] },
+    after: { taskShiftSelection: selection.attendance.taskShiftSelection },
+    metadata: {
+      attendanceId: targetAttendance.id, storeId: targetAttendance.storeId, date: selection.date,
+      shiftId: selection.shift.id, slot: selection.slot.key, legacyContext: Boolean(selection.attendance.taskShiftSelection.legacyContext),
+      createdTaskIds: selection.newTasks.map((task) => task.id),
+    },
+    response: responseFor(selection.attendance, nextTasks.filter((task) => boundIds.has(task.id))),
+  }, commandContext)
+}
+
 const taskProgressCommand = async (db, actor, body, commandContext) => {
   if (!['employee', 'business_support'].includes(actor.role)) {
     throw new ApiError(403, 'ROLE_FORBIDDEN', 'Chỉ nhân viên được gửi kết quả công việc trong ca.')
@@ -18970,6 +19100,19 @@ const taskProgressCommand = async (db, actor, body, commandContext) => {
   const date = String(openAttendance.date || openAttendance.workDate || '').slice(0, 10)
   const selectedTaskShiftId = String(payload.selectedTaskShiftId || '').trim()
   let manualContext = null
+  if (targetUnit === 'store') {
+    // Store work is saved only for the shift locked on this attendance. An old
+    // client omitting selectedTaskShiftId must not reach the attendance-shift
+    // fallback, and a payload for another shift is rejected before any write.
+    const lock = attendanceTaskShiftLock(openAttendance)
+    if (!Object.hasOwn(payload, 'selectedTaskShiftId') || lock.status === TASK_SHIFT_LOCK_STATUS.NONE) {
+      throw new ApiError(409, 'TASK_SHIFT_SELECTION_REQUIRED', 'Cần chọn ca công việc cho lượt điểm danh này trước khi lưu kết quả. Vui lòng tải lại trang.')
+    }
+    const requestedShift = taskShiftContext({ state, attendance: openAttendance, employeeId, selectedTaskShiftId })
+    if (!requestedShift.error && !taskShiftLockAllows(lock, requestedShift.shift.id)) {
+      throw new ApiError(409, 'TASK_SHIFT_LOCKED', 'Lượt điểm danh này đã khóa ca công việc khác; không thể lưu công việc của ca này.', { shiftIds: lock.shiftIds })
+    }
+  }
   if (Object.hasOwn(payload, 'selectedTaskShiftId')) {
     if (targetUnit !== 'store') throw new ApiError(400, 'TASK_SHIFT_INVALID', 'Lựa chọn ca chỉ dành cho nhân viên cửa hàng.')
     if ((payload.employeeId && !employeeIdentifierValues(employee).includes(String(payload.employeeId)))
@@ -25472,6 +25615,9 @@ const dispatchCommand = async (db, env, user, body, commandContext) => {
   }
   if (body.type === 'task.progress.save') {
     return await taskProgressCommand(db, user, body, commandContext)
+  }
+  if (body.type === 'task.shift.select') {
+    return await taskShiftSelectCommand(db, user, body, commandContext)
   }
   if (body.type === 'task.done' || body.type === 'task.set_done') {
     return await taskDoneCommand(db, user, body, commandContext)

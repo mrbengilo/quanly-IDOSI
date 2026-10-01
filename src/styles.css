@@ -562,6 +562,37 @@ textarea:focus { border-color: #52a675; box-shadow: 0 0 0 3px rgba(8, 121, 61, .
   color: #076a35;
 }
 
+.task-shift-buttons > button {
+  min-height: 64px;
+}
+
+.task-shift-buttons > button:disabled {
+  cursor: not-allowed;
+  transform: none;
+}
+
+.task-shift-buttons > button.is-selected:disabled {
+  opacity: 1;
+}
+
+.task-shift-buttons > button.is-unavailable {
+  border-style: dashed;
+  background: #f6f8f7;
+  color: #7a8a81;
+}
+
+.task-shift-buttons > button span {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.task-shift-gate {
+  display: grid;
+  gap: 12px;
+  justify-items: start;
+}
+
 .shift-checklist-tabs strong,
 .shift-checklist-tabs small,
 .shift-checklist-tabs span {

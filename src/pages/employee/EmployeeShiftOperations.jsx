@@ -1,19 +1,15 @@
 import { useMemo, useRef, useState } from 'react'
-import { useSearchParams } from 'react-router-dom'
-import { ClipboardCheck, Clock3, ReceiptText, Save, Store } from 'lucide-react'
-import { Badge, Button, Card, Field, InfoNote, Input, MoneyInput, PageHeader, Progress, Select, TableWrap } from '../../components/UI'
-import { taskShiftChoices, taskShiftContext } from '../../domain/taskShift'
+import { useNavigate } from 'react-router-dom'
+import { ClipboardCheck, Clock3, Lock, LogIn, ReceiptText, Save, Store } from 'lucide-react'
+import { Badge, Button, Card, Field, InfoNote, Input, MoneyInput, PageHeader, Progress, TableWrap } from '../../components/UI'
+import { attendanceTaskShiftLock, TASK_SHIFT_LOCK_STATUS, taskShiftContext, taskShiftLockAllows, taskShiftSlots } from '../../domain/taskShift'
 import { useApp } from '../../state/AppContext'
 import {
   money,
   operationalIdentifierRecordMatch,
   shortDateTime24,
-  today,
 } from '../../utils'
-import {
-  employeeTaskAssignmentById,
-  taskCompletedByEmployee,
-} from './taskScope'
+import { taskCompletedByEmployee } from './taskScope'
 
 const employeeKey = (record) => String(record?.id || record?.code || record?.employeeId || '')
 const employeeAliases = (record) => [record?.id, record?.code, record?.employeeId, record?.employeeCode]
@@ -159,24 +155,43 @@ export function EmployeeShiftExpensePage() {
   )
 }
 
+const taskShiftTime = (shift) => (shift?.start && shift?.end ? `${shift.start}–${shift.end}` : '')
+const UNAVAILABLE_SLOT_TEXT = {
+  missing: 'Chưa cấu hình',
+  ambiguous: 'Cấu hình trùng',
+}
+
 export function EmployeeAssignedTasksPage() {
   const app = useApp()
+  const navigate = useNavigate()
   const employee = currentEmployeeOf(app)
   const employeeId = employeeKey(employee)
-  const [params] = useSearchParams()
-  const assignment = !ownOpenAttendance(app.attendance, employee, app.employees) && params.get('assignment')
-    ? employeeTaskAssignmentById({ assignmentId: params.get('assignment'), taskAssignmentHistory: app.taskAssignmentHistory, tasks: app.tasks, employee, employees: app.employees, stores: app.stores }) : null
   const attendance = ownOpenAttendance(app.attendance, employee, app.employees)
-  const storeId = attendance?.storeId || employee.storeId
-  const scopeKey = JSON.stringify([employeeId, storeId, recordDate(attendance) || assignment?.date || today(), attendance?.id, assignment?.id])
-  const [selection, setSelection] = useState({ scopeKey: '', id: '' })
-  const selectedTaskShiftId = selection.scopeKey === scopeKey ? selection.id : ''
-  const shifts = taskShiftChoices(app, storeId, recordDate(attendance) || assignment?.date || today())
-  const previewAttendance = attendance || { id: '', employeeId, storeId, date: assignment?.date || today() }
-  const context = selectedTaskShiftId ? taskShiftContext({
-    state: assignment ? { ...app, tasks: assignment.tasks, workCatalogItems: [] } : app, attendance: previewAttendance, employeeId, selectedTaskShiftId,
+  const storeId = attendance?.storeId || ''
+  const date = recordDate(attendance)
+  // The lock belongs to the attendance record returned by the server, never to
+  // this component, a tab, the URL or browser storage.
+  const lock = attendanceTaskShiftLock(attendance)
+  const slots = attendance ? taskShiftSlots(app, storeId, date, attendance) : []
+  const scopeKey = JSON.stringify([employeeId, storeId, date, attendance?.id || ''])
+  const [legacyView, setLegacyView] = useState({ scopeKey: '', id: '' })
+  const [pending, setPending] = useState({ scopeKey: '', slot: '' })
+  const [notice, setNotice] = useState({ scopeKey: '', tone: 'orange', text: '' })
+  const selectRequestRef = useRef(null)
+  const selectBusyRef = useRef(false)
+  const pendingSlot = pending.scopeKey === scopeKey ? pending.slot : ''
+  const scopedNotice = notice.scopeKey === scopeKey ? notice : null
+  const legacyShiftId = lock.status === TASK_SHIFT_LOCK_STATUS.LEGACY_MULTI
+    && legacyView.scopeKey === scopeKey && taskShiftLockAllows(lock, legacyView.id) ? legacyView.id : ''
+  const selectedTaskShiftId = lock.status === TASK_SHIFT_LOCK_STATUS.SELECTED ? lock.shiftId : legacyShiftId
+  const context = attendance && selectedTaskShiftId ? taskShiftContext({
+    state: app, attendance, employeeId, selectedTaskShiftId,
   }) : { tasks: [] }
-  const displayedTasks = context.tasks
+  const lockedSlot = lock.status === TASK_SHIFT_LOCK_STATUS.SELECTED
+    ? slots.find((slot) => slot.shift && taskShiftLockAllows(lock, slot.shift.id)) || null
+    : null
+  const lockedLabel = lockedSlot?.label || attendance?.taskShiftSelection?.shiftName || context.shift?.name || lock.shiftId
+  const displayedTasks = context.error ? [] : context.tasks
   // Drafts are keyed by identity, business date, attendance and task shift.
   const draftKey = JSON.stringify([scopeKey, selectedTaskShiftId])
   const [drafts, setDrafts] = useState({})
@@ -209,6 +224,39 @@ export function EmployeeAssignedTasksPage() {
     }))
   )).sort((left, right) => String(right.at || '').localeCompare(String(left.at || '')))
 
+  const chooseSlot = async (slot) => {
+    if (!attendance || !slot.shift || selectBusyRef.current || lock.status !== TASK_SHIFT_LOCK_STATUS.NONE
+      || typeof app.selectTaskShift !== 'function') return
+    const fingerprint = JSON.stringify([attendance.id, slot.shift.id])
+    // A retry of the same choice reuses its key so a lost response is replayed,
+    // never executed twice; a different choice gets its own request.
+    if (!selectRequestRef.current || selectRequestRef.current.fingerprint !== fingerprint) {
+      selectRequestRef.current = { fingerprint, idempotencyKey: `task-shift:${crypto.randomUUID()}` }
+    }
+    const requestScope = scopeKey
+    selectBusyRef.current = true
+    setPending({ scopeKey: requestScope, slot: slot.key })
+    setNotice({ scopeKey: '', tone: 'orange', text: '' })
+    try {
+      const result = await app.selectTaskShift({
+        attendanceId: attendance.id,
+        selectedTaskShiftId: slot.shift.id,
+        idempotencyKey: selectRequestRef.current.idempotencyKey,
+      })
+      if (result?.ok) {
+        selectRequestRef.current = null
+      } else {
+        if (!result?.uncertain) selectRequestRef.current = null
+        setNotice({ scopeKey: requestScope, tone: 'orange', text: result?.message || 'Không thể chọn ca công việc.' })
+      }
+    } catch (error) {
+      setNotice({ scopeKey: requestScope, tone: 'orange', text: error?.message || 'Chưa xác định được kết quả chọn ca. Vui lòng tải lại trang.' })
+    } finally {
+      selectBusyRef.current = false
+      setPending({ scopeKey: '', slot: '' })
+    }
+  }
+
   const submit = async () => {
     if (!ready || busyRef.current || typeof app.saveStoreTaskProgress !== 'function') return
     const tasks = displayedTasks.map((task) => ({ id: task.id, completed: statusFor(task) }))
@@ -240,46 +288,87 @@ export function EmployeeAssignedTasksPage() {
     }
   }
 
+  const visibleSlots = lock.status === TASK_SHIFT_LOCK_STATUS.SELECTED
+    ? [lockedSlot || { key: 'locked', label: lockedLabel, status: 'ready', shift: context.shift || { id: lock.shiftId } }]
+    : lock.status === TASK_SHIFT_LOCK_STATUS.LEGACY_MULTI
+      ? lock.shiftIds.map((shiftId) => {
+          const slot = slots.find((item) => item.shift && taskShiftLockAllows({ shiftIds: [shiftId] }, item.shift.id))
+          return { key: shiftId, label: slot?.label || shiftId, status: 'ready', shift: slot?.shift || { id: shiftId } }
+        })
+      : slots
+
   return (
     <div className="page employee-assigned-tasks-page">
       <PageHeader title="CÔNG VIỆC ĐƯỢC GIAO" subtitle="Cập nhật kết quả trong ca và gửi tỷ lệ hoàn thành cho quản lý." icon={ClipboardCheck} />
-      {!attendance && <InfoNote tone="orange">Chưa điểm danh hoặc đã kết ca: bạn chỉ có thể xem công việc, không thể lưu kết quả.</InfoNote>}
-      <Card title="Tiến độ công việc" action={<Badge tone={allCompleted ? 'green' : 'orange'}>{completedTasks}/{displayedTasks.length} · {completionRate}%</Badge>}>
-        <Progress value={completionRate} color={allCompleted ? '#07883f' : '#f28b16'} />
-        <InfoNote>Chọn ca làm việc để xem và cập nhật công việc được giao. Danh sách công việc không phụ thuộc vào giờ điểm danh.</InfoNote>
-        <InfoNote>Công việc nhận thưởng được tick và lưu riêng tại “Công việc tính thưởng”.</InfoNote>
-        <Field label="Chọn ca làm việc">
-          <Select value={selectedTaskShiftId} disabled={saving} onChange={(event) => setSelection({ scopeKey, id: event.target.value })}>
-            <option value="">Vui lòng chọn ca làm việc</option>
-            {shifts.map((shift) => <option key={shift.id} value={shift.id}>{shift.name || shift.id}{shift.start && shift.end ? ` · ${shift.start}–${shift.end}` : ''}</option>)}
-          </Select>
-        </Field>
-        {!selectedTaskShiftId && <InfoNote>Vui lòng chọn ca làm việc để xem công việc được giao</InfoNote>}
-        {context.error && <InfoNote tone="orange">{context.error}</InfoNote>}
-        {!shifts.length && <InfoNote tone="orange">Chưa có cấu hình ca làm việc hợp lệ cho cửa hàng.</InfoNote>}
-        <div className="task-checklist" id="employee-shift-checklist">
-          {displayedTasks.map((task) => {
-            const checked = statusFor(task)
-            const stored = storedStatusFor(task)
-            return <label key={task.id} className={stored ? 'done is-locked' : checked ? 'done' : ''}>
-              <input
-                type="checkbox"
-                checked={checked}
-                disabled={!selectedShiftIsOpen || saving || stored}
-                onChange={(event) => updateDraft({ statuses: { ...draft.statuses, [task.id]: event.target.checked } })}
-              />
-              <span className="task-checklist__title">{task.title || task.name || 'Công việc'}</span>
-              <Badge tone={checked ? 'green' : 'orange'}>{stored ? 'Đã lưu' : checked ? 'Chờ lưu' : 'Chưa hoàn thành'}</Badge>
-            </label>
-          })}
-          {selectedTaskShiftId && !context.error && !displayedTasks.length && <InfoNote>Không có công việc bắt buộc cho ca này trong ngày làm việc được phép truy cập.</InfoNote>}
-        </div>
-        {selectedShiftIsOpen && noteRequired && <Field label="Lý do công việc bắt buộc chưa hoàn thành" required hint="Không cần nhập cho công việc nhận thưởng tùy chọn." error={!incompleteReason.trim() ? 'Bắt buộc nhập lý do nếu còn công việc bắt buộc chưa hoàn thành.' : ''}>
-          <textarea value={incompleteReason} maxLength="1000" disabled={saving} onChange={(event) => updateDraft({ reason: event.target.value })} placeholder="Nêu rõ lý do công việc bắt buộc chưa hoàn thành" />
-        </Field>}
-        <Button icon={Save} loading={saving} disabled={!ready || saving} onClick={submit}>LƯU KẾT QUẢ</Button>
-      </Card>
-      <Card title="Lịch sử gửi kết quả">
+      {!attendance ? (
+        <Card title="Công việc trong lượt điểm danh">
+          <div className="task-shift-gate" role="status">
+            <InfoNote tone="orange">Bạn cần điểm danh trước khi chọn ca và xem công việc được giao.</InfoNote>
+            <Button icon={LogIn} onClick={() => navigate('/employee/attendance')}>Đi đến điểm danh</Button>
+          </div>
+        </Card>
+      ) : (
+        <Card title="Tiến độ công việc" action={selectedTaskShiftId ? <Badge tone={allCompleted ? 'green' : 'orange'}>{completedTasks}/{displayedTasks.length} · {completionRate}%</Badge> : null}>
+          {selectedTaskShiftId && <Progress value={completionRate} color={allCompleted ? '#07883f' : '#f28b16'} />}
+          <InfoNote>Công việc nhận thưởng được tick và lưu riêng tại “Công việc tính thưởng”.</InfoNote>
+          {lock.status === TASK_SHIFT_LOCK_STATUS.NONE && <InfoNote>Chọn ca công việc cho lượt điểm danh này. Sau khi chọn, ca được khóa và không thể đổi trong lượt điểm danh hiện tại.</InfoNote>}
+          {lock.status === TASK_SHIFT_LOCK_STATUS.LEGACY_MULTI && <InfoNote tone="orange">Lượt điểm danh này đã lưu công việc của nhiều ca trước khi áp dụng quy tắc một ca. Bạn chỉ có thể hoàn tất các ca đã lưu; không thể chọn thêm ca mới.</InfoNote>}
+          <div className="shift-checklist-tabs task-shift-buttons" role="group" aria-label="Chọn ca công việc" aria-busy={Boolean(pendingSlot)}>
+            {visibleSlots.map((slot) => {
+              const selected = lock.status === TASK_SHIFT_LOCK_STATUS.SELECTED
+                || (lock.status === TASK_SHIFT_LOCK_STATUS.LEGACY_MULTI && taskShiftLockAllows({ shiftIds: [selectedTaskShiftId] }, slot.shift?.id))
+              const unavailable = slot.status !== 'ready'
+              const disabled = lock.status === TASK_SHIFT_LOCK_STATUS.SELECTED || unavailable || Boolean(pendingSlot) || saving
+              return (
+                <button
+                  key={slot.key}
+                  type="button"
+                  className={`${selected ? 'is-selected' : ''}${unavailable ? ' is-unavailable' : ''}`}
+                  aria-pressed={selected}
+                  disabled={disabled}
+                  onClick={() => (lock.status === TASK_SHIFT_LOCK_STATUS.LEGACY_MULTI
+                    ? setLegacyView({ scopeKey, id: slot.shift.id })
+                    : chooseSlot(slot))}
+                >
+                  <strong>{slot.label}</strong>
+                  <small>{unavailable ? UNAVAILABLE_SLOT_TEXT[slot.status] : taskShiftTime(slot.shift) || 'Theo cấu hình cửa hàng'}</small>
+                  {selected && lock.status === TASK_SHIFT_LOCK_STATUS.SELECTED && <span><Lock size={12} aria-hidden="true" /> Đã chọn · đã khóa</span>}
+                  {pendingSlot === slot.key && <span>Đang ghi nhận…</span>}
+                </button>
+              )
+            })}
+          </div>
+          {lock.status === TASK_SHIFT_LOCK_STATUS.NONE && slots.some((slot) => slot.status === 'ambiguous') && <InfoNote tone="orange">Có ca đang bị cấu hình trùng cho cùng buổi; cần quản lý xử lý trước khi chọn ca đó.</InfoNote>}
+          {lock.status === TASK_SHIFT_LOCK_STATUS.NONE && slots.length > 0 && slots.every((slot) => slot.status === 'missing') && <InfoNote tone="orange">Chưa có cấu hình Ca sáng/Ca chiều/Ca tối hợp lệ cho cửa hàng hôm nay.</InfoNote>}
+          {scopedNotice?.text && <InfoNote tone={scopedNotice.tone}>{scopedNotice.text}</InfoNote>}
+          {lock.status === TASK_SHIFT_LOCK_STATUS.SELECTED && <InfoNote>Ca công việc <strong>{lockedLabel}</strong> đã được khóa cho lượt điểm danh này.</InfoNote>}
+          {context.error && <InfoNote tone="orange">{context.error}</InfoNote>}
+          {selectedTaskShiftId && <>
+            <div className="task-checklist" id="employee-shift-checklist">
+              {displayedTasks.map((task) => {
+                const checked = statusFor(task)
+                const stored = storedStatusFor(task)
+                return <label key={task.id} className={stored ? 'done is-locked' : checked ? 'done' : ''}>
+                  <input
+                    type="checkbox"
+                    checked={checked}
+                    disabled={!selectedShiftIsOpen || saving || stored}
+                    onChange={(event) => updateDraft({ statuses: { ...draft.statuses, [task.id]: event.target.checked } })}
+                  />
+                  <span className="task-checklist__title">{task.title || task.name || 'Công việc'}</span>
+                  <Badge tone={checked ? 'green' : 'orange'}>{stored ? 'Đã lưu' : checked ? 'Chờ lưu' : 'Chưa hoàn thành'}</Badge>
+                </label>
+              })}
+              {!context.error && !displayedTasks.length && <InfoNote>Không có công việc bắt buộc cho ca này trong ngày làm việc được phép truy cập.</InfoNote>}
+            </div>
+            {selectedShiftIsOpen && noteRequired && <Field label="Lý do công việc bắt buộc chưa hoàn thành" required hint="Không cần nhập cho công việc nhận thưởng tùy chọn." error={!incompleteReason.trim() ? 'Bắt buộc nhập lý do nếu còn công việc bắt buộc chưa hoàn thành.' : ''}>
+              <textarea value={incompleteReason} maxLength="1000" disabled={saving} onChange={(event) => updateDraft({ reason: event.target.value })} placeholder="Nêu rõ lý do công việc bắt buộc chưa hoàn thành" />
+            </Field>}
+            <Button icon={Save} loading={saving} disabled={!ready || saving} onClick={submit}>LƯU KẾT QUẢ</Button>
+          </>}
+        </Card>
+      )}
+      <Card title="Lịch sử kết quả đã gửi">
         <TableWrap>
           <thead><tr><th>Thời gian</th><th>Ca / Lượt giao</th><th>Hoàn thành</th><th>Tỷ lệ</th><th>Ghi chú</th></tr></thead>
           <tbody>

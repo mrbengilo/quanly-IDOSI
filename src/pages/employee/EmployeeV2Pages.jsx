@@ -1,4 +1,4 @@
-import { taskBelongsToAttendanceObligations } from '../../domain/taskProgress'
+import { attendanceTaskShiftLock, TASK_SHIFT_LOCK_STATUS, taskIsAttendanceShiftObligation, taskProgressForObligations } from '../../domain/taskProgress'
 import { attendanceMatchesWindow, scheduleWindows, supportForScheduledWindow } from '../../domain/supportScheduling'
 import { useEffect, useRef, useState } from 'react'
 import {
@@ -333,9 +333,14 @@ export function EmployeeDashboardV2() {
       activeRecord,
       task.checklistAttendanceId,
     )) return false
-    const taskShiftId = String(task.shiftId || task.shift || '')
     const activeShift = resolveTarget(app.shiftDefinitions, activeShiftId, shiftAliases, { id: activeShiftId })
-    return activeRecord && (taskBelongsToAttendanceObligations(task, activeRecord) || !taskShiftId || referenceMatchesTarget(app.shiftDefinitions, activeShift, taskShiftId, shiftAliases))
+    // Same obligation rule as server checkout; a locked attendance owes its
+    // selected task-shift context, not an unselected check-in snapshot.
+    return Boolean(activeRecord) && taskIsAttendanceShiftObligation({
+      task,
+      attendance: activeRecord,
+      matchesAttendanceShift: (taskShiftId) => referenceMatchesTarget(app.shiftDefinitions, activeShift, taskShiftId, shiftAliases),
+    })
   })
   const incompleteTasks = activeShiftTasks.filter((task) => taskIsRequired(task) && !taskCompletedByEmployee(task, employeeId, app.employees))
   const incompleteRewardTasks = activeShiftTasks.filter((task) => !taskIsRequired(task) && !taskCompletedByEmployee(task, employeeId, app.employees))
@@ -350,7 +355,9 @@ export function EmployeeDashboardV2() {
   }
   const taskProgress = activeRecord?.taskProgress || localTaskProgress
   const savedIncompleteProgress = savedTaskProgressCoversIncompleteTasks({
-    progress: taskProgress,
+    progress: attendanceTaskShiftLock(activeRecord).status === TASK_SHIFT_LOCK_STATUS.SELECTED
+      ? taskProgressForObligations(taskProgress, activeShiftTasks.filter(taskIsRequired).map((task) => task.id))
+      : taskProgress,
     attendanceId: activeRecord?.id,
     employeeId,
     employeeIds: employeeAliases(dashboardEmployee),
