@@ -48,6 +48,7 @@ import { IdentityDocumentViewer } from '../../components/IdentityDocumentViewer'
 import { optimizeIdentityImage } from '../../domain/identityImage'
 import { cashSeries, shifts } from '../../data'
 import { apiGetIdentityImage } from '../../services/idosiApi'
+import { canonicalEmployeeStatus, EMPLOYEE_STATUS, employeeStatusChangePermission, employeeStatusLabel, employeeStatusOptions, employeeStatusTone, isDepartedEmployeeStatus } from '../../domain/employeeStatus'
 import { useApp } from '../../state/AppContext'
 import { nextSupportTransferBoundaryDelay } from '../../domain/supportScheduling'
 import { UnitCompensationStatistics } from '../compensation/UnitCompensationStatistics'
@@ -91,7 +92,7 @@ const identifierMatch = (records, reference, identifiersOf = (record) => [record
 const employeeIdentifiers = (employee = {}) => [employee.id, employee.code, employee.employeeId]
 const employeeFor = (employees, reference) => identifierMatch(employees, reference, employeeIdentifiers)
 const storeFor = (stores, reference) => identifierMatch(stores, reference, (store) => [store.id])
-const EMPLOYEE_STATUSES = ['Đang làm việc', 'Tạm ngưng', 'Đã nghỉ việc']
+const EMPLOYEE_STATUSES = [EMPLOYEE_STATUS.ACTIVE, EMPLOYEE_STATUS.PAUSED, EMPLOYEE_STATUS.DEPARTED]
 const EMPLOYMENT_TYPES = ['Full-Time', 'Part-Time', 'Thử Việc']
 const emptyEmployeeForm = {
   id: '',
@@ -274,7 +275,7 @@ const employeeToForm = (employee = {}, storeId = '') => {
     age: employee.age ?? '',
     username: employee.username || '',
     password: '',
-    status: employee.status === 'Tạm nghỉ' ? 'Tạm ngưng' : (employee.status || 'Đang làm việc'),
+    status: canonicalEmployeeStatus(employee.status),
     storeId: employee.storeId || storeId,
   }
 }
@@ -301,11 +302,6 @@ const fullTimeSalaryPolicyFor = ({ configs, employee, store, period }) => {
   }
 }
 
-const employeeStatusTone = (status) => {
-  if (status === 'Đang làm việc') return 'green'
-  if (status === 'Đã nghỉ việc') return 'red'
-  return 'orange'
-}
 
 export function StoreOverview() {
   const { employees, attendance, imports, activeStore } = useStoreScope()
@@ -391,6 +387,8 @@ export function StoreEmployees() {
   const [isDeleting, setIsDeleting] = useState(false)
   const [deleteError, setDeleteError] = useState('')
   const deletingRef = useRef(false)
+  const [saving, setSaving] = useState(false)
+  const savingRef = useRef(false)
   const canManageStore = ['admin', 'business_support', 'manager', 'store_manager'].includes(session?.role)
   const canCreateStoreEmployee = ['admin', 'business_support', 'manager', 'store_manager'].includes(session?.role)
   const isBusinessSupport = ['business_support', 'manager'].includes(session?.role)
@@ -401,6 +399,18 @@ export function StoreEmployees() {
   const editingRequiresPassword = Boolean(editing) && !editingSharedLogin && !(
     editing.authUserId || editing.authVersion || editing.passwordHash || editing.legacyPassword
   )
+  const statusActorRole = isBusinessSupport ? 'business_support' : session?.role
+  const originalStatus = editing ? canonicalEmployeeStatus(editing.status) : EMPLOYEE_STATUS.ACTIVE
+  const formStatus = canonicalEmployeeStatus(form.status)
+  const statusChanged = Boolean(editing) && formStatus !== originalStatus
+  const departing = statusChanged && isDepartedEmployeeStatus(formStatus)
+  const editingDeparted = Boolean(editing) && isDepartedEmployeeStatus(originalStatus) && statusActorRole !== 'admin'
+  const canChangeStatus = ['admin', 'business_support'].includes(statusActorRole) && !editingDeparted
+  const statusOptions = employeeStatusOptions({ actorRole: statusActorRole, current: originalStatus })
+  const departingHasOpenAttendance = departing && (Array.isArray(app.attendance) ? app.attendance : []).some((record) => (
+    !record.deletedAt && !record.checkOutAt && !record.checkOut
+    && employeeFor(employees, record.employeeId) === employeeFor(employees, editing?.id || editing?.code)
+  ))
 
   useEffect(() => {
     const url = viewingImage?.url
@@ -455,7 +465,7 @@ export function StoreEmployees() {
       employeeType(employee),
       employeeAddressLabel(employee),
     ].join(' ').toLowerCase()
-    const employeeStatus = employee.status === 'Tạm nghỉ' ? 'Tạm ngưng' : employee.status
+    const employeeStatus = canonicalEmployeeStatus(employee.status)
     return (!normalizedQuery || haystack.includes(normalizedQuery)) && (status === 'all' || employeeStatus === status)
   })
 
@@ -583,45 +593,74 @@ export function StoreEmployees() {
   const save = async (event) => {
     event?.preventDefault()
     if (editing ? !canManageStore : !canCreateStoreEmployee) return
-    const editingId = editing?.id || editing?.code || ''
-    const scopedForm = { ...form, storeId: scopedStoreId }
-    const validationErrors = validateStoreEmployee(
-      scopedForm,
-      employees,
-      editingId,
-      !editing || editingRequiresPassword,
-      { requireIdentityImages: !editing, linkedEmployeeId: form.linkedEmployeeId, credentialsReadOnly: editingSharedLogin },
-    )
-    if (validationErrors.length) {
-      setErrors(validationErrors)
-      notify?.('Vui lòng kiểm tra lại thông tin nhân viên.', 'info')
+    if (savingRef.current) return
+    if (editingDeparted) {
+      setErrors(['Nhân viên đã nghỉ làm. Chỉ Admin được khôi phục hoặc chỉnh sửa hồ sơ này.'])
       return
     }
-
-    const payload = buildStoreEmployeePayload(form, {
-      storeId: scopedStoreId,
-      store: scopedStore,
-    })
-    if (editingSharedLogin) {
-      delete payload.username
-      delete payload.password
+    const editingId = editing?.id || editing?.code || ''
+    const statusPermission = employeeStatusChangePermission({ actorRole: statusActorRole, unit: 'store', from: originalStatus, to: formStatus })
+    if (!statusPermission.ok) {
+      setErrors([statusPermission.message])
+      return
     }
-
-    if (editing) {
-      if (typeof updateEmployee !== 'function') return notify?.('Chức năng cập nhật nhân viên đang được kết nối.', 'info')
-      const result = await updateEmployee(editingId, payload)
-      if (!result?.ok) return notify?.(result?.message || 'Không thể cập nhật nhân viên.', 'info')
+    // Changing only the working status must not force re-entering unrelated
+    // credentials or identity data; the server keeps every other field.
+    const unchangedExceptStatus = Boolean(editing) && statusChanged && JSON.stringify({ ...form, status: '' })
+      === JSON.stringify({ ...employeeToForm(editing, scopedStoreId), status: '' })
+    let payload
+    if (unchangedExceptStatus) {
+      payload = { status: formStatus }
     } else {
-      if (typeof addEmployee !== 'function') return notify?.('Chức năng thêm nhân viên đang được kết nối.', 'info')
-      const result = await addEmployee(payload)
-      if (!result?.ok) return notify?.(result?.message || 'Không thể thêm nhân viên.', 'info')
+      const scopedForm = { ...form, storeId: scopedStoreId }
+      const validationErrors = validateStoreEmployee(
+        scopedForm,
+        employees,
+        editingId,
+        !editing || editingRequiresPassword,
+        { requireIdentityImages: !editing, linkedEmployeeId: form.linkedEmployeeId, credentialsReadOnly: editingSharedLogin },
+      )
+      if (validationErrors.length) {
+        setErrors(validationErrors)
+        notify?.('Vui lòng kiểm tra lại thông tin nhân viên.', 'info')
+        return
+      }
+      payload = buildStoreEmployeePayload({ ...form, status: formStatus }, {
+        storeId: scopedStoreId,
+        store: scopedStore,
+      })
+      if (editingSharedLogin) {
+        delete payload.username
+        delete payload.password
+      }
     }
-    closeDrawer()
+
+    savingRef.current = true
+    setSaving(true)
+    setErrors([])
+    try {
+      if (editing) {
+        if (typeof updateEmployee !== 'function') return notify?.('Chức năng cập nhật nhân viên đang được kết nối.', 'info')
+        const result = await updateEmployee(editingId, payload)
+        if (!result?.ok) {
+          setErrors([result?.message || 'Không thể cập nhật nhân viên.'])
+          return
+        }
+      } else {
+        if (typeof addEmployee !== 'function') return notify?.('Chức năng thêm nhân viên đang được kết nối.', 'info')
+        const result = await addEmployee(payload)
+        if (!result?.ok) return notify?.(result?.message || 'Không thể thêm nhân viên.', 'info')
+      }
+      closeDrawer()
+    } finally {
+      savingRef.current = false
+      setSaving(false)
+    }
   }
 
-  const activeCount = scopedEmployees.filter((item) => item.status === 'Đang làm việc').length
-  const pausedCount = scopedEmployees.filter((item) => item.status === 'Tạm ngưng' || item.status === 'Tạm nghỉ').length
-  const stoppedCount = scopedEmployees.filter((item) => item.status === 'Đã nghỉ việc').length
+  const activeCount = scopedEmployees.filter((item) => canonicalEmployeeStatus(item.status) === EMPLOYEE_STATUS.ACTIVE).length
+  const pausedCount = scopedEmployees.filter((item) => canonicalEmployeeStatus(item.status) === EMPLOYEE_STATUS.PAUSED).length
+  const stoppedCount = scopedEmployees.filter((item) => isDepartedEmployeeStatus(item.status)).length
   return (
     <div className="page">
       <PageHeader title="Quản lý nhân viên" subtitle={canManageStore ? 'Thêm, sửa và quản lý hồ sơ nhân viên theo cửa hàng.' : isBusinessSupport ? 'Thêm mới và xem danh sách nhân viên theo cửa hàng.' : 'Danh sách nhân viên theo cửa hàng — chế độ chỉ xem.'} actions={<><SearchInput value={query} onChange={setQuery} placeholder="Tìm mã, tên, CCCD..." />{canCreateStoreEmployee && <Button icon={Plus} onClick={openCreate}>Thêm nhân viên</Button>}</>} />
@@ -630,15 +669,15 @@ export function StoreEmployees() {
         <MetricCard label="Tổng nhân viên" value={scopedEmployees.length} helper="Thuộc cửa hàng đang chọn" icon={Users} tone="green" compact />
         <MetricCard label="Đang làm việc" value={activeCount} helper="Theo trạng thái" icon={UserCheck} tone="green" compact />
         <MetricCard label="Tạm ngưng" value={pausedCount} helper="Theo trạng thái" icon={Clock3} tone="orange" compact />
-        <MetricCard label="Đã nghỉ việc" value={stoppedCount} helper="Theo trạng thái" icon={Users} tone="red" compact />
+        <MetricCard label="Đã nghỉ làm" value={stoppedCount} helper="Theo trạng thái" icon={Users} tone="red" compact />
       </div>
-      <div className="filter-pills"><button className={status === 'all' ? 'active' : ''} onClick={() => setStatus('all')}>Tất cả ({scopedEmployees.length})</button>{EMPLOYEE_STATUSES.map((item) => <button key={item} className={status === item ? 'active' : ''} onClick={() => setStatus(item)}>{item}</button>)}</div>
+      <div className="filter-pills"><button className={status === 'all' ? 'active' : ''} onClick={() => setStatus('all')}>Tất cả ({scopedEmployees.length})</button>{EMPLOYEE_STATUSES.map((item) => <button key={item} className={status === item ? 'active' : ''} aria-pressed={status === item} onClick={() => setStatus(item)}>{employeeStatusLabel(item)}</button>)}</div>
       <Card>
         <TableWrap>
           <thead><tr><th>Mã nhân viên</th><th>Nhân viên</th><th>Phân bổ</th><th>Loại</th><th>Vị trí</th><th>CCCD</th><th>Liên hệ</th><th>Địa chỉ</th><th>Lương</th><th>Tài khoản</th><th>Trạng thái</th>{canManageStore && <th>Thao tác</th>}</tr></thead>
           <tbody>
             {filtered.map((employee) => {
-              const normalizedStatus = employee.status === 'Tạm nghỉ' ? 'Tạm ngưng' : (employee.status || 'Đang làm việc')
+              const normalizedStatus = canonicalEmployeeStatus(employee.status)
               const type = employeeType(employee)
               const hourlyEmployee = isHourlyEmployee(type)
               const fullTimeSalary = hourlyEmployee ? null : fullTimeSalaryPolicyFor({
@@ -676,8 +715,8 @@ export function StoreEmployees() {
                     ? <><strong>{money(fullTimeSalary.policy.standardHourlyRateVnd)}/giờ</strong><small className="table-sub">Tới {fullTimeSalary.policy.thresholdHours} giờ; phần vượt {money(fullTimeSalary.policy.excessHourlyRateVnd)}/giờ</small><small className={`table-sub ${fullTimeSalary.configured ? 'green-text' : 'orange-text'}`}>{fullTimeSalary.configured ? 'Đã cài đặt theo nhân viên' : 'Đang dùng mức mặc định an toàn'}</small></>
                     : <span className="orange-text">Cửa hàng chưa có chính sách lương</span>}</td>
                 <td>{employee.username || '—'}</td>
-                <td>{outboundTransfer ? <Badge tone="orange">Đang hỗ trợ</Badge> : <Badge tone={employeeStatusTone(normalizedStatus)}>{normalizedStatus}</Badge>}</td>
-                {canManageStore && <td>{canEditEmployee(employee) ? <div className="row-actions"><button onClick={() => openEdit(employee)} aria-label={`Sửa ${employee.name}`}><Edit3 /></button>{canDeleteEmployee && (session?.role === 'admin' || !['Đã nghỉ việc', 'inactive'].includes(employee.status)) && <button className="danger" disabled={isDeleting} onClick={() => { setDeleteError(''); setPendingDelete(employeeFor(employees, employee.id || employee.code)) }} aria-label={`Xóa ${employee.name}`}><Trash2 /></button>}</div> : <Badge tone="blue">Chỉ xem</Badge>}</td>}
+                <td>{outboundTransfer ? <Badge tone="orange">Đang hỗ trợ</Badge> : <Badge tone={employeeStatusTone(normalizedStatus)}>{employeeStatusLabel(normalizedStatus)}</Badge>}</td>
+                {canManageStore && <td>{canEditEmployee(employee) ? <div className="row-actions"><button onClick={() => openEdit(employee)} aria-label={`Sửa ${employee.name}`}><Edit3 /></button>{canDeleteEmployee && (session?.role === 'admin' || !isDepartedEmployeeStatus(employee.status)) && <button className="danger" disabled={isDeleting} onClick={() => { setDeleteError(''); setPendingDelete(employeeFor(employees, employee.id || employee.code)) }} aria-label={`Xóa ${employee.name}`}><Trash2 /></button>}</div> : <Badge tone="blue">Chỉ xem</Badge>}</td>}
               </tr>
             })}
             {!filtered.length && <tr><td colSpan={canManageStore ? 12 : 11}>Không có nhân viên phù hợp.</td></tr>}
@@ -689,7 +728,7 @@ export function StoreEmployees() {
         <InfoNote tone="orange">Xóa hồ sơ <strong>{pendingDelete?.name}</strong> ({pendingDelete?.id || pendingDelete?.code}) tại <strong>{storeFor(stores, pendingDelete?.storeId)?.name || pendingDelete?.storeId}</strong>? {pendingDelete?.linkedEmployeeId ? 'Chỉ gỡ vai trò nhân viên cửa hàng này; tài khoản nguồn và các vai trò hợp lệ khác được giữ lại.' : 'Tài khoản của hồ sơ sẽ ngừng đăng nhập.'} Lịch sử chấm công, đơn hàng và lương được giữ lại.</InfoNote>
         {deleteError && <div role="alert"><InfoNote tone="orange">{deleteError}</InfoNote></div>}
       </Modal>}
-      {canCreateStoreEmployee && <Modal wide open={open} onClose={closeDrawer} title={editing ? 'Cập nhật nhân viên' : 'Thêm nhân viên'} footer={<><Button type="button" variant="outline" onClick={closeDrawer} disabled={Boolean(imageBusy)}>Hủy bỏ</Button><Button type="button" icon={Save} onClick={save} disabled={Boolean(imageBusy)}>{editing ? 'Lưu thay đổi' : 'Lưu nhân viên'}</Button></>}>
+      {canCreateStoreEmployee && <Modal wide open={open} onClose={closeDrawer} title={editing ? 'Cập nhật nhân viên' : 'Thêm nhân viên'} footer={<><Button type="button" variant="outline" onClick={closeDrawer} disabled={Boolean(imageBusy) || saving}>Hủy bỏ</Button><Button type="button" variant={departing ? 'danger' : 'primary'} icon={Save} onClick={save} loading={saving} disabled={Boolean(imageBusy) || saving || editingDeparted}>{departing ? 'Xác nhận nghỉ làm' : editing ? 'Lưu thay đổi' : 'Lưu nhân viên'}</Button></>}>
         <form className="form-stack" onSubmit={save}>
           {errors.length > 0 && <InfoNote tone="orange"><strong>Thông tin chưa hợp lệ</strong><ul>{errors.map((error) => <li key={error}>{error}</li>)}</ul></InfoNote>}
           <h3>Thông tin nhân viên</h3>
@@ -715,6 +754,25 @@ export function StoreEmployees() {
               ? <Input value="Nhân viên bán hàng" readOnly aria-readonly="true" />
               : <Select value={form.position} onChange={updateField('position')}><option>Nhân viên bán hàng</option><option>Nhân viên thu ngân</option><option>Nhân viên kho</option><option>Trưởng ca</option><option>Khác</option></Select>}</Field>
           </div>}
+          {editing && <>
+            <h3>Trạng thái làm việc</h3>
+            <div className="form-grid">
+              <Field label="Trạng thái làm việc" required hint={canChangeStatus ? 'Nhân viên mới luôn ở trạng thái Đang làm việc.' : undefined}>
+                <Select value={formStatus} onChange={updateField('status')} disabled={!canChangeStatus || saving}>
+                  {statusOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+                </Select>
+              </Field>
+            </div>
+            {editingDeparted && <InfoNote tone="orange">Nhân viên đã nghỉ làm. Chỉ Admin được khôi phục hoặc chỉnh sửa hồ sơ này.</InfoNote>}
+            {!editingDeparted && !canChangeStatus && <InfoNote>Chỉ Admin hoặc Hỗ trợ KD được thay đổi trạng thái làm việc của nhân viên.</InfoNote>}
+            {departing && <div role="alert"><InfoNote tone="orange">
+              {editingSharedLogin
+                ? <>Hồ sơ này dùng chung tài khoản với <strong>{sharedLoginOwner?.name || editing.linkedEmployeeId}</strong>. Khi lưu, chỉ vai trò Nhân viên cửa hàng này bị gỡ khỏi tài khoản và các phiên đang dùng vai trò này bị đăng xuất; tài khoản gốc và các vai trò khác vẫn đăng nhập bình thường.</>
+                : <>Khi lưu, tài khoản <strong>{editing.username || editing.id}</strong> bị khóa ngay: mọi phiên đang đăng nhập trên các thiết bị bị đăng xuất và không thể đăng nhập lại.</>}
+              {' '}Hồ sơ, chấm công, đơn hàng, lương/thưởng và lịch sử được giữ nguyên; hệ thống không tự kết ca hay xóa nhân viên. Chỉ Admin có thể khôi phục.
+              {departingHasOpenAttendance && <> <strong>Nhân viên đang có ca chưa kết thúc</strong>; ca này được giữ nguyên để quản lý xử lý.</>}
+            </InfoNote></div>}
+          </>}
           {!linkingExistingProfile && <>
           <h3>Địa chỉ</h3>
           <AddressAutocomplete

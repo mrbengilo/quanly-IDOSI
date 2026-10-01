@@ -3043,6 +3043,15 @@ export function AppProvider({ children }) {
       return { ok: false, message: 'Quản lý cửa hàng chỉ được cập nhật nhân viên thuộc cửa hàng được phân công.' }
     }
     if (payload.phone !== undefined && !isValidEmployeePhone(payload.phone)) return { ok: false, message: 'Số điện thoại phải gồm đúng 10 số và bắt đầu bằng số 0.' }
+    if (payload.status !== undefined) {
+      // Mirror of the server rule (the server remains authoritative). Loaded
+      // on demand so the login bundle stays within its budget.
+      const { employeeStatusChangePermission } = await import('../domain/employeeStatus')
+      const statusPermission = employeeStatusChangePermission({
+        actorRole, unit: previous.unit || previous.unitType, from: previous.status, to: payload.status,
+      })
+      if (!statusPermission.ok) return { ok: false, code: statusPermission.code, message: statusPermission.message }
+    }
     let authVersion = previous.authVersion
     if (apiRef.current.enabled) {
       try {
