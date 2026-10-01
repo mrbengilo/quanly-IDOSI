@@ -5,7 +5,7 @@ import { resolve } from 'node:path'
 import { expect, it, vi } from 'vitest'
 import { createIdosiServer } from './server.mjs'
 import { STAFF_WORK_CATALOG_SEED_VERSION } from '../../src/domain/compensationPolicies.js'
-import { taskShiftContext } from '../../src/domain/taskShift.js'
+import { taskShiftContext, taskShiftSlots } from '../../src/domain/taskShift.js'
 
 const PASSWORD = 'Synthetic-task-lock-password'
 const location = { latitude: 10.8, longitude: 106.7, accuracy: 5 }
@@ -85,6 +85,48 @@ const progressPayload = (state, shiftId, completed) => {
     tasks: taskShiftContext({ state, attendance, employeeId: 'E1', selectedTaskShiftId: shiftId }).tasks.map((task) => ({ id: task.id, completed })),
     incompleteReason: completed ? '' : `Chưa xong ${shiftId}` }
 }
+
+it('resolves independent time choices and repeated persisted copies consistently through select/save and restart', async () => {
+  vi.useFakeTimers({ toFake: ['Date'] })
+  vi.setSystemTime(new Date('2026-09-22T16:48:00+07:00'))
+  const app = await harness('task-lock-copies', {
+    shiftDefinitions: [...shiftDefinitions, ...structuredClone(shiftDefinitions),
+      { id: 'pm-1330', storeId: 'S1', name: 'Ca Chiều', start: '13:30', end: '18:00', active: true }],
+    attendance: [{ id: 'A-copies', employeeId: 'E1', storeId: 'S1', date: '2026-09-22', workDate: '2026-09-22',
+      shiftId: 'ca3', shift: 'ca3', shiftName: 'Ca Tối', shiftStart: '17:00', shiftEnd: '21:00',
+      checkIn: '16:48', checkInAt: '2026-09-22T09:48:00.000Z', checkOut: null, checkOutAt: null, unit: 'store' }],
+  })
+  try {
+    let state = await app.projected(app.employee)
+    expect(state.shiftDefinitions.filter((shift) => shift.id === 'ca2')).toHaveLength(2)
+    expect(taskShiftSlots(state, 'S1', '2026-09-22', openOf(state)).map((slot) => slot.status)).toEqual(['ready', 'multiple', 'ready'])
+    expect(openOf(state).taskShiftSelection).toBeUndefined()
+    const version = app.version()
+    const payload = { attendanceId: 'A-copies', selectedTaskShiftId: 'pm-1330' }
+    await app.command(app.employee, 'task.shift.select', payload, 200, 'copies-select', version)
+    await app.command(app.employee, 'task.shift.select', payload, 200, 'copies-select', version)
+    expect((await app.command(app.employee, 'task.shift.select', { ...payload, selectedTaskShiftId: 'ca3' }, 409, 'copies-select', version)).error.code).toBe('IDEMPOTENCY_KEY_REUSED')
+    expect(app.audit('task.shift.select')).toBe(1)
+    state = await app.projected(app.employee)
+    await app.command(app.employee, 'task.progress.save', progressPayload(state, 'pm-1330', true))
+    const beforeRestart = await app.projected(app.employee)
+    await app.command(app.admin, 'shift_definition.update', { shiftId: 'pm-1330', name: 'Ca Chiều điều chỉnh', start: '14:00', end: '20:00' })
+    await app.stop()
+    await app.start()
+    app.employee = await app.login('task-lock-copies.employee')
+    state = await app.projected(app.employee)
+    expect(openOf(state).taskShiftSelection).toEqual(openOf(beforeRestart).taskShiftSelection)
+    expect(openOf(state).taskShiftContexts).toEqual(openOf(beforeRestart).taskShiftContexts)
+    expect(state.tasks).toEqual(beforeRestart.tasks)
+    expect(taskShiftContext({ state, attendance: openOf(state), employeeId: 'E1', selectedTaskShiftId: 'pm-1330' }).tasks).toEqual(beforeRestart.tasks)
+    expect(openOf(state).shiftId).toBe('ca3')
+    expect(openOf(state).taskShiftSelection.shiftId).toBe('pm-1330')
+    expect(app.audit('task.shift.select')).toBe(1)
+  } finally {
+    await app.cleanup()
+    vi.useRealTimers()
+  }
+}, 60_000)
 
 it('locks one task shift per attendance on the server, idempotently, across restart and new attendance', async () => {
   vi.useFakeTimers({ toFake: ['Date'] })
@@ -224,12 +266,20 @@ it('selects a shift with no tasks, and never writes a selection onto an attendan
       app.rawCommand(app.employee, 'task.shift.select', { attendanceId: second.id, selectedTaskShiftId: 'ca1' }, crypto.randomUUID(), version),
       app.rawCommand(app.employee, 'attendance.check_out', { attendanceId: second.id, cashRevenue: 0, transferRevenue: 0, location }, crypto.randomUUID(), version),
     ])
-    const state = await app.projected(app.employee)
-    const closed = state.attendance.find((row) => row.id === second.id)
+    let state = await app.projected(app.employee)
+    let closed = state.attendance.find((row) => row.id === second.id)
     if (select.status === 200) {
-      // Selection committed first; checkout then validated the locked (empty) shift.
-      expect(checkout.status).toBe(200)
+      // Checkout can read the pre-selection snapshot and safely reject its
+      // unfinished tasks before selection commits. Re-read, then submit anew;
+      // a domain rejection is not an uncertain network write to replay blindly.
       expect(closed.taskShiftSelection.shiftId).toBe('ca1')
+      if (checkout.status === 409) {
+        expect(checkout.body.error.code).toBe('TASK_PROGRESS_REQUIRED')
+        expect(closed.checkOutAt).toBeFalsy()
+        await app.command(app.employee, 'attendance.check_out', { attendanceId: second.id, cashRevenue: 0, transferRevenue: 0, location })
+        state = await app.projected(app.employee)
+        closed = state.attendance.find((row) => row.id === second.id)
+      } else expect(checkout.status, JSON.stringify(checkout.body)).toBe(200)
     } else {
       expect(select.body.error.code).toBe('OPEN_ATTENDANCE_REQUIRED')
       expect(checkout.status, JSON.stringify(checkout.body)).toBe(200)

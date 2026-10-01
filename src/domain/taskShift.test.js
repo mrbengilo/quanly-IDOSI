@@ -18,6 +18,82 @@ const fixture = (checkIn = '16:48') => ({
 const context = (state, selectedTaskShiftId = 'ca3') => taskShiftContext({ state, attendance: state.attendance[0], employeeId: 'E1', selectedTaskShiftId })
 
 describe('explicit task shift scope', () => {
+  it('offers every independent SM TNV-shaped shift explicitly instead of treating 3/4/3 valid choices as conflicts', () => {
+    const state = fixture()
+    state.shiftDefinitions = [
+      ['am-0830', 'Ca sáng', '08:30', '12:00'], ['am-0800', 'Ca sáng', '08:00', '12:00'], ['am-0930', 'Ca sáng', '09:30', '13:00'],
+      ['pm-1400', 'Ca chiều', '14:00', '21:00'], ['pm-1200', 'Ca chiều', '12:00', '18:00'], ['pm-0930', 'Ca chiều', '09:30', '17:30'], ['pm-1330', 'Ca chiều', '13:30', '18:00'],
+      ['night-1900', 'Ca tối', '19:00', '21:00'], ['night-1700', 'Ca tối', '17:00', '21:00'], ['night-1800', 'Ca tối', '18:00', '21:00'],
+    ].map(([id, name, start, end]) => ({ id, name, start, end, storeId: 'S1', date: null, active: true }))
+    const before = structuredClone(state)
+    const slots = taskShiftSlots(state, 'S1', '2026-09-29', state.attendance[0])
+    expect(slots.map((slot) => [slot.status, slot.shift, slot.choices.length])).toEqual([
+      ['multiple', null, 3], ['multiple', null, 4], ['multiple', null, 3],
+    ])
+    expect(taskShiftSlots({ ...state, shiftDefinitions: [...state.shiftDefinitions].reverse() }, 'S1', '2026-09-29')).toEqual(slots)
+    for (const slot of slots) for (const shift of slot.choices) {
+      const selected = selectAttendanceTaskShift({ state, attendance: state.attendance[0], employeeId: 'E1', selectedTaskShiftId: shift.id, now: 'x' })
+      expect(selected.error).toBeUndefined()
+      expect(selected.attendance.taskShiftSelection).toMatchObject({ shiftId: shift.id, slot: slot.key })
+      expect(selected.context.tasks.map((task) => task.catalogItemId)).toEqual([`CAT-${{ morning: 'ca1', afternoon: 'ca2', night: 'ca3' }[slot.key]}`])
+    }
+    expect(state).toEqual(before)
+  })
+  it('collapses repeated copies of the same configured entity before resolving all three slots and context', () => {
+    const state = fixture()
+    state.shiftDefinitions.push(...structuredClone(state.shiftDefinitions))
+    const before = structuredClone(state)
+    for (const definitions of [state.shiftDefinitions, [...state.shiftDefinitions].reverse()]) {
+      const input = { ...state, shiftDefinitions: definitions }
+      expect(taskShiftSlots(input, 'S1', '2026-09-29').map((slot) => slot.status)).toEqual(['ready', 'ready', 'ready'])
+      expect(context(input, 'ca2').tasks.map((task) => task.catalogItemId)).toEqual(['CAT-ca2'])
+      expect(selectAttendanceTaskShift({ state: input, attendance: input.attendance[0], employeeId: 'E1', selectedTaskShiftId: 'ca2', now: 'x' }).error).toBeUndefined()
+    }
+    expect(state).toEqual(before)
+  })
+  it('does not collapse contradictory versions of one identity or independent ids with equal names and hours', () => {
+    const state = fixture()
+    state.shiftDefinitions.push({ ...state.shiftDefinitions[0], start: '09:00' })
+    expect(taskShiftSlots(state, 'S1', '2026-09-29').map((slot) => slot.status)).toEqual(['ambiguous', 'ready', 'ready'])
+    expect(context(state, 'ca1').error).toBeTruthy()
+    state.shiftDefinitions[4] = { ...state.shiftDefinitions[0], id: 'independent' }
+    expect(taskShiftSlots(state, 'S1', '2026-09-29')[0].status).toBe('ambiguous')
+  })
+  it('detects conflicting identity even across different slots and ignores JSON key order for identical copies', () => {
+    const state = fixture()
+    const original = state.shiftDefinitions[0]
+    state.shiftDefinitions.push(Object.fromEntries(Object.entries(original).reverse()))
+    expect(taskShiftSlots(state, 'S1', '2026-09-29')[0].status).toBe('ready')
+    state.shiftDefinitions.push({ id: 'custom', name: 'Ca linh hoạt', start: '09:00', end: '11:00', storeId: 'S1', date: '2026-09-29' })
+    expect(taskShiftSlots(state, 'S1', '2026-09-29')[0].status).toBe('ambiguous')
+  })
+  it('filters production-shaped UUID definitions by store, business date and lifecycle without inventing alias choices', () => {
+    const state = fixture()
+    state.workCatalogItems = state.workCatalogItems.filter((item) => item.shiftId !== 'custom')
+    state.shiftDefinitions = state.shiftDefinitions.slice(0, 3).map((shift, i) => ({ ...shift, id: `shift-uuid-${i}` }))
+    const valid = structuredClone(state.shiftDefinitions)
+    state.shiftDefinitions.push(...valid.map((shift) => ({ ...shift, id: `deleted-${shift.id}`, deletedAt: '2026-08-24', active: false })),
+      ...valid.map((shift) => ({ ...shift, id: `past-${shift.id}`, date: '2026-08-23' })),
+      ...valid.map((shift) => ({ ...shift, id: `future-${shift.id}`, date: '2026-12-08' })),
+      ...valid.map((shift) => ({ ...shift, id: `foreign-${shift.id}`, storeId: 'S2' })),
+      ...valid.map((shift) => ({ ...shift, id: `inactive-${shift.id}`, active: false })))
+    expect(taskShiftChoices(state, 'S1', '2026-09-29')).toEqual(valid)
+    expect(taskShiftSlots(state, 'S1', '2026-09-29').map((slot) => slot.status)).toEqual(['ready', 'ready', 'ready'])
+    expect(context(state, 'shift-uuid-2').tasks.map((task) => task.catalogItemId)).toEqual(['CAT-ca3'])
+  })
+  it('does not offer another employee support attendance in either server or employee projection', () => {
+    const state = fixture()
+    state.shiftDefinitions = []
+    state.workCatalogItems = []
+    const support = { id: 'A2', employeeId: 'E2', storeId: 'S1', date: '2026-09-29', supportTransferId: 'TR2', shiftId: 'SUPPORT_2', shiftName: 'Ca Sáng', shiftStart: '08:00', shiftEnd: '12:00' }
+    state.attendance.push(support)
+    expect(taskShiftSlots(state, 'S1', '2026-09-29', state.attendance[0]).map((slot) => slot.status)).toEqual(['missing', 'missing', 'missing'])
+    expect(context(state, 'SUPPORT_2').error).toBeTruthy()
+    const own = { ...support, id: 'A1', employeeId: 'E1' }
+    state.attendance = [own, support]
+    expect(taskShiftSlots(state, 'S1', '2026-09-29', own)[0]).toMatchObject({ status: 'ready', shift: { id: 'SUPPORT_2' } })
+    expect(context(state, 'SUPPORT_2').error).toBeUndefined()
+  })
   it.each(['11:59', '12:00', '16:48', '16:59', '17:00', '00:01'])('does not derive tasks or work date from check-in %s', (time) => {
     const state = fixture(time)
     const before = structuredClone(state)
@@ -114,7 +190,7 @@ describe('explicit task shift scope', () => {
   it('offers immutable support shift metadata without inferring from its check-in', () => {
     const state = fixture()
     state.attendance[0] = { ...state.attendance[0], shiftId: 'SUPPORT_1', supportTransferId: 'TR1', shiftName: 'Ca hỗ trợ', shiftStart: '22:00', shiftEnd: '06:00' }
-    expect(taskShiftChoices(state, 'S1')).toContainEqual(expect.objectContaining({ id: 'SUPPORT_1', start: '22:00', end: '06:00' }))
+    expect(taskShiftChoices(state, 'S1', '2026-09-29', state.attendance[0])).toContainEqual(expect.objectContaining({ id: 'SUPPORT_1', start: '22:00', end: '06:00' }))
   })
   it('rejects generated ids occupied by foreign or retired records', () => {
     const state = fixture()
@@ -134,7 +210,7 @@ describe('explicit task shift scope', () => {
     state.shiftDefinitions.push({ id: 'global-am', name: 'Ca Sáng' }, { id: 'pm-29', storeId: 'S1', date: '2026-09-29', name: 'Ca Chiều' })
     expect(taskShiftSlots(state, 'S1', '2026-09-29').map((slot) => slot.shift?.id)).toEqual(['ca1', 'pm-29', 'ca3'])
     expect(taskShiftSlots(state, 'S1', '2026-09-30').map((slot) => slot.shift?.id)).toEqual(['ca1', 'ca2', 'ca3'])
-    state.shiftDefinitions.push({ id: 'night-2', storeId: 'S1', name: 'Ca tối 2', start: '17:00', end: '21:00' })
+    state.shiftDefinitions.push({ id: 'night-2', storeId: 'S1', name: 'Ca Tối' })
     expect(taskShiftSlots(state, 'S1', '2026-09-29')[2]).toMatchObject({ status: 'ambiguous', shift: null })
     state.shiftDefinitions = state.shiftDefinitions.filter((shift) => !['ca1', 'global-am'].includes(shift.id))
     state.workCatalogItems = state.workCatalogItems.filter((item) => item.shiftId !== 'ca1')

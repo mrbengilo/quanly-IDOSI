@@ -101,6 +101,37 @@ const AppProbe = forwardRef(function AppProbe(_props, ref) {
 const renderProvider = () => render(<AppProvider><AppProbe ref={appRef} /></AppProvider>)
 
 describe('remote command active-store preservation', () => {
+  it.each(['select', 'save'])('refreshes incomplete task %s deltas instead of caching missing history as current', async (operation) => {
+    vi.useFakeTimers()
+    window.history.replaceState({}, '', '/employee/tasks')
+    const attendance = { id: 'ATT-TASK', employeeId: 'E01', storeId: 'STORE-A', date: '2026-10-01', shiftId: 'ca1', checkIn: '08:00' }
+    const locked = { ...attendance, taskShiftSelection: { attendanceId: attendance.id, shiftId: 'ca1', slot: 'morning' }, taskShiftContexts: [{ shiftId: 'ca1', taskIds: ['TASK-1'] }] }
+    const task = { id: 'TASK-1', assignmentId: 'ASSIGN-1', storeId: 'STORE-A', date: attendance.date, employeeIds: ['E01'], shiftId: 'ca1', required: true, completedBy: {} }
+    const initial = { ...makeRemoteState(), employees: [{ id: 'E01', code: 'E01', name: 'Fixture', unit: 'store', storeId: 'STORE-A' }],
+      attendance: [operation === 'save' ? locked : attendance], tasks: [task], taskAssignmentHistory: [], workCatalogItems: [],
+      shiftDefinitions: [{ id: 'ca1', name: 'Ca sáng', storeId: 'STORE-A' }] }
+    const history = { id: 'ASSIGN-1', employeeIds: ['E01'], progressHistory: [{ employeeId: 'E01', attendanceId: attendance.id, completionRate: 100 }] }
+    const projection = (state, version) => ({ user: employeeHomeUser, state, version, projection: 'global', screen: 'employee-tasks', policies: [] })
+    api.apiLogin.mockResolvedValue({ user: employeeHomeUser })
+    api.apiBootstrapState.mockResolvedValue(projection(initial, 1))
+    api.apiGetSystemScreenState.mockResolvedValue(projection(initial, 1))
+    renderProvider()
+    await act(async () => { await appRef.current.login('employee-one', 'password') })
+    await act(async () => { await appRef.current.ensureSystemWorkspaceData({ screen: 'employee-tasks' }) })
+    api.apiGetSystemScreenState.mockClear()
+    api.apiGetSystemScreenState.mockResolvedValue(projection({ ...initial, attendance: [locked], taskAssignmentHistory: [history] }, 2))
+    api.apiCommand.mockResolvedValueOnce({ version: 2, attendance: locked, tasks: [task], completionRate: 100 })
+    await act(async () => {
+      const payload = { attendanceId: attendance.id, selectedTaskShiftId: 'ca1', tasks: [{ id: task.id, completed: true }] }
+      const result = operation === 'select' ? await appRef.current.selectTaskShift(payload) : await appRef.current.saveStoreTaskProgress(payload)
+      expect(result.ok).toBe(true)
+    })
+    // Simulate returning to the same screen before its deferred refresh. The
+    // delta lacks assignment history and cannot satisfy the new server version.
+    await act(async () => { await appRef.current.ensureSystemWorkspaceData({ screen: 'employee-tasks' }) })
+    expect(api.apiGetSystemScreenState).toHaveBeenCalledTimes(1)
+    expect(appRef.current.taskAssignmentHistory).toEqual([history])
+  })
   beforeEach(() => {
     appRef = createRef()
     window.history.replaceState({}, '', '/')
