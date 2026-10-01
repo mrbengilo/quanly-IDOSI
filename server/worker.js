@@ -8722,10 +8722,19 @@ const employeeStatusValues = (value) => {
   if (['locked', 'tam ngung', 'tam nghi'].includes(normalized)) {
     return { profile: 'Tạm ngưng', account: 'locked' }
   }
-  if (['inactive', 'da nghi viec'].includes(normalized)) {
+  if (['inactive', 'da nghi viec', 'da nghi lam'].includes(normalized)) {
     return { profile: 'Đã nghỉ việc', account: 'inactive' }
   }
   throw new ApiError(400, 'STATUS_INVALID', 'Trạng thái nhân viên không hợp lệ.')
+}
+
+// HTKD may mark a store employee in its operational scope as departed (store
+// access is asserted by the caller). Other units, store managers and
+// reactivation stay Admin-only.
+const assertEmployeeStatusChangeAllowed = (actor, unit, requestedStatus) => {
+  if (actor.role === 'admin' || requestedStatus.account !== 'inactive') return
+  if (actor.role === 'business_support' && unit === 'store') return
+  throw new ApiError(403, 'EMPLOYEE_DELETE_FORBIDDEN', 'Chỉ Admin hoặc Hỗ trợ KD (với nhân viên cửa hàng) được cho nhân viên nghỉ làm.')
 }
 
 const legacyPrimaryManagerSupportsSourceProfile = (state, authTarget, sourceProfile) => {
@@ -10009,6 +10018,11 @@ const employeeProfileCommand = async (db, actor, body, commandContext, env) => {
   if (actor.role !== 'admin' && previous && ['da nghi viec', 'inactive'].includes(normalizeTextKey(previous.status))) {
     throw new ApiError(403, 'EMPLOYEE_REACTIVATE_FORBIDDEN', 'Chỉ Admin được khôi phục nhân viên đã nghỉ việc.')
   }
+  // Authorize a departure before any profile validation so a denied actor gets
+  // the permission error, not a data-validation error about another field.
+  if (operation === 'update' && profilePayload.status !== undefined) {
+    assertEmployeeStatusChangeAllowed(actor, unit, employeeStatusValues(profilePayload.status))
+  }
   if (previous && profilePayload.storeId !== undefined
     && !sameIdentifier(profilePayload.storeId, previous.storeId)) {
     throw new ApiError(400, 'EMPLOYEE_STORE_IMMUTABLE', 'Không thể đổi đơn vị của nhân viên qua cập nhật hồ sơ.')
@@ -10191,11 +10205,11 @@ const employeeProfileCommand = async (db, actor, body, commandContext, env) => {
   let requestedStatus = null
   if (operation === 'update' && profilePayload.status !== undefined) {
     requestedStatus = employeeStatusValues(profilePayload.status)
-    if (actor.role !== 'admin' && requestedStatus.account === 'inactive') {
-      throw new ApiError(403, 'EMPLOYEE_DELETE_FORBIDDEN', 'Chỉ Admin được cho nhân viên nghỉ việc hoặc xóa khỏi hệ thống.')
-    }
+    assertEmployeeStatusChangeAllowed(actor, unit, requestedStatus)
     profile.status = requestedStatus.profile
   }
+  const departingNow = operation === 'update' && requestedStatus?.account === 'inactive'
+    && !['da nghi viec', 'inactive'].includes(normalizeTextKey(previous?.status))
   const previousWasActiveManager = previous
     ? resolveExactlyOneActiveStoreManager({ storeId, managers: [previous] }).ok
     : false
@@ -10430,6 +10444,11 @@ const employeeProfileCommand = async (db, actor, body, commandContext, env) => {
       if (actor.role !== 'admin' && authTarget.status === 'inactive') {
         throw new ApiError(403, 'EMPLOYEE_REACTIVATE_FORBIDDEN', 'Chỉ Admin được khôi phục tài khoản nhân viên đã nghỉ việc.')
       }
+      if (actor.role !== 'admin' && departingNow && authTarget.role !== 'employee') {
+        // A legacy promotion moved this login to another role (for example
+        // Quản lý CH). Disabling it would also lock a role HTKD cannot manage.
+        throw new ApiError(409, 'EMPLOYEE_SHARED_ACCOUNT_ADMIN_REQUIRED', 'Tài khoản đăng nhập của nhân viên này đang dùng cho vai trò khác; cần Admin xử lý việc nghỉ làm.')
+      }
       const username = requestedUsername || authTarget.username
       const normalizedUsername = normalizeUsername(username)
       if (!/^[A-Za-z0-9._-]{3,80}$/u.test(username)) {
@@ -10575,6 +10594,32 @@ const employeeProfileCommand = async (db, actor, body, commandContext, env) => {
       }
     }
   }
+  if (departingNow && previous?.linkedEmployeeId) {
+    // A linked store-employee role shares another profile's login. Departure
+    // removes only this role (role options ignore departed profiles) and ends
+    // the sessions currently acting as it; the shared login and its other
+    // roles stay active.
+    const sharedLogin = await uniqueUserByEmployeeIdentifier(db, String(previous.linkedEmployeeId))
+    if (sharedLogin) {
+      additionalStatements.push(db.prepare(`
+        UPDATE sessions
+        SET revoked_at = ?, last_seen_at = ?
+        WHERE user_id = ? AND revoked_at IS NULL
+          AND active_role = 'employee' AND LOWER(COALESCE(active_employee_id, '')) = LOWER(?)
+          AND EXISTS (
+            SELECT 1 FROM app_state
+            WHERE scope_key = 'global' AND version = ? AND last_request_id = ?
+          )
+      `).bind(
+        commandContext.now,
+        commandContext.now,
+        sharedLogin.id,
+        saved.id,
+        nextStateVersion,
+        commandContext.requestId,
+      ))
+    }
+  }
   const linkedAuthMetadata = operation === 'update' && !previous?.linkedEmployeeId && responseUser
     ? {
         username: responseUser.username,
@@ -10660,7 +10705,18 @@ const employeeProfileCommand = async (db, actor, body, commandContext, env) => {
       entityId: saved.id,
       before: previous,
       after: saved,
-      metadata: { payrollTargets },
+      metadata: {
+        payrollTargets,
+        ...(requestedStatus && previous && String(previous.status || '') !== String(saved.status || '') ? {
+          statusChange: {
+            from: previous.status || null,
+            to: saved.status,
+            storeId,
+            unit,
+            loginScope: previous.linkedEmployeeId ? 'linked-store-role' : 'account',
+          },
+        } : {}),
+      },
       response: { command: body.type, employee: saved, ...(responseUser ? { user: responseUser } : {}) },
       additionalStatements,
       stateGuard,

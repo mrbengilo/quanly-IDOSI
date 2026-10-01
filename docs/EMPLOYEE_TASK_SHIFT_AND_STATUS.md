@@ -151,3 +151,79 @@ client state cannot execute another shift's checklist.
 | 15 | business date, support shift | domain slots + `EmployeeActiveShiftContext.test.jsx` |
 | 16 | legacy single / multi | server legacy test + domain tests |
 | 17 | notes, history, rewards | `manual-task-shift.test.js` |
+
+## B. Store-employee working status and login lock
+
+### Status mapping
+
+| UI label | Stored profile value (canonical) | `users.status` |
+|---|---|---|
+| Đang làm việc | `Đang làm việc` | `active` |
+| Tạm ngưng (legacy, also `Tạm nghỉ`) | `Tạm ngưng` | `locked` |
+| **Đã nghỉ làm** | `Đã nghỉ việc` | `inactive` |
+
+`src/domain/employeeStatus.js` maps labels and legacy values (`inactive`,
+`Đã nghỉ làm`, `Tạm nghỉ`, `locked`) to the existing canonical values; unknown
+values are kept as-is, never silently turned into `Đang làm việc`. The server
+(`employeeStatusValues`) also accepts the label `Đã nghỉ làm`. No second
+"departed" status is introduced. New employees default to `Đang làm việc`.
+
+### Permission matrix (`employee.update` status)
+
+| Actor | Store employee → Đã nghỉ làm | → Tạm ngưng / Đang làm việc (from active/paused) | Restore a departed employee | Store manager / office / HTKD profile → Đã nghỉ làm |
+|---|---|---|---|---|
+| Admin | ✅ | ✅ | ✅ | ✅ |
+| HTKD (`business_support`) | ✅ (stores in its operational scope) | ✅ (unchanged rule) | ❌ `EMPLOYEE_REACTIVATE_FORBIDDEN` | ❌ `EMPLOYEE_DELETE_FORBIDDEN` / `BUSINESS_SUPPORT_READ_ONLY` |
+| Store manager | ❌ `EMPLOYEE_DELETE_FORBIDDEN` | ✅ (unchanged rule) | ❌ | ❌ |
+| Employee | ❌ (no `employee.*` access) | ❌ | ❌ | ❌ |
+
+The permission is checked before profile validation, so a denied actor gets
+the permission error. `user.set_status` stays Admin-only for `inactive`.
+Restore remains Admin-only (unchanged); the UI shows this in the form.
+Departure is not deletion: `employee.delete` is unchanged.
+
+### Server-side login lock
+
+For a standalone account the profile status, `users.status = 'inactive'`,
+the user version bump and revocation of all its sessions are committed in one
+atomic batch guarded by the global state version and the user version
+(existing `employee.update` mechanism). Enforcement points (all server-side):
+
+- `requireSession` joins `users.status = 'active'`, so tokens issued before the
+  commit (any device, including a login racing the change) are rejected with
+  `401 SESSION_INVALID` on every protected API, role selection and command.
+- `POST /api/login` rejects non-active accounts (`403 ACCOUNT_DISABLED`).
+- The state survives VPS restarts (SQLite `users`, `sessions`, `app_state`).
+
+Client: a `401`/`SESSION_INVALID` from a command or the background poll now
+ends the workspace (clears the token, projection/workspace cache and in-memory
+employee data, returns to login) instead of only on the next reload.
+
+### Linked / shared logins
+
+- **Linked store-employee role** (`linkedEmployeeId`, the login belongs to an
+  HTKD/office profile): departure removes only this store-employee role
+  (role options ignore departed profiles) and revokes the sessions currently
+  acting as this role (`active_role = 'employee' AND active_employee_id = <profile>`).
+  The shared login and its other roles stay active. *Decision for the owner:*
+  if "Đã nghỉ làm" must also block the person's whole login, that needs the
+  Admin to deactivate the source account (HTKD cannot, by design).
+- **Legacy promoted login** (store profile whose login role is now another
+  role, e.g. Quản lý CH): HTKD gets `409 EMPLOYEE_SHARED_ACCOUNT_ADMIN_REQUIRED`;
+  Admin keeps the existing behaviour.
+
+### Data preservation
+
+The profile is not deleted; attendance (an open shift is kept open for a
+manager to handle via the existing emergency close), orders, tasks, payroll
+and audit are untouched. Payroll snapshots already keep departed employees
+with attendance in the period (`calculatePayrollSnapshot` historical
+employees); locked/paid periods are not modified (existing
+`invalidateClosedPayrollPeriods` only reopens unconfirmed "Đã chốt" periods
+when compensation fields such as status change). Existing rules that refuse
+*new* assignments/adjustments for departed employees are unchanged.
+
+Audit: `employee.update` audit row (actor, role, request id, timestamp,
+before/after profile) plus `metadata.statusChange = { from, to, storeId, unit,
+loginScope: 'account' | 'linked-store-role' }`. No password or secret is
+written.

@@ -1631,6 +1631,11 @@ const employeePrefixForStore = (store = {}) => {
   return brand && branch && !branch.startsWith(`${brand}-`) ? `${brand}-${branch}` : branch
 }
 
+// A revoked/expired session or a disabled account (for example an employee
+// marked "Đã nghỉ làm") must end the workspace instead of leaving stale data.
+const isRemoteSessionInvalid = (error) => Number(error?.status) === 401
+  || ['SESSION_INVALID', 'SESSION_REQUIRED', 'AUTH_REQUIRED'].includes(String(error?.code || ''))
+
 const MAX_VISITED_PROJECTION_CACHE_ENTRIES = 40
 const ACCOUNT_DIRECTORY_SCREENS = new Set(['employees', 'business-support', 'store-managers', 'office'])
 const needsAccountDirectory = (screen) => !screen || ACCOUNT_DIRECTORY_SCREENS.has(screen)
@@ -2226,6 +2231,10 @@ export function AppProvider({ children }) {
       }, remote.projection === 'store' ? 1_500 : 15_000)
       return result
     } catch (error) {
+      if (isRemoteSessionInvalid(error)) {
+        apiRef.current.expireSession?.()
+        throw error
+      }
       if (error.code === 'VERSION_CONFLICT') {
         try {
           await reconcileProjection({ blocking: true })
@@ -2430,8 +2439,10 @@ export function AppProvider({ children }) {
           latest.state.employees = mergeEmployeeAuthUsers(latest.state.employees, users.users)
         }
         if (active) activateRemotePayload(latest, latest.user || remote.user, activeStoreIdRef.current)
-      } catch {
-        // Polling is best-effort; the next interval or a foreground action will retry.
+      } catch (error) {
+        // Polling is best-effort; the next interval or a foreground action will
+        // retry. A revoked session is final and returns the user to login.
+        if (active && isRemoteSessionInvalid(error)) apiRef.current.expireSession?.()
       } finally {
         busy = false
         if (active && pendingForce && (typeof document === 'undefined' || !document.hidden)) void refresh()
@@ -2728,6 +2739,16 @@ export function AppProvider({ children }) {
 
   const quickLogin = () => null
 
+  const expireRemoteSession = () => {
+    if (!apiRef.current.enabled) return
+    clearApiSession()
+    logout()
+    notify('Phiên đăng nhập không còn hiệu lực hoặc tài khoản đã bị khóa. Vui lòng đăng nhập lại.', 'info')
+  }
+  useEffect(() => {
+    apiRef.current.expireSession = expireRemoteSession
+  })
+
   const logout = () => {
     const wasRemote = apiRef.current.enabled
     cancelPrefetch(apiRef.current)
@@ -3022,6 +3043,15 @@ export function AppProvider({ children }) {
       return { ok: false, message: 'Quản lý cửa hàng chỉ được cập nhật nhân viên thuộc cửa hàng được phân công.' }
     }
     if (payload.phone !== undefined && !isValidEmployeePhone(payload.phone)) return { ok: false, message: 'Số điện thoại phải gồm đúng 10 số và bắt đầu bằng số 0.' }
+    if (payload.status !== undefined) {
+      // Mirror of the server rule (the server remains authoritative). Loaded
+      // on demand so the login bundle stays within its budget.
+      const { employeeStatusChangePermission } = await import('../domain/employeeStatus')
+      const statusPermission = employeeStatusChangePermission({
+        actorRole, unit: previous.unit || previous.unitType, from: previous.status, to: payload.status,
+      })
+      if (!statusPermission.ok) return { ok: false, code: statusPermission.code, message: statusPermission.message }
+    }
     let authVersion = previous.authVersion
     if (apiRef.current.enabled) {
       try {
