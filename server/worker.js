@@ -2,7 +2,7 @@ import { taskShiftContext, bindTaskShiftContext, mergeTaskShiftProgress, attenda
 import { normalizeOrderItems as normalizedHistoricalOrderItems, resolveOrderItems as resolveConfiguredOrderItems, totalOrderItemQuantity, totalOrderItemWeightKg } from '../src/domain/orderItems.js'
 import { orderRevenueByType, validateOrderRevenue } from '../src/domain/orderRevenue.js'
 import { salesOverviewFromSummary } from '../src/domain/salesOverview.js'
-import { applyRevenueSnapshotPointPolicy, restorePointBonusRecord, restorePointRevenueSnapshot, storeViolationPointAssessment, violationPointsOf, isActivePointViolation, violationPointPeriod, formatViolationPoints } from '../src/domain/violationPoints.js'
+import { applyRevenueSnapshotPointPolicy, normalizeViolationPointInput, restorePointBonusRecord, restorePointRevenueSnapshot, storeViolationPointAssessment, violationPointsOf, isActivePointViolation, violationPointPeriod, formatViolationPoints } from '../src/domain/violationPoints.js'
 import { attendanceMatchesWindow, scheduleAssignmentIsUsable, scheduleConflict, scheduleWindows, scheduledCheckInChoices, shiftWindow, supportAllowsScheduling, supportForScheduledWindow } from '../src/domain/supportScheduling.js'
 import {
   validateStoreChecklistCheckout,
@@ -21078,9 +21078,21 @@ const assertWorkCatalogScopeAccess = (state, actor, item) => {
   }
 }
 
-const assertStoreViolationPointsConfigured = (item) => {
-  if (item.targetGroup === 'store' && item.kind === 'VIOLATION' && item.violationPoints == null) {
-    throw new ApiError(400, 'VIOLATION_POINTS_REQUIRED', 'Vi phạm cửa hàng phải được cài điểm lớn hơn 0 và không quá 10.')
+// Violations in every unit are recorded as points; money deductions are retired.
+const assertViolationPointsConfigured = (item) => {
+  if (item.kind === 'VIOLATION' && item.violationPoints == null) {
+    throw new ApiError(400, 'VIOLATION_POINTS_REQUIRED', 'Vi phạm phải được cài điểm trừ (0; 0,5; 1; 1,5 … tối đa 10 điểm).')
+  }
+}
+
+// New or edited point values must use the 0,5 step. Persisted legacy values are
+// still readable so historical snapshots never become invalid.
+const assertViolationPointInput = (payload) => {
+  if (payload.violationPoints == null || payload.violationPoints === '') return
+  try {
+    normalizeViolationPointInput(payload.violationPoints)
+  } catch (error) {
+    throw new ApiError(400, 'VIOLATION_POINTS_INVALID', error instanceof Error ? error.message : 'Điểm vi phạm không hợp lệ.')
   }
 }
 
@@ -21097,9 +21109,10 @@ const workCatalogCommand = async (db, actor, body, commandContext) => {
 
   if (operation === 'create') {
     assertNoCaseCollidingActiveWorkCatalogIdentifiers(state)
+    assertViolationPointInput(payload)
     const item = normalizeWorkCatalogPayload(payload, null, actorSnapshot, commandContext.now)
     assertWorkCatalogScopeAccess(state, actor, item)
-    assertStoreViolationPointsConfigured(item)
+    assertViolationPointsConfigured(item)
     if (records.some((record) => sameIdentifier(record.id, item.id)
       || (String(record.targetGroup || '') === item.targetGroup
         && String(record.kind || '') === item.kind
@@ -21215,6 +21228,7 @@ const workCatalogCommand = async (db, actor, body, commandContext) => {
     if (previous.deletedAt) {
       throw new ApiError(409, 'WORK_CATALOG_DELETED', 'Mục danh mục đã ngừng sử dụng; hãy khôi phục trước khi sửa.')
     }
+    assertViolationPointInput(payload)
     next = normalizeWorkCatalogPayload({
       name: payload.name ?? previous.name,
       amountVnd: payload.amountVnd ?? previous.amountVnd,
@@ -21230,7 +21244,7 @@ const workCatalogCommand = async (db, actor, body, commandContext) => {
   }
 
   assertWorkCatalogScopeAccess(state, actor, next)
-  if (operation === 'update') assertStoreViolationPointsConfigured(next)
+  if (operation === 'update') assertViolationPointsConfigured(next)
 
   const nextState = {
     ...state,
@@ -22515,8 +22529,8 @@ const violationCommand = async (db, actor, body, commandContext) => {
         } else selected.push(existing)
         continue
       }
-      if (targetUnit === 'store' && catalogItem.violationPoints == null) {
-        throw new ApiError(400, 'VIOLATION_POINTS_REQUIRED', 'Admin/HTKD cần cài điểm cho nội dung vi phạm cửa hàng trước khi ghi nhận.')
+      if (catalogItem.violationPoints == null) {
+        throw new ApiError(400, 'VIOLATION_POINTS_REQUIRED', 'Admin/HTKD cần cài điểm cho nội dung vi phạm trước khi ghi nhận.')
       }
       const catalogSnapshot = {
         id: catalogItem.id,
@@ -22763,8 +22777,8 @@ const violationCommand = async (db, actor, body, commandContext) => {
         existing: true,
       }, 200, commandContext)
     }
-    if (targetUnit === 'store' && catalogItem?.violationPoints == null) {
-      throw new ApiError(400, 'VIOLATION_POINTS_REQUIRED', 'Admin/HTKD cần cài điểm cho nội dung vi phạm cửa hàng trước khi ghi nhận.')
+    if (catalogItem?.violationPoints == null) {
+      throw new ApiError(400, 'VIOLATION_POINTS_REQUIRED', 'Admin/HTKD cần cài điểm cho nội dung vi phạm trước khi ghi nhận.')
     }
     const note = String(payload.note || '').trim()
     if (note.length > 1_000) throw new ApiError(400, 'NOTE_INVALID', 'Ghi chú không được vượt quá 1.000 ký tự.')

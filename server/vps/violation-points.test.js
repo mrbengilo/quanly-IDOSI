@@ -83,10 +83,31 @@ const fixture = async (initial = {}) => {
 }
 
 describe('violation point policy through VPS commands and projections', () => {
+  it('configures office and business-support violations with 0,5-point steps and no money', async () => {
+    const legacy = { id: 'OFFICE-LEGACY', code: 'office.violation.custom', kind: 'VIOLATION', targetGroup: 'office', name: 'Vi phạm VP cũ', amountVnd: 3000, active: true, version: 1 }
+    const f = await fixture({ workCatalogItems: [legacy] })
+    const base = { kind: 'VIOLATION', name: 'Không báo cáo cuối ngày' }
+    const missing = await f.command('admin', 'work_catalog.create', { ...base, code: 'office.violation.no_report', targetGroup: 'office', amountVnd: 5000 })
+    expect(missing.status).toBe(400)
+    expect(missing.body.error.code).toBe('VIOLATION_POINTS_REQUIRED')
+    const badStep = await f.command('admin', 'work_catalog.create', { ...base, code: 'office.violation.bad_step', targetGroup: 'office', violationPoints: 1.2 })
+    expect(badStep.status).toBe(400)
+    expect(badStep.body.error.code).toBe('VIOLATION_POINTS_INVALID')
+    const office = await f.command('admin', 'work_catalog.create', { ...base, code: 'office.violation.no_report', targetGroup: 'office', violationPoints: 1.5, amountVnd: 5000 })
+    expect(office.status, JSON.stringify(office.body)).toBe(201)
+    expect(office.body.item).toMatchObject({ targetGroup: 'office', violationPoints: 1.5, amountVnd: 0 })
+    const htkd = await f.command('admin', 'work_catalog.create', { ...base, code: 'htkd.violation.no_report', targetGroup: 'business_support', violationPoints: 0 })
+    expect(htkd.status, JSON.stringify(htkd.body)).toBe(201)
+    expect(htkd.body.item).toMatchObject({ targetGroup: 'business_support', violationPoints: 0, amountVnd: 0 })
+    const converted = await f.command('admin', 'work_catalog.update', { itemId: 'OFFICE-LEGACY', violationPoints: '2,5' })
+    expect(converted.status, JSON.stringify(converted.body)).toBe(200)
+    expect(converted.body.item).toMatchObject({ violationPoints: 2.5, amountVnd: 0, version: 2 })
+  })
+
   it('requires valid configured points for new store violations without changing historical amounts', async () => {
     const catalog = { id: 'LEGACY', code: 'store.violation.custom_legacy', kind: 'VIOLATION', targetGroup: 'store', storeId: 'S1', name: 'Nội dung cũ', amountVnd: 2000, active: true, version: 1 }
     const f = await fixture({ workCatalogItems: [catalog] })
-    for (const violationPoints of [0, -1, 10.5, '0,55', 'không hợp lệ']) {
+    for (const violationPoints of [-1, 10.5, '0,55', '0,3', 1.2, 'không hợp lệ']) {
       const invalid = await f.command('admin', 'work_catalog.update', { itemId: 'LEGACY', violationPoints })
       expect(invalid.status, JSON.stringify(invalid.body)).toBe(400)
     }

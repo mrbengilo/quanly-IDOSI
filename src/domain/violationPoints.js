@@ -1,4 +1,4 @@
-// Points are stored in tenths while adding, so decimal thresholds are exact.
+// Points are summed in tenths, so decimal thresholds are exact.
 // Historical monetary violations deliberately have no inferred point value.
 const text = (value) => String(value ?? '').trim()
 const key = (value) => text(value).toLocaleLowerCase('en-US')
@@ -10,22 +10,42 @@ export const VIOLATION_POINT_MILESTONES = Object.freeze([
   Object.freeze({ points: 6, level: 'suspended', label: 'Đình chỉ làm việc', description: 'Từ 6 điểm: cảnh báo “Đình chỉ làm việc”.', tone: 'red' }),
 ])
 
+export const VIOLATION_POINT_STEP = 0.5
+export const VIOLATION_POINT_MAX = 10
+// Configurable values: 0; 0,5; 1; 1,5 … 10. Zero records the occurrence without
+// adding to the monthly total.
+export const VIOLATION_POINT_OPTIONS = Object.freeze(
+  Array.from({ length: VIOLATION_POINT_MAX / VIOLATION_POINT_STEP + 1 }, (_, index) => index * VIOLATION_POINT_STEP),
+)
+
+// Reader for persisted catalog items and violation snapshots. Historical rows may
+// carry one-decimal values configured before the 0,5-point step was enforced.
 export function normalizeViolationPoints(value) {
   const source = typeof value === 'number' || typeof value === 'string' ? text(value) : ''
   if (!/^\d+(?:[.,]\d)?$/u.test(source)) throw new TypeError('Điểm vi phạm phải là số, tối đa một chữ số thập phân.')
   const points = Number(source.replace(',', '.'))
-  if (!(points > 0 && points <= 10)) throw new RangeError('Điểm vi phạm phải lớn hơn 0 và không quá 10 điểm.')
+  if (!(points >= 0 && points <= VIOLATION_POINT_MAX)) throw new RangeError('Điểm vi phạm phải từ 0 đến 10 điểm.')
   return Math.round(points * 10) / 10
+}
+
+// Strict validator for new or edited configuration: only multiples of 0,5.
+export function normalizeViolationPointInput(value) {
+  const points = normalizeViolationPoints(value)
+  if (Math.round(points * 10) % Math.round(VIOLATION_POINT_STEP * 10) !== 0) {
+    throw new RangeError('Điểm vi phạm chỉ nhận các mức 0; 0,5; 1; 1,5; … tối đa 10 điểm.')
+  }
+  return points
 }
 
 export const isStoreViolation = (record = {}) => (
   key(record.targetUnit || record.targetGroup || record.catalogSnapshot?.targetGroup) === 'store'
 )
 
+// Every unit (store, office, business support) records violations as points.
+// Historical monetary rows without points stay null and keep their money value.
 export function violationPointsOf(record = {}) {
-  if (!isStoreViolation(record)) return null
   const value = record.violationPoints ?? record.catalogSnapshot?.violationPoints
-  return value == null ? null : normalizeViolationPoints(value)
+  return value == null || value === '' ? null : normalizeViolationPoints(value)
 }
 
 export const isActivePointViolation = (record = {}) => (
@@ -59,7 +79,7 @@ export function assessViolationPoints(points = 0) {
   }
 }
 
-export function storeViolationPointAssessment(entries = [], { employeeId = '', employeeIdentifiers = [employeeId], period = '' } = {}) {
+export function violationPointAssessment(entries = [], { employeeId = '', employeeIdentifiers = [employeeId], period = '' } = {}) {
   const identifiers = new Set(employeeIdentifiers.map(key).filter(Boolean))
   let units = 0
   let count = 0
@@ -76,6 +96,8 @@ export function storeViolationPointAssessment(entries = [], { employeeId = '', e
   }
   return { employeeId, period, count, ...assessViolationPoints(units / 10) }
 }
+
+export const storeViolationPointAssessment = violationPointAssessment
 
 export function restorePointBonusRecord(record) {
   if (!record.revenueBonusBlocked && !record.workBonusBlocked) return record

@@ -1,23 +1,36 @@
 import { describe, expect, it } from 'vitest'
-import { applyBonusAllocationPointPolicy, applyRevenueSnapshotPointPolicy, restorePointRevenueSnapshot, assessViolationPoints, normalizeViolationPoints, storeViolationPointAssessment, violationPointsOf } from './violationPoints'
+import { applyBonusAllocationPointPolicy, applyRevenueSnapshotPointPolicy, restorePointRevenueSnapshot, assessViolationPoints, normalizeViolationPointInput, normalizeViolationPoints, storeViolationPointAssessment, VIOLATION_POINT_OPTIONS, violationPointsOf } from './violationPoints'
 import { normalizeWorkCatalogItem } from './workCatalog'
 
 const violation = (overrides = {}) => ({ id: 'V1', employeeId: 'E1', targetUnit: 'store', status: 'ACTIVE', period: '2026-09', violationPoints: 0.5, amountVnd: 0, ...overrides })
 const assess = (entries, period = '2026-09') => storeViolationPointAssessment(entries, { employeeId: 'E1', period })
 
-describe('store violation point contract', () => {
-  it.each([['0,5', 0.5], ['1', 1], [2, 2], ['10', 10], ['0.1', 0.1]])('accepts %s points', (input, expected) => {
+describe('violation point contract', () => {
+  it.each([['0', 0], ['0,5', 0.5], ['1', 1], [1.5, 1.5], [2, 2], ['10', 10], ['0.1', 0.1]])('reads stored %s points', (input, expected) => {
     expect(normalizeViolationPoints(input)).toBe(expected)
   })
-  it.each(['', null, undefined, true, [], -1, 0, 10.1, '1e0', '1,000', 0.55, Infinity, NaN])('rejects invalid points %s', (input) => {
+  it.each(['', null, undefined, true, [], -1, 10.1, '1e0', '1,000', 0.55, Infinity, NaN])('rejects invalid points %s', (input) => {
     expect(() => normalizeViolationPoints(input)).toThrow()
   })
-  it('keeps old money snapshots distinct and restricts points to store violations', () => {
+  it('accepts only 0,5-point steps from 0 to 10 for new configuration', () => {
+    expect(VIOLATION_POINT_OPTIONS).toEqual([0, 0.5, 1, 1.5, 2, 2.5, 3, 3.5, 4, 4.5, 5, 5.5, 6, 6.5, 7, 7.5, 8, 8.5, 9, 9.5, 10])
+    for (const value of VIOLATION_POINT_OPTIONS) expect(normalizeViolationPointInput(String(value).replace('.', ','))).toBe(value)
+    for (const value of ['0.1', '0,3', 1.2, 10.5, -0.5, '']) expect(() => normalizeViolationPointInput(value)).toThrow()
+  })
+  it('keeps old money snapshots distinct and applies points to every unit', () => {
     expect(violationPointsOf({ targetUnit: 'store', amountVnd: 2000 })).toBeNull()
+    expect(violationPointsOf({ targetUnit: 'office', amountVnd: 3000 })).toBeNull()
+    expect(violationPointsOf({ targetUnit: 'office', violationPoints: 1.5, amountVnd: 0 })).toBe(1.5)
+    expect(violationPointsOf({ targetUnit: 'business_support', catalogSnapshot: { violationPoints: 0.5 } })).toBe(0.5)
     const definition = { code: 'test', name: 'Đi trễ', targetGroup: 'store', kind: 'VIOLATION', violationPoints: '0,5', amountVnd: 2000 }
     expect(normalizeWorkCatalogItem(definition)).toMatchObject({ violationPoints: 0.5, amountVnd: 0 })
-    expect(() => normalizeWorkCatalogItem({ ...definition, targetGroup: 'office' })).toThrow()
+    expect(normalizeWorkCatalogItem({ ...definition, targetGroup: 'office' })).toMatchObject({ violationPoints: 0.5, amountVnd: 0 })
+    expect(normalizeWorkCatalogItem({ ...definition, targetGroup: 'business_support', violationPoints: 0 })).toMatchObject({ violationPoints: 0, amountVnd: 0 })
     expect(() => normalizeWorkCatalogItem({ ...definition, kind: 'REWARD_TASK' })).toThrow()
+  })
+  it('totals office and business-support points with the same monthly milestones', () => {
+    const entries = [violation({ targetUnit: 'office', violationPoints: 3 }), violation({ id: 'V2', targetUnit: 'business_support', violationPoints: 2 }), violation({ id: 'V3', targetUnit: 'office', violationPoints: 0 })]
+    expect(assess(entries)).toMatchObject({ points: 5, count: 3, threshold: 5, revenueBonusBlocked: true, workBonusBlocked: true })
   })
   it('counts active monthly points across stores, deduplicates IDs and excludes old money', () => {
     const entries = [violation(), violation(), violation({ id: 'V2', storeId: 'SUPPORT', violationPoints: 2.5 }),

@@ -18259,10 +18259,11 @@ describe('IDOSI Worker security primitives', () => {
   }, 30_000)
 
   it('creates violation batches atomically with shift snapshots, duplicate protection, and target-unit authorization', async () => {
-    const catalog = (id, code, targetGroup, name, amountVnd, storeId = null) => ({
+    // Former money values stay in the call sites only as readable fixture labels.
+    const catalog = (id, code, targetGroup, name, _formerAmountVnd, storeId = null) => ({
       id, code, kind: 'VIOLATION', targetGroup, storeId, shiftId: null, shiftName: null,
-      name, amountVnd: targetGroup === 'store' ? 0 : amountVnd,
-      ...(targetGroup === 'store' ? { violationPoints: 0.5 } : {}), active: true, sortOrder: 1, effectiveFrom: null, effectiveTo: null, version: 1,
+      name, amountVnd: 0,
+      violationPoints: 0.5, active: true, sortOrder: 1, effectiveFrom: null, effectiveTo: null, version: 1,
     })
     const env = { DB: new MemoryD1(), BOOTSTRAP_TOKEN: 'bootstrap-violation-batch' }
     const bootstrap = await worker.fetch(jsonRequest('https://idosi.example/api/bootstrap', {
@@ -18349,9 +18350,9 @@ describe('IDOSI Worker security primitives', () => {
       violations: [
         {
           employeeId: 'OFFICE-VIO-01', attendanceId: 'ATT-OFFICE-VIO-01', shiftId: 'office_am',
-          shiftVersion: 3, employmentTypeSnapshot: 'Part-Time', amountVnd: 3_000,
+          shiftVersion: 3, employmentTypeSnapshot: 'Part-Time', amountVnd: 0, violationPoints: 0.5,
         },
-        { employeeId: 'OFFICE-VIO-01', shiftId: 'office_am', amountVnd: 4_000 },
+        { employeeId: 'OFFICE-VIO-01', shiftId: 'office_am', amountVnd: 0, violationPoints: 0.5 },
       ],
     })
     expect(createdBody.violations[0].id).toBe(
@@ -18397,7 +18398,7 @@ describe('IDOSI Worker security primitives', () => {
       violations: [{
         employeeId: 'HTKD-VIO-01', attendanceId: null, shiftId: 'support_pm', shiftName: 'Ca chiều',
         shiftStart: '13:00', shiftEnd: '17:00', shiftSource: 'profile-work-shift',
-        employmentTypeSnapshot: 'Thực Tập Sinh', amountVnd: 6_000,
+        employmentTypeSnapshot: 'Thực Tập Sinh', amountVnd: 0, violationPoints: 0.5,
       }],
     })
 
@@ -18420,12 +18421,12 @@ describe('IDOSI Worker security primitives', () => {
         policyCode: 'office.violation.late', amountVnd: 3_000,
       },
     }, { ...adminAuthorization, 'idempotency-key': 'legacy-single-violation-create-0001' }), env)
-    expect(legacyCreate.status).toBe(201)
-    expect(await legacyCreate.json()).toMatchObject({
-      version: 5, violation: { policyCode: 'office.violation.late', amountVnd: 3_000, version: 1 },
-    })
+    // Money-based legacy policies are retired: every violation must carry points.
+    expect(legacyCreate.status).toBe(400)
+    expect(await legacyCreate.json()).toMatchObject({ error: { code: 'VIOLATION_POINTS_REQUIRED' } })
+    expect(readHydratedState(env.DB.database).violations).toHaveLength(4)
     const storeScheduled = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
-      type: 'violation.create_batch', expectedVersion: 5,
+      type: 'violation.create_batch', expectedVersion: 4,
       payload: {
         targetUnit: 'store', storeId: 'S01', employeeId: 'STORE-VIO-01', occurredOn: '2026-08-28',
         shiftId: 'STORE-AM', catalogItemIds: ['VIO-STORE-LATE'],
@@ -18434,7 +18435,7 @@ describe('IDOSI Worker security primitives', () => {
     expect(storeScheduled.status).toBe(201)
     const storeScheduledBody = await storeScheduled.json()
     expect(storeScheduledBody).toMatchObject({
-      version: 6, createdCount: 1,
+      version: 5, createdCount: 1,
       violations: [{
         employeeId: 'STORE-VIO-01', attendanceId: null, storeId: 'S01', shiftId: 'STORE-AM',
         shiftName: 'Ca sáng đã phân', shiftStart: '09:00', shiftEnd: '13:00', shiftVersion: 4,
@@ -18442,7 +18443,7 @@ describe('IDOSI Worker security primitives', () => {
       }],
     })
     const supportVoidsHtkd = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
-      type: 'violation.void', expectedVersion: 6,
+      type: 'violation.void', expectedVersion: 5,
       payload: {
         id: supportCreatesHtkdBody.violations[0].id,
         expectedVersion: 1,
@@ -18451,11 +18452,11 @@ describe('IDOSI Worker security primitives', () => {
     }, { ...supportAuthorization, 'idempotency-key': 'support-htkd-violation-void-0001' }), env)
     expect(supportVoidsHtkd.status).toBe(200)
     expect(await supportVoidsHtkd.json()).toMatchObject({
-      version: 7,
+      version: 6,
       violation: { id: supportCreatesHtkdBody.violations[0].id, status: 'VOID', version: 2 },
     })
     const finalState = readHydratedState(env.DB.database)
-    expect(finalState.violations).toHaveLength(6)
+    expect(finalState.violations).toHaveLength(5)
     expect(finalState.violations).toEqual(expect.arrayContaining([
       expect.objectContaining({
         id: supportCreatesHtkdBody.violations[0].id,

@@ -154,4 +154,5 @@ export const migrations = [
   'drizzle/0013_store_violation_points.sql',
   'drizzle/0014_order_product_options.sql',
   'drizzle/0015_retire_legacy_product_names.sql',
+  'drizzle/0016_staff_violation_points.sql',
 ] as const
