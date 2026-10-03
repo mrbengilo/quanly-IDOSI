@@ -10922,15 +10922,6 @@ const scheduleCommand = async (db, actor, body, commandContext) => {
     if (!employeeId) {
       throw new ApiError(400, 'EMPLOYEE_STORE_MISMATCH', `Nhân viên ${requestedEmployeeId || index + 1} không thuộc cửa hàng.`)
     }
-    if (!requestedShiftIds.length || requestedShiftIds.some((shiftId) => !shifts.has(normalizeIdentifierKey(shiftId)))) {
-      throw new ApiError(400, 'SHIFT_INVALID', `Ca làm việc của nhân viên ${employeeId} không hợp lệ.`)
-    }
-    const selectedShiftIds = requestedShiftIds.map((shiftId) => String(shifts.get(normalizeIdentifierKey(shiftId)).id || shiftId))
-    const mismatchedShift = selectedShiftIds.map((shiftId) => shifts.get(normalizeIdentifierKey(shiftId)))
-      .find((shift) => shift.date && String(shift.date) !== date)
-    if (mismatchedShift) {
-      throw new ApiError(400, 'SHIFT_DATE_MISMATCH', `Ca ${mismatchedShift.name || mismatchedShift.id} chỉ áp dụng ngày ${mismatchedShift.date}.`)
-    }
     const previousAssignment = schedule.find((entry) => (
       sameIdentifier(entry.storeId, storeId)
       && String(entry.date || entry.workDate || '') === date
@@ -10940,6 +10931,34 @@ const scheduleCommand = async (db, actor, body, commandContext) => {
     // historical IDs/snapshots even when their reusable definition is retired.
     const previousShiftIds = previousAssignment?.shiftIds?.length
       ? previousAssignment.shiftIds : [previousAssignment?.shiftId]
+    // replace_day resends the whole day, so an employee's already-scheduled shift
+    // stays valid after its definition is retired; only new additions need an
+    // active definition.
+    const retainedShiftIds = new Map(body.type === 'schedule.replace_day'
+      ? previousShiftIds.map((shiftId) => String(shiftId || '').trim()).filter(Boolean)
+        .map((shiftId) => [normalizeIdentifierKey(shiftId), shiftId])
+      : [])
+    if (!requestedShiftIds.length) {
+      throw new ApiError(400, 'SHIFT_INVALID', `Ca làm việc của nhân viên ${employeeId} không hợp lệ.`)
+    }
+    const unavailableShiftId = requestedShiftIds.find((shiftId) => (
+      !shifts.has(normalizeIdentifierKey(shiftId)) && !retainedShiftIds.has(normalizeIdentifierKey(shiftId))
+    ))
+    if (unavailableShiftId) {
+      const retiredShift = (state.shiftDefinitions || []).find((definition) => sameIdentifier(definition.id, unavailableShiftId)
+        && sameIdentifier(definition.storeId, storeId))
+      throw new ApiError(400, 'SHIFT_INVALID', retiredShift
+        ? `${retiredShift.name || 'Ca làm việc'} đã ngừng sử dụng; không thể phân thêm nhân viên ${employeeId} vào ca này.`
+        : `Ca làm việc của nhân viên ${employeeId} không hợp lệ.`)
+    }
+    const selectedShiftIds = requestedShiftIds.map((shiftId) => String(
+      shifts.get(normalizeIdentifierKey(shiftId))?.id || retainedShiftIds.get(normalizeIdentifierKey(shiftId)) || shiftId,
+    ))
+    const mismatchedShift = selectedShiftIds.map((shiftId) => shifts.get(normalizeIdentifierKey(shiftId)))
+      .find((shift) => shift?.date && String(shift.date) !== date)
+    if (mismatchedShift) {
+      throw new ApiError(400, 'SHIFT_DATE_MISMATCH', `Ca ${mismatchedShift.name || mismatchedShift.id} chỉ áp dụng ngày ${mismatchedShift.date}.`)
+    }
     const shiftIds = [...new Map([
       ...(body.type === 'schedule.assign' ? previousShiftIds : []),
       ...selectedShiftIds,
