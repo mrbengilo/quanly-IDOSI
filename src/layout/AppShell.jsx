@@ -38,6 +38,17 @@ import { Avatar, Brand, Toast } from '../components/UI'
 import { isOfficeProfile } from '../domain/officeProfile'
 import { resolveOrderRouteScope } from '../domain/orderStoreScope'
 import { playTaskNotificationSound, unlockNotificationSound } from '../domain/notificationSound'
+import './sidebarIcons.css'
+
+const navigationIconTones = new Map([
+  [LayoutDashboard, 'blue'], [BarChart3, 'blue'],
+  [Store, 'cyan'], [Building2, 'cyan'], [PackagePlus, 'cyan'], [ShoppingCart, 'cyan'],
+  [Users, 'violet'], [Repeat2, 'violet'],
+  [CalendarCheck, 'orange'], [CalendarClock, 'orange'], [Clock3, 'orange'],
+  [ClipboardCheck, 'amber'], [ClipboardList, 'amber'], [ListChecks, 'amber'], [Award, 'amber'],
+  [Banknote, 'green'], [CircleDollarSign, 'green'], [WalletCards, 'green'],
+  [ShieldAlert, 'rose'], [ReceiptText, 'rose'], [RotateCcw, 'rose'],
+])
 
 const systemOperations = [
   { label: 'Tổng quan', path: '/admin/overview', icon: LayoutDashboard },
@@ -482,8 +493,8 @@ export default function AppShell({ workspaceStatus = null }) {
         <nav>
           {roleMenus.map(({ label, path, icon: Icon, badge }) => (
             <NavLink key={path} to={path} onPointerEnter={() => prefetchOnIntent(path)} onFocus={() => prefetchOnIntent(path)} onClick={() => { setMobileOpen(false); setNotificationOpen(false) }} className={({ isActive }) => isActive ? 'active' : ''}>
-              <Icon size={20} />
-              <span>{label}</span>
+              <span className={`sidebar__nav-icon sidebar__nav-icon--${navigationIconTones.get(Icon) || 'slate'}`} aria-hidden="true"><Icon size={20} /></span>
+              <span className="sidebar__nav-label">{label}</span>
               {badge && <em>{badge}</em>}
             </NavLink>
           ))}
