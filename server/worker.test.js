@@ -19967,6 +19967,70 @@ describe('same-day multi-shift scheduling', () => {
     expect((await assign(runtime, ['AM'])).body.error.code).toBe('SHIFT_INVALID')
   })
 
+  it('edits and deletes other assignments on a day that still holds a retired shift', async () => {
+    const retiredMorning = { ...morning, active: false, deletedAt: `${date}T04:00:00Z` }
+    const runtime = await setup({
+      shiftDefinitions: [retiredMorning, afternoon, evening],
+      extraEmployees: [{ id: 'E02', name: 'Nhân viên thứ hai', storeId: 'S01', unit: 'store', status: 'Đang làm việc' }],
+      schedule: [
+        { id: 'LEGACY-E01', employeeId: 'E01', storeId: 'S01', date, shiftId: 'AM', shiftIds: ['AM'], shiftSnapshots: [morning], note: 'Ca cũ' },
+        { id: 'E02-PM', employeeId: 'E02', storeId: 'S01', date, shiftId: 'PM', shiftIds: ['PM'], shiftSnapshots: [afternoon] },
+      ],
+    })
+    const replaceDay = (assignments, options) => command(runtime, 'schedule.replace_day', { storeId: 'S01', date, assignments }, options)
+
+    const edited = await replaceDay([
+      { id: 'LEGACY-E01', employeeId: 'E01', shiftIds: ['am'], note: 'Ca cũ' },
+      { id: 'E02-PM', employeeId: 'E02', shiftIds: ['EVENING'] },
+    ])
+    expect(edited.status, JSON.stringify(edited.body)).toBe(200)
+    const afterEdit = stored(runtime).schedule
+    expect(afterEdit.find((entry) => entry.employeeId === 'E01')).toMatchObject({
+      id: 'LEGACY-E01', shiftIds: ['AM'], shiftSnapshots: [morning], note: 'Ca cũ',
+    })
+    expect(afterEdit.find((entry) => entry.employeeId === 'E02')).toMatchObject({ shiftIds: ['EVENING'] })
+
+    const deleted = await replaceDay([{ id: 'LEGACY-E01', employeeId: 'E01', shiftIds: ['AM'], note: 'Ca cũ' }], {
+      auth: runtime.supportAuthorization,
+    })
+    expect(deleted.status, JSON.stringify(deleted.body)).toBe(200)
+    expect(stored(runtime).schedule.map((entry) => entry.employeeId)).toEqual(['E01'])
+
+    const beforeRejected = stored(runtime).schedule
+    const addedToRetired = await replaceDay([
+      { id: 'LEGACY-E01', employeeId: 'E01', shiftIds: ['AM'] },
+      { employeeId: 'E02', shiftIds: ['AM'] },
+    ])
+    expect(addedToRetired.status).toBe(400)
+    expect(addedToRetired.body.error.code).toBe('SHIFT_INVALID')
+    expect(addedToRetired.body.error.message).toContain('đã ngừng sử dụng')
+    expect(stored(runtime).schedule).toEqual(beforeRejected)
+
+    const otherStoreManager = await replaceDay([], { auth: runtime.managerAuthorization })
+    expect(otherStoreManager.status).toBe(403)
+    const removedRetired = await replaceDay([])
+    expect(removedRetired.status).toBe(200)
+    expect(stored(runtime).schedule).toEqual([])
+  })
+
+  it('removes a legacy retired shift without snapshots while keeping the employee\'s other shift', async () => {
+    const runtime = await setup({
+      shiftDefinitions: [{ ...morning, active: false, deletedAt: `${date}T04:00:00Z` }, afternoon, evening],
+      schedule: [{ id: 'LEGACY', employeeId: 'E01', storeId: 'S01', date, shiftId: 'AM', shiftIds: ['AM', 'EVENING'] }],
+    })
+    const kept = await command(runtime, 'schedule.replace_day', {
+      storeId: 'S01', date, assignments: [{ id: 'LEGACY', employeeId: 'E01', shiftIds: ['AM', 'EVENING'], note: 'Đã sửa' }],
+    })
+    expect(kept.status, JSON.stringify(kept.body)).toBe(200)
+    expect(stored(runtime).schedule[0]).toMatchObject({ shiftIds: ['AM', 'EVENING'], note: 'Đã sửa' })
+    expect(stored(runtime).schedule[0].shiftSnapshots.map((snapshot) => snapshot.id)).toEqual(['AM', 'EVENING'])
+    const removed = await command(runtime, 'schedule.replace_day', {
+      storeId: 'S01', date, assignments: [{ id: 'LEGACY', employeeId: 'E01', shiftIds: ['EVENING'] }],
+    })
+    expect(removed.status, JSON.stringify(removed.body)).toBe(200)
+    expect(stored(runtime).schedule[0]).toMatchObject({ shiftId: 'EVENING', shiftIds: ['EVENING'] })
+  })
+
   it('rejects overlap with an existing shift atomically instead of silently replacing it', async () => {
     const overlap = shift('OVERLAP', '11:00', '15:00')
     const runtime = await setup({ shiftDefinitions: [morning, afternoon, overlap] })

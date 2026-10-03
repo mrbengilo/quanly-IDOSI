@@ -369,6 +369,55 @@ describe('store schedule visual flow', () => {
     )
   })
 
+  it('edits and deletes a day that still holds a retired shift without adding staff to that shift', async () => {
+    const retiredShift = { ...shift, id: 'CA-TOI-CU', name: 'Ca tối cũ', start: '17:00', end: '21:00', active: false, deletedAt: '2026-08-21T00:00:00Z' }
+    const secondEmployee = { ...employee, id: 'DOSII-TNV-006', code: 'DOSII-TNV-006', name: 'Võ Thị Cẩm Ly' }
+    mocked.app = {
+      ...makeApp(),
+      employees: [employee, secondEmployee],
+      shiftDefinitions: [shift, retiredShift],
+      schedule: [{
+        id: 'LICH-CU', storeId: store.id, employeeId: secondEmployee.id, date: localDate(),
+        shiftIds: [retiredShift.id], shiftSnapshots: [retiredShift],
+      }, {
+        id: 'LICH-001', storeId: store.id, employeeId: employee.id, date: localDate(),
+        shiftIds: [shift.id], shiftSnapshots: [shift], note: 'Quầy chính',
+      }],
+      replaceScheduleDay: vi.fn().mockResolvedValue({ ok: true }),
+    }
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true)
+    renderSchedule()
+
+    fireEvent.click(screen.getByRole('button', { name: `Sửa lịch ${retiredShift.name}` }))
+    let dialog = screen.getByRole('dialog')
+    expect(within(dialog).getByRole('checkbox', { name: `Chọn ${secondEmployee.name} cho ${retiredShift.name}` }).checked).toBe(true)
+    const blocked = within(dialog).getByRole('checkbox', { name: `Chọn ${employee.name} cho ${retiredShift.name}` })
+    expect(blocked.disabled).toBe(true)
+    expect(within(dialog).getByText('Ca đã ngừng sử dụng; chỉ có thể giữ hoặc gỡ nhân viên đã phân.')).toBeTruthy()
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Hủy' }))
+
+    fireEvent.click(screen.getByRole('button', { name: `Sửa lịch ${shift.name}` }))
+    dialog = screen.getByRole('dialog')
+    fireEvent.click(within(dialog).getByRole('checkbox', { name: `Chọn ${secondEmployee.name} cho ${shift.name}` }))
+    fireEvent.click(within(dialog).getByRole('button', { name: 'LƯU LỊCH' }))
+    await waitFor(() => expect(mocked.app.replaceScheduleDay).toHaveBeenCalledTimes(1))
+    expect(mocked.app.replaceScheduleDay).toHaveBeenLastCalledWith(
+      expect.arrayContaining([
+        expect.objectContaining({ employeeId: secondEmployee.id, shiftIds: [retiredShift.id, shift.id] }),
+        expect.objectContaining({ employeeId: employee.id, shiftIds: [shift.id] }),
+      ]),
+      { storeId: store.id, date: localDate() },
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: `Xóa lịch ${shift.name}` }))
+    await waitFor(() => expect(mocked.app.replaceScheduleDay).toHaveBeenCalledTimes(2))
+    expect(mocked.app.replaceScheduleDay).toHaveBeenLastCalledWith(
+      [expect.objectContaining({ employeeId: secondEmployee.id, shiftIds: [retiredShift.id] })],
+      { storeId: store.id, date: localDate() },
+    )
+    confirm.mockRestore()
+  })
+
   it('renders adjacent home and host shifts together in day, week, month and employee views', () => {
     const hostStore = { id: 'CH-HOST', name: 'Dosii Host' }
     const hostShift = {
