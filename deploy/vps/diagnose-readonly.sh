@@ -188,6 +188,24 @@ for pattern in error tls handshake timeout refused reset unreachable certificate
   printf 'caddy_log_%s_count=%s\n' "$pattern" "$(grep -Eic "$pattern" <<<"$caddy_logs" || true)"
 done
 
+section 'app_request_log'
+app_logs="$(compose logs --no-color --since=180m --tail=20000 app 2>&1 || true)"
+printf 'app_log_lines=%s\n' "$(grep -c . <<<"$app_logs" || true)"
+printf 'app_log_slow_count=%s\n' "$(grep -c '"slow":true' <<<"$app_logs" || true)"
+printf 'app_log_aborted_count=%s\n' "$(grep -c '"aborted":true' <<<"$app_logs" || true)"
+printf 'app_log_command_count=%s\n' "$(grep -c '"path":"/api/command"' <<<"$app_logs" || true)"
+printf 'app_log_error_lines=%s\n' "$(grep -Eic 'error|unhandled|SQLITE_BUSY|database is locked' <<<"$app_logs" || true)"
+printf -- '--- last_command_requests ---\n'
+grep '"path":"/api/command"' <<<"$app_logs" | tail -n 15 \
+  | sed -E 's/.*"timestamp":"([^"]+)".*"status":([0-9]+).*"durationMs":([0-9.]+),"aborted":(true|false).*"handler":([0-9.]+).*"database":\{([^}]*)\}.*/ts=\1 status=\2 ms=\3 aborted=\4 handler=\5 db={\6}/' || true
+printf -- '--- slowest_recent_requests ---\n'
+grep '"slow":true' <<<"$app_logs" | tail -n 15 \
+  | sed -E 's/.*"timestamp":"([^"]+)".*"method":"([A-Z]+)","path":"([^"]+)","status":([0-9]+).*"durationMs":([0-9.]+).*/ts=\1 \2 \3 status=\4 ms=\5/' || true
+printf -- '--- recent_error_lines ---\n'
+grep -Ei 'error|unhandled|SQLITE_BUSY|database is locked' <<<"$app_logs" | grep -v '"event":"idosi.api.request"' | tail -n 20 | cut -c1-400 || true
+printf -- '--- data_size ---\n'
+compose exec -T app sh -c 'ls -la /app/data 2>/dev/null | head -20' || true
+
 section 'payroll_collision_summary'
 compose exec -T app node <<'NODE'
 import { DatabaseSync } from 'node:sqlite'
