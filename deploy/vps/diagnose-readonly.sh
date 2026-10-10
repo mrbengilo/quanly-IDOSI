@@ -206,7 +206,7 @@ grep -Ei 'error|unhandled|SQLITE_BUSY|database is locked' <<<"$app_logs" | grep 
 printf -- '--- context_before_oom ---\n'
 grep -n -B8 'heap out of memory' <<<"$app_logs" | grep -v 'node::\|v8::\|^\-\-$' | cut -c1-220 | tail -n 16 || true
 printf -- '--- heap_limit ---\n'
-compose exec -T app node -e "const v8=require('node:v8');const h=v8.getHeapStatistics();console.log('heap_size_limit_mb='+Math.round(h.heap_size_limit/1048576)+' node_options='+(process.env.NODE_OPTIONS||''))" || true
+compose exec -T app node -e "const v8=require('node:v8');const h=v8.getHeapStatistics();console.log('heap_size_limit_mb='+Math.round(h.heap_size_limit/1048576)+' node_options='+(process.env.NODE_OPTIONS||''))" </dev/null || true
 printf -- '--- command_preflight_state ---\n'
 compose exec -T app node --input-type=module <<'NODE' || true
 import { DatabaseSync } from 'node:sqlite'
@@ -239,7 +239,7 @@ for (const row of pending.slice(0, 15)) {
 db.close()
 NODE
 printf -- '--- data_size ---\n'
-compose exec -T app sh -c 'ls -la /app/data 2>/dev/null | head -20' || true
+compose exec -T app sh -c 'ls -la /app/data 2>/dev/null | head -20' </dev/null || true
 
 section 'payroll_collision_summary'
 compose exec -T app node <<'NODE'
