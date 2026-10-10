@@ -204,7 +204,7 @@ grep '"slow":true' <<<"$app_logs" | tail -n 15 \
 printf -- '--- recent_error_lines ---\n'
 grep -Ei 'error|unhandled|SQLITE_BUSY|database is locked' <<<"$app_logs" | grep -v '"event":"idosi.api.request"' | tail -n 20 | cut -c1-400 || true
 printf -- '--- context_before_oom ---\n'
-grep -n -B8 'heap out of memory' <<<"$app_logs" | grep -v 'node::\|v8::\|^\-\-$' | cut -c1-300 | tail -n 40 || true
+grep -n -B8 'heap out of memory' <<<"$app_logs" | grep -v 'node::\|v8::\|^\-\-$' | cut -c1-220 | tail -n 16 || true
 printf -- '--- heap_limit ---\n'
 compose exec -T app node -e "const v8=require('node:v8');const h=v8.getHeapStatistics();console.log('heap_size_limit_mb='+Math.round(h.heap_size_limit/1048576)+' node_options='+(process.env.NODE_OPTIONS||''))" || true
 printf -- '--- command_preflight_state ---\n'
