@@ -21,6 +21,10 @@ services:
       HOST: 0.0.0.0
       PORT: 3000
       IDOSI_RELEASE_SHA: "${IDOSI_RELEASE_SHA:-unknown}"
+      # Full-state command paths outgrew Node's ~2 GB default heap on the 8 GB
+      # VPS and crashed the app (heap OOM) mid check-in. Keep headroom for the
+      # OS, Caddy and SQLite page cache.
+      NODE_OPTIONS: "--max-old-space-size=4096"
       # Recovery default: resume only after the finalizer has been investigated.
       IDOSI_AUTOMATIC_REVENUE_BONUS_ENABLED: "${IDOSI_AUTOMATIC_REVENUE_BONUS_ENABLED:-false}"
     volumes:
