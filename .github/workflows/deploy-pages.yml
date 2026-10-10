@@ -93,12 +93,13 @@ jobs:
           docker compose -f deploy/vps/compose.yml config --quiet
 
       - name: Build VPS release image
+        env:
+          # Newer Compose builds through Bake, which now demands an explicit
+          # network.host entitlement for compose.yml's `build.network: host`
+          # and fails non-interactively. Use the classic builder in CI.
+          COMPOSE_BAKE: 'false'
         run: |
-          set -o pipefail
-          if ! BUILDKIT_PROGRESS=plain docker compose -f deploy/vps/compose.yml build app > "$RUNNER_TEMP/build.log" 2>&1; then
-            tail -c 5500 "$RUNNER_TEMP/build.log" | python3 -c "import sys;t=sys.stdin.read();print('::error title=docker build tail::'+t.replace('%','%25').replace('\\r','%0D').replace('\\n','%0A'))"
-            exit 1
-          fi
+          docker compose -f deploy/vps/compose.yml build app
           image_revision="$(docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$IDOSI_IMAGE")"
           [[ "$image_revision" == "$IDOSI_RELEASE_SHA" ]]
           static_topology="$(docker image inspect --format '{{ index .Config.Labels "io.idosi.static-topology" }}' "$IDOSI_IMAGE")"
