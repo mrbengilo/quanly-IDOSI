@@ -231,6 +231,8 @@ grep -Fq -- '--fetch-timeout=120000' "$SCRIPT_DIR/Dockerfile" \
   || fail 'production npm install has no bounded fetch timeout'
 grep -Fq 'ENV NODE_OPTIONS=--dns-result-order=ipv4first' "$SCRIPT_DIR/Dockerfile" \
   || fail 'production build does not prefer reachable IPv4 registry endpoints'
+grep -Fq 'NODE_OPTIONS: "--max-old-space-size=4096"' "$SCRIPT_DIR/compose.yml" \
+  || fail 'production app does not raise the Node heap limit above the 2 GB default'
 grep -Fq 'network: host' "$SCRIPT_DIR/compose.yml" \
   || fail 'production build does not use the verified VPS host network path'
 grep -Fq 'attempt<=PUBLIC_VERIFY_ATTEMPTS' "$SCRIPT_DIR/../../.github/workflows/deploy-vps.yml" \
