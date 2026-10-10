@@ -7695,6 +7695,10 @@ export const commandStateProjection = (body) => {
     recordId: String(recordId || '').trim(),
     employeeId: String(employeeId || '').trim(),
     scoped,
+    // Check-in/out always act on the caller's own attendance, so the caller's
+    // store is the command scope. Without it a Business Support check-in has
+    // no store hint and hydrates every store's tasks, history and orders.
+    selfServiceAttendance: type === 'attendance.check_in' || type === 'attendance.check_out',
   })
   if (type.startsWith('order.')) {
     return projection(
@@ -7946,6 +7950,7 @@ export const commandStateProjection = (body) => {
 const commandProjectionStoreId = async (db, projection, actor) => {
   if (!projection.scoped) return ''
   const actorStoreId = ['store_manager', 'employee'].includes(String(actor?.role || ''))
+    || (projection.selfServiceAttendance && String(actor?.role || '') === 'business_support')
     ? String(actor?.store_id || '').trim()
     : ''
   if (actorStoreId) return actorStoreId
