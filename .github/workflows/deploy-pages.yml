@@ -95,7 +95,7 @@ jobs:
       - name: Build VPS release image
         run: |
           set -o pipefail
-          if ! docker compose -f deploy/vps/compose.yml build --progress=plain app > "$RUNNER_TEMP/build.log" 2>&1; then
+          if ! BUILDKIT_PROGRESS=plain docker compose -f deploy/vps/compose.yml build app > "$RUNNER_TEMP/build.log" 2>&1; then
             tail -c 5500 "$RUNNER_TEMP/build.log" | python3 -c "import sys;t=sys.stdin.read();print('::error title=docker build tail::'+t.replace('%','%25').replace('\\r','%0D').replace('\\n','%0A'))"
             exit 1
           fi
