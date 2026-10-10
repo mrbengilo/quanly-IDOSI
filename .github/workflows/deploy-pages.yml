@@ -94,7 +94,11 @@ jobs:
 
       - name: Build VPS release image
         run: |
-          docker compose -f deploy/vps/compose.yml build app
+          set -o pipefail
+          if ! docker compose -f deploy/vps/compose.yml build --progress=plain app > "$RUNNER_TEMP/build.log" 2>&1; then
+            tail -c 5500 "$RUNNER_TEMP/build.log" | python3 -c "import sys;t=sys.stdin.read();print('::error title=docker build tail::'+t.replace('%','%25').replace('\\r','%0D').replace('\\n','%0A'))"
+            exit 1
+          fi
           image_revision="$(docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$IDOSI_IMAGE")"
           [[ "$image_revision" == "$IDOSI_RELEASE_SHA" ]]
           static_topology="$(docker image inspect --format '{{ index .Config.Labels "io.idosi.static-topology" }}' "$IDOSI_IMAGE")"
