@@ -81,6 +81,19 @@
   margin-bottom: 16px;
 }
 
+.compensation-month-filter {
+  display: flex;
+  align-items: flex-end;
+  flex-wrap: wrap;
+  gap: 12px;
+  max-width: 480px;
+}
+
+.compensation-month-filter .field {
+  flex: 1 1 220px;
+  min-width: 0;
+}
+
 .compensation-fixed-scope {
   align-items: flex-start;
   background: var(--compensation-surface);

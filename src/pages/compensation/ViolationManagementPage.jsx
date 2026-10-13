@@ -1,6 +1,7 @@
 import { formatViolationPoints, violationPointsOf, violationPointPeriod } from '../../domain/violationPoints'
 import { ViolationPointAssessment } from './ViolationPointAssessment'
 import { useMemo, useState } from 'react'
+import { HistoryMonthFilter } from './HistoryMonthFilter'
 import { Save, ShieldAlert, UserRoundCheck, XCircle } from 'lucide-react'
 import { useApp } from '../../state/AppContext'
 import {
@@ -190,6 +191,7 @@ export function ViolationManagementPage({ targetUnit: requestedTargetUnit, store
   const [note, setNote] = useState('')
   const [validation, setValidation] = useState('')
   const [historyDateFilter, setHistoryDateFilter] = useState('')
+  const [historyMonthFilter, setHistoryMonthFilter] = useState(() => vietnamToday().slice(0, 7))
   const [historyEmployeeFilter, setHistoryEmployeeFilter] = useState('all')
   const [assessmentPeriod, setAssessmentPeriod] = useState(() => vietnamToday().slice(0, 7))
   const { busyKey, error, run } = useCompensationAction(app)
@@ -249,10 +251,12 @@ export function ViolationManagementPage({ targetUnit: requestedTargetUnit, store
   }, new Map())].map(([value, label]) => ({ value, label })), [rows, employees])
   const historyFilterable = ['store', 'business_support'].includes(targetUnit)
   const filteredRows = useMemo(() => rows.filter((entry) => (
-    // A specific date filter may point to any month; otherwise show the assessed month.
-    (historyFilterable && historyDateFilter ? entryDate(entry) === historyDateFilter : violationPointPeriod(entry) === assessmentPeriod)
+    // Office history has its own month selection; other units retain the assessment/date filters.
+    (targetUnit === 'office'
+      ? !historyMonthFilter || violationPointPeriod(entry) === historyMonthFilter
+      : historyFilterable && historyDateFilter ? entryDate(entry) === historyDateFilter : violationPointPeriod(entry) === assessmentPeriod)
     && (!historyFilterable || historyEmployeeFilter === 'all' || entryEmployeeId(entry) === historyEmployeeFilter)
-  )), [rows, historyFilterable, historyDateFilter, historyEmployeeFilter, assessmentPeriod])
+  )), [rows, targetUnit, historyMonthFilter, historyFilterable, historyDateFilter, historyEmployeeFilter, assessmentPeriod])
   const filteredViolationPoints = useMemo(() => filteredRows
     .filter((entry) => !isVoided(entry))
     .reduce((total, entry) => total + Math.round(Number(violationPointsOf(entry) || 0) * 10), 0) / 10, [filteredRows])
@@ -396,6 +400,7 @@ export function ViolationManagementPage({ targetUnit: requestedTargetUnit, store
         <div className="compensation-actions"><Button icon={Save} loading={busyKey === 'create'} disabled={!employees.length || !selectedShift || !selectedPolicies.length || Boolean(busyKey)} onClick={createViolation}>LƯU VI PHẠM</Button></div>
       </Card>
       <Card title="Lịch sử vi phạm" action={<Badge tone="red">{filteredRows.filter((entry) => !isVoided(entry)).length} đang hiệu lực</Badge>}>
+        {targetUnit === 'office' && <HistoryMonthFilter label="Tháng vi phạm" groupLabel="Bộ lọc tháng lịch sử vi phạm" value={historyMonthFilter} onChange={setHistoryMonthFilter} />}
         {historyFilterable && <div className="form-grid compensation-history-filters" role="group" aria-label="Bộ lọc lịch sử vi phạm">
           <Field label="Ngày">
             <Input type="date" aria-label="Ngày vi phạm" value={historyDateFilter} onChange={(event) => setHistoryDateFilter(event.target.value)} />
@@ -410,7 +415,7 @@ export function ViolationManagementPage({ targetUnit: requestedTargetUnit, store
         <TableWrap
           className="compensation-table"
           firstPageDates={targetUnit === 'store' ? [vietnamToday()] : []}
-          paginationKey={`${historyDateFilter}:${historyEmployeeFilter}`}
+          paginationKey={`${targetUnit === 'office' ? historyMonthFilter : assessmentPeriod}:${historyDateFilter}:${historyEmployeeFilter}`}
         >
           <thead><tr><th>Ngày</th><th>Ca làm</th><th>Nhân viên</th>{targetUnit === 'store' && <th>Cửa hàng</th>}<th>Nội dung</th><th>Điểm vi phạm{historyFilterable && <small className="compensation-subline">Tổng: <strong className="compensation-debit">{formatViolationPoints(filteredViolationPoints)}</strong></small>}</th><th>Ghi chú</th><th>Trạng thái</th><th>Thao tác</th></tr></thead>
           <tbody>
