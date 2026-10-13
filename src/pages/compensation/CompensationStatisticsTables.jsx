@@ -2,6 +2,7 @@ import { useMemo, useState } from 'react'
 import { Badge, Field, Input, Select, TableWrap } from '../../components/UI'
 import { SupportEmployeeTag } from '../../components/SupportEmployeeTag'
 import { money, today } from '../../utils'
+import { HistoryMonthFilter } from './HistoryMonthFilter'
 
 const employeeName = (employees = [], employeeId = '', fallback = '') => employees.find((employee) => (
   [employee.id, employee.code, employee.employeeId].map(String).includes(String(employeeId))
@@ -66,12 +67,14 @@ export function CompensationStatisticsGrid({
 
 export function RewardHistoryTable({ rows = [], employees = [], showEmployee = false, filterable = false, filterFields, supportTagContextForRow = null }) {
   const [dateFilter, setDateFilter] = useState('')
+  const [monthFilter, setMonthFilter] = useState('')
   const [shiftFilter, setShiftFilter] = useState('all')
   const [employeeFilter, setEmployeeFilter] = useState('all')
   const filterByDate = filterable || filterFields?.includes('date')
   const filterByShift = filterable || filterFields?.includes('shift')
   const filterByEmployee = filterable || filterFields?.includes('employee')
-  const hasFilters = filterByDate || filterByShift || filterByEmployee
+  const filterByMonth = filterFields?.includes('month')
+  const hasFilters = filterByDate || filterByShift || filterByEmployee || filterByMonth
   const completedRows = useMemo(() => rows.filter((row) => row.completed && row.payoutStatus !== 'void'), [rows])
   const { shiftOptions, employeeOptions } = useMemo(() => {
     const shifts = new Map()
@@ -93,15 +96,17 @@ export function RewardHistoryTable({ rows = [], employees = [], showEmployee = f
   }, [completedRows, employees])
   const filteredRows = useMemo(() => completedRows.filter((row) => (
     (!filterByDate || !dateFilter || row.workDate === dateFilter)
+    && (!filterByMonth || !monthFilter || String(row.workDate || '').slice(0, 7) === monthFilter)
     && (!filterByShift || shiftFilter === 'all' || historicalOptionKey('shift', row.shiftId, row.shiftName || 'Chưa gắn ca') === shiftFilter)
     && (!filterByEmployee || employeeFilter === 'all' || historicalOptionKey('employee', row.employeeId, row.employeeName) === employeeFilter)
-  )), [completedRows, dateFilter, employeeFilter, filterByDate, filterByEmployee, filterByShift, shiftFilter])
+  )), [completedRows, dateFilter, monthFilter, employeeFilter, filterByDate, filterByMonth, filterByEmployee, filterByShift, shiftFilter])
   const filteredTotal = useMemo(() => filteredRows.reduce((total, row) => (
     total + Math.max(0, Number(row.amountVnd) || 0)
   ), 0), [filteredRows])
 
   return <>
-    {hasFilters && <div className="form-grid compensation-history-filters" role="group" aria-label="Bộ lọc lịch sử nhận thưởng">
+    {filterByMonth && <HistoryMonthFilter label="Tháng nhận thưởng" groupLabel="Bộ lọc tháng lịch sử nhận thưởng" value={monthFilter} onChange={setMonthFilter} />}
+    {(filterByDate || filterByShift || filterByEmployee) && <div className="form-grid compensation-history-filters" role="group" aria-label="Bộ lọc lịch sử nhận thưởng">
       {filterByDate && <Field label="Ngày">
         <Input type="date" aria-label="Ngày nhận thưởng" value={dateFilter} onChange={(event) => setDateFilter(event.target.value)} />
       </Field>}
@@ -121,7 +126,7 @@ export function RewardHistoryTable({ rows = [], employees = [], showEmployee = f
     <TableWrap
       className="compensation-table reward-history-table"
       firstPageDates={filterable ? [today()] : []}
-      paginationKey={`${dateFilter}:${shiftFilter}:${employeeFilter}`}
+      paginationKey={`${monthFilter}:${dateFilter}:${shiftFilter}:${employeeFilter}`}
     >
       <thead><tr>{showEmployee && <th>Nhân viên</th>}<th>Ngày</th><th>Ca làm</th><th>Công việc</th><th>Tiền thưởng{hasFilters && <small className="compensation-subline">Tổng: <strong className="compensation-credit">+{money(filteredTotal)}</strong></small>}</th><th>Ghi nhận lúc</th><th>Trạng thái</th></tr></thead>
       <tbody>
