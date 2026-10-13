@@ -124,6 +124,7 @@ export function RewardHistoryTable({ rows = [], employees = [], showEmployee = f
       </Field>}
     </div>}
     <TableWrap
+      key={filterByMonth ? monthFilter : undefined}
       className="compensation-table reward-history-table"
       firstPageDates={filterable ? [today()] : []}
       paginationKey={`${monthFilter}:${dateFilter}:${shiftFilter}:${employeeFilter}`}
