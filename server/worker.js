@@ -22,6 +22,24 @@ import {
 } from '../src/domain/compensationPolicies.js'
 import { allocateByLargestRemainder } from '../src/domain/compensationAllocation.js'
 import { REVENUE_BONUS_READ_COLLECTIONS } from './revenue-bonus-read.mjs'
+import {
+  isRevenueBonusConfigStorePolicy,
+  legacyRevenueBonusThresholds,
+  resolveRevenueBonusProgram,
+  REVENUE_BONUS_CONFIG_INVALID,
+  REVENUE_BONUS_CONFIG_STATUS,
+  REVENUE_BONUS_CONFIG_STORE_POLICIES,
+  revenueBonusConfigOverview,
+  revenueBonusConfigsForStorePolicy,
+  revenueBonusConfigSnapshot,
+  revenueBonusProgramIdForStorePolicy,
+  revenueBonusStorePolicyForProgramId,
+  revenueBonusStorePolicyLabel,
+  validateRevenueBonusEffectiveFrom,
+  validateRevenueBonusTierRows,
+  minimumRevenueBonusEffectiveFrom,
+  vietnamBusinessDate,
+} from '../src/domain/revenueBonusConfig.js'
 import { profileMatchesRole } from '../src/domain/roleProfiles.js'
 import {
   AUTOMATIC_REVENUE_BONUS_CUTOFF_HOUR,
@@ -6134,6 +6152,7 @@ export const revenueBonusPeriodSnapshot = ({
     supportTransfers: Array.isArray(state?.supportTransfers) ? state.supportTransfers : [],
     overrides: Array.isArray(state?.revenueBonusOverrides) ? state.revenueBonusOverrides : [],
     violations: Array.isArray(state?.violations) ? state.violations : [],
+    revenueBonusConfigs: state?.revenueBonusConfigs,
     nowMs,
   })
   const daysByDate = new Map(calculated.days.map((day) => [day.businessDate, day]))
@@ -6179,6 +6198,11 @@ export const revenueBonusPeriodSnapshot = ({
       finalizedAt: day.finalizedAt || null,
       status: day.status,
       revenueVnd: day.revenueVnd,
+      tierId: day.tierId || null,
+      rateBasisPoints: Number(day.rateBasisPoints || 0),
+      revenueBonusConfigSource: day.revenueBonusConfig?.source || null,
+      revenueBonusConfigId: day.revenueBonusConfig?.configId || null,
+      revenueBonusConfigVersion: day.revenueBonusConfig?.version ?? null,
       totalPoolVnd: day.totalPoolVnd,
       automaticAllocatedVnd: day.automaticAllocatedVnd,
       allocatedVnd: day.allocatedVnd,
@@ -6557,7 +6581,9 @@ export const finalizeAutomaticRevenueBonuses = async (env, {
       summary.results.push({
         status: 'FAILED',
         ...scope,
-        code: error instanceof ApiError ? error.code : 'AUTOMATIC_REVENUE_BONUS_FAILED',
+        code: error instanceof ApiError || error?.code === REVENUE_BONUS_CONFIG_INVALID
+          ? error.code
+          : 'AUTOMATIC_REVENUE_BONUS_FAILED',
         message: String(error?.message || 'Không thể tự động chốt thưởng doanh thu.'),
       })
     }
@@ -6665,6 +6691,8 @@ const DOMAIN_PROTECTED_STATE_COLLECTIONS = new Set([
   'salaryAdvances',
   'payrollPeriods',
   'payrollPayments',
+  // Admin-only daily revenue bonus tables: never writable through state patches.
+  'revenueBonusConfigs',
   ...COMPENSATION_STATE_COLLECTIONS,
 ])
 
@@ -7754,6 +7782,9 @@ export const commandStateProjection = (body) => {
       payload.employeeId,
     )
   }
+  if (type.startsWith('revenue_bonus_config.')) {
+    return projection('command-revenue-bonus-config', ['revenueBonusConfigs'], '', '', '', false)
+  }
   if (type.startsWith('store_salary_config.')) {
     return projection(
       'command-salary-config',
@@ -7988,6 +8019,8 @@ export const STALE_VERSION_REBASE_COMMANDS = new Set([
   'task.shift.select',
   'notification.mark_read',
   'notification.mark_all_read',
+  // Concurrency is enforced by the per-store-group configuration version.
+  'revenue_bonus_config.save',
 ])
 const MAX_REBASE_COMMAND_ATTEMPTS = 3
 
@@ -11956,6 +11989,7 @@ const RESET_ARRAY_COLLECTIONS = Object.freeze([
   'supportWorkSchedules',
   'supportWorkScheduleHistory',
   'policyHistory',
+  'revenueBonusConfigs',
   ...COMPENSATION_STATE_COLLECTIONS,
 ])
 
@@ -13834,6 +13868,7 @@ const automaticRevenueBonusPeriodFor = (state, storeId, period) => {
     supportTransfers: Array.isArray(state.supportTransfers) ? state.supportTransfers : [],
     overrides: Array.isArray(state.revenueBonusOverrides) ? state.revenueBonusOverrides : [],
     violations: Array.isArray(state.violations) ? state.violations : [],
+    revenueBonusConfigs: state.revenueBonusConfigs,
     nowMs: Date.now(),
   })
   cache.set(key, result)
@@ -14049,7 +14084,8 @@ const employeeHasHomePayrollAttendance = (state, employee, storeId, period) => (
   ))
 )
 
-const calculatePayrollSnapshot = async (db, state, requestedStoreId, period) => {
+const calculatePayrollSnapshot = async (db, commandState, requestedStoreId, period) => {
+  const state = await stateWithRevenueBonusConfigs(db, commandState)
   const payrollUnit = requirePayrollUnit(state, requestedStoreId)
   const storeId = String(payrollUnit.id || requestedStoreId).trim()
   const activeEmployees = (Array.isArray(state.employees) ? state.employees : []).filter((employee) => (
@@ -22960,6 +22996,38 @@ const revenueBonusProgramForStore = (store) => {
       }
 }
 
+// Days finalized before configuration existed carry no snapshot; they were
+// calculated with the legacy table of their stored program.
+const legacyRevenueBonusConfigSnapshotFor = (programId) => {
+  try {
+    revenueBonusStorePolicyForProgramId(programId)
+  } catch {
+    return null
+  }
+  return revenueBonusConfigSnapshot(resolveRevenueBonusProgram({
+    programId,
+    businessDate: AUTOMATIC_REVENUE_BONUS_EFFECTIVE_DATE,
+    configs: [],
+  }))
+}
+
+const loadRevenueBonusConfigs = async (db) => {
+  const row = await loadStateCollections(db, 'global', ['revenueBonusConfigs'])
+  const value = row ? parseStoredJson(row.value_json, {})?.revenueBonusConfigs : undefined
+  if (value !== undefined && !Array.isArray(value)) {
+    throw new ApiError(500, REVENUE_BONUS_CONFIG_INVALID, 'Danh sách cấu hình thưởng doanh thu đã lưu bị hỏng.')
+  }
+  return Array.isArray(value) ? value : []
+}
+
+// Projections that did not load the collection read it explicitly, so payroll
+// never falls back to the legacy table because a projection omitted it.
+const stateWithRevenueBonusConfigs = async (db, state) => (
+  Array.isArray(state?.revenueBonusConfigs)
+    ? state
+    : { ...state, revenueBonusConfigs: await loadRevenueBonusConfigs(db) }
+)
+
 const liveAttendanceSeconds = (record, nowMs, projectOpen = true) => {
   const storedSource = record?.approvedSalesSeconds
     ?? record?.workedSeconds
@@ -23104,6 +23172,7 @@ const materializedRevenueBonusDaySnapshot = ({ state, storeId, businessDate, now
   const projectedAt = String(now || new Date().toISOString())
   return applyRevenueSnapshotPointPolicy({
     ...daily,
+    revenueBonusConfig: daily.revenueBonusConfig || legacyRevenueBonusConfigSnapshotFor(daily.programId),
     projectedAt,
     finalizedAt: daily.finalizedAt || daily.calculatedAt || daily.approvedAt || daily.createdAt || projectedAt,
     calculationMode: 'AUTOMATIC',
@@ -23147,6 +23216,7 @@ export const revenueBonusLiveSnapshot = ({ state, store, businessDate, now = new
       supportTransfers: Array.isArray(state?.supportTransfers) ? state.supportTransfers : [],
       overrides: Array.isArray(state?.revenueBonusOverrides) ? state.revenueBonusOverrides : [],
       violations: Array.isArray(state?.violations) ? state.violations : [],
+      revenueBonusConfigs: state?.revenueBonusConfigs,
       nowMs: Date.parse(now),
     }),
     calculationMode: 'AUTOMATIC',
@@ -23166,6 +23236,181 @@ const activeRevenueBonusOverrideRecords = (state, storeId, businessDate, employe
   && dateFromRecord(record) === businessDate
   && sameIdentifier(record.employeeId, employeeId)
 ))
+
+const REVENUE_BONUS_CONFIG_COMMAND = 'revenue_bonus_config.save'
+
+const revenueBonusConfigRecords = (state) => {
+  const records = state?.revenueBonusConfigs
+  if (records === undefined || records === null) return []
+  if (!Array.isArray(records)) {
+    throw new ApiError(500, REVENUE_BONUS_CONFIG_INVALID, 'Danh sách cấu hình thưởng doanh thu đã lưu bị hỏng.')
+  }
+  try {
+    // Validate the whole collection before any write so a corrupt row can
+    // never be carried forward or hidden behind a newer version.
+    for (const storePolicy of REVENUE_BONUS_CONFIG_STORE_POLICIES) revenueBonusConfigsForStorePolicy(records, storePolicy)
+  } catch (error) {
+    if (error?.code === REVENUE_BONUS_CONFIG_INVALID) {
+      throw new ApiError(500, REVENUE_BONUS_CONFIG_INVALID, error.message, error.details)
+    }
+    throw error
+  }
+  return records
+}
+
+const revenueBonusConfigAdminView = (records, now) => {
+  const today = vietnamBusinessDate(Date.parse(now))
+  return {
+    today,
+    minimumEffectiveFrom: minimumRevenueBonusEffectiveFrom(Date.parse(now)),
+    groups: REVENUE_BONUS_CONFIG_STORE_POLICIES.map((storePolicy) => {
+      const overview = revenueBonusConfigOverview({ configs: records, storePolicy, today })
+      return {
+        storePolicy,
+        label: revenueBonusStorePolicyLabel(storePolicy),
+        programId: overview.programId,
+        headVersion: overview.headVersion,
+        legacyThresholds: legacyRevenueBonusThresholds(storePolicy),
+        current: revenueBonusConfigSnapshot(overview.current),
+        currentRecord: overview.currentRecord,
+        pending: overview.pending,
+        history: overview.history,
+      }
+    }),
+  }
+}
+
+const getRevenueBonusConfigs = async (request, env, context) => {
+  const db = getDatabase(env)
+  const user = await requireSession(request, db, context, { stateCollections: SESSION_CONTEXT_STATE_COLLECTIONS })
+  assertAdmin(user, 'Chỉ Admin được xem và cấu hình thưởng doanh thu ngày.')
+  const row = await loadStateCollections(db, 'global', ['revenueBonusConfigs'])
+  const state = row ? parseStoredJson(row.value_json, {}) : {}
+  return jsonResponse(apiPayload(context, {
+    version: Number(row?.version || 0),
+    ...revenueBonusConfigAdminView(revenueBonusConfigRecords(state), context.now),
+  }))
+}
+
+const revenueBonusConfigValidationError = (details) => new ApiError(
+  400,
+  'REVENUE_BONUS_CONFIG_VALIDATION',
+  'Cấu hình thưởng doanh thu chưa hợp lệ; vui lòng kiểm tra các dòng được đánh dấu.',
+  details,
+)
+
+const revenueBonusConfigCommand = async (db, actor, body, commandContext) => {
+  assertAdmin(actor, 'Chỉ Admin được cấu hình thưởng doanh thu ngày.')
+  if (body.type !== REVENUE_BONUS_CONFIG_COMMAND) {
+    throw new ApiError(400, 'COMMAND_UNKNOWN', 'Lệnh cấu hình thưởng doanh thu không được hỗ trợ.')
+  }
+  const payload = isPlainRecord(body.payload) ? body.payload : {}
+  const storePolicy = String(payload.storePolicy ?? '')
+  if (!isRevenueBonusConfigStorePolicy(storePolicy)) {
+    throw new ApiError(400, 'REVENUE_BONUS_CONFIG_STORE_POLICY_INVALID', 'Nhóm cửa hàng chỉ được là Dosii hoặc SM TNV.')
+  }
+  const programId = revenueBonusProgramIdForStorePolicy(storePolicy)
+  if (payload.programId !== undefined && payload.programId !== programId) {
+    throw new ApiError(400, 'REVENUE_BONUS_CONFIG_PROGRAM_MISMATCH', 'Chương trình thưởng không khớp với nhóm cửa hàng.')
+  }
+  const baseVersion = payload.baseVersion
+  if (!Number.isSafeInteger(baseVersion) || baseVersion < 0) {
+    throw new ApiError(400, 'REVENUE_BONUS_CONFIG_BASE_VERSION_REQUIRED', 'Thiếu phiên bản cấu hình đang chỉnh sửa; vui lòng tải lại trang.')
+  }
+  const effectiveFrom = validateRevenueBonusEffectiveFrom(payload.effectiveFrom, { now: Date.parse(commandContext.now) })
+  const tierValidation = validateRevenueBonusTierRows(payload.tiers)
+  if (!effectiveFrom.ok || !tierValidation.valid) {
+    throw revenueBonusConfigValidationError({
+      fieldErrors: effectiveFrom.ok ? {} : { effectiveFrom: effectiveFrom.message },
+      formErrors: tierValidation.formErrors,
+      rowErrors: tierValidation.rowErrors
+        .map((errors, index) => ({ index, ...errors }))
+        .filter((errors) => Object.keys(errors).length > 1),
+    })
+  }
+
+  const { current, state } = await loadGlobalCommandState(db, body, actor)
+  const records = revenueBonusConfigRecords(state)
+  const groupRecords = revenueBonusConfigsForStorePolicy(records, storePolicy)
+  const headVersion = groupRecords.reduce((maximum, record) => Math.max(maximum, record.version), 0)
+  if (baseVersion !== headVersion) {
+    throw new ApiError(
+      409,
+      'REVENUE_BONUS_CONFIG_CONFLICT',
+      `Cấu hình ${revenueBonusStorePolicyLabel(storePolicy)} vừa được người khác cập nhật. Vui lòng tải lại để xem bản mới nhất trước khi lưu.`,
+      { storePolicy, currentVersion: headVersion, baseVersion },
+    )
+  }
+  // Only a configuration that has not started yet can be replaced. Anything
+  // already effective stays untouched so finalized days remain explainable.
+  const today = vietnamBusinessDate(Date.parse(commandContext.now))
+  const supersededIds = new Set(groupRecords
+    .filter((record) => record.status === REVENUE_BONUS_CONFIG_STATUS.ACTIVE && record.effectiveFrom > today)
+    .map((record) => record.id))
+  const actorSnapshot = serverActorSnapshot(actor)
+  const config = {
+    id: `rbc_${crypto.randomUUID()}`,
+    storePolicy,
+    programId,
+    effectiveFrom: effectiveFrom.value,
+    version: headVersion + 1,
+    status: REVENUE_BONUS_CONFIG_STATUS.ACTIVE,
+    tiers: tierValidation.tiers,
+    supersedesConfigIds: [...supersededIds],
+    createdAt: commandContext.now,
+    createdBy: actorSnapshot,
+    updatedAt: commandContext.now,
+    updatedBy: actorSnapshot,
+    requestId: commandContext.requestId,
+  }
+  const supersededConfigs = []
+  const nextRecords = records.map((record) => {
+    if (!isPlainRecord(record) || record.storePolicy !== storePolicy || !supersededIds.has(String(record.id))) return record
+    const superseded = {
+      ...record,
+      status: REVENUE_BONUS_CONFIG_STATUS.SUPERSEDED,
+      supersededAt: commandContext.now,
+      supersededBy: actorSnapshot,
+      supersededByConfigId: config.id,
+      updatedAt: commandContext.now,
+      updatedBy: actorSnapshot,
+    }
+    supersededConfigs.push(superseded)
+    return superseded
+  })
+  const nextState = {
+    ...state,
+    revenueBonusConfigs: [...nextRecords, config],
+    stateVersion: Math.max(1, Number(state.stateVersion) || 1) + 1,
+  }
+  return commitGlobalStateDomainCommand(db, actor, current, nextState, {
+    action: body.type,
+    entityType: 'revenue-bonus-config',
+    entityId: config.id,
+    before: {
+      storePolicy,
+      headVersion,
+      current: revenueBonusConfigSnapshot(resolveRevenueBonusProgram({ programId, businessDate: today, configs: records })),
+      supersededConfigs: groupRecords.filter((record) => supersededIds.has(record.id)),
+    },
+    after: config,
+    metadata: {
+      storePolicy,
+      programId,
+      effectiveFrom: config.effectiveFrom,
+      version: config.version,
+      baseVersion,
+      supersededConfigIds: config.supersedesConfigIds,
+    },
+    response: {
+      command: body.type,
+      revenueBonusConfig: config,
+      supersededConfigs,
+      ...revenueBonusConfigAdminView(nextState.revenueBonusConfigs, commandContext.now),
+    },
+    status: 201,
+  }, commandContext)
+}
 
 const revenueBonusOverrideCommand = async (db, actor, body, commandContext, current, state, payload) => {
   assertAdmin(actor, 'Chỉ Admin được sửa, xóa hoặc khôi phục thưởng doanh thu tự động của nhân viên.')
@@ -23740,7 +23985,12 @@ const revenueBonusCommand = async (db, actor, body, commandContext) => {
   ))
   const revenueVnd = orders.reduce((sum, order) => safeMoneySum(sum, Number(order.amount), 'Doanh thu ngày'), 0)
   const { programId, milestoneProgramId } = revenueBonusProgramForStore(store)
-  const percentage = calculateRevenueBonus({ programId, revenueVnd })
+  const revenueProgram = resolveRevenueBonusProgram({
+    programId,
+    businessDate,
+    configs: (await stateWithRevenueBonusConfigs(db, state)).revenueBonusConfigs,
+  })
+  const percentage = calculateRevenueBonus({ programId, revenueVnd, tiers: revenueProgram.tiers })
   const milestone = calculateTeamMilestoneReward({ programId: milestoneProgramId, achievedUnits: revenueVnd })
   const employeeById = new Map((Array.isArray(state.employees) ? state.employees : []).flatMap((employee) => (
     [employee.id, employee.code, employee.employeeId]
@@ -23853,6 +24103,7 @@ const revenueBonusCommand = async (db, actor, body, commandContext) => {
     tierId: percentage.tierId,
     rateBasisPoints: percentage.rateBasisPoints,
     ratePercent: percentage.ratePercent,
+    revenueBonusConfig: revenueBonusConfigSnapshot(revenueProgram),
     percentagePoolVnd: percentage.bonusVnd,
     milestoneId: milestone.milestoneId,
     milestonePoolVnd: 0,
@@ -25751,6 +26002,9 @@ const dispatchCommand = async (db, env, user, body, commandContext) => {
   if (String(body.type || '').startsWith('violation.')) {
     return await violationCommand(db, user, body, commandContext)
   }
+  if (String(body.type || '').startsWith('revenue_bonus_config.')) {
+    return await revenueBonusConfigCommand(db, user, body, commandContext)
+  }
   if (String(body.type || '').startsWith('revenue_bonus.')) {
     if (body.type === 'revenue_bonus.resolve_daily_collision') {
       return await revenueBonusDailyCollisionRepairCommand(db, user, body, commandContext)
@@ -26450,6 +26704,10 @@ const handleApi = async (request, env, context, url) => {
     if (request.method !== 'GET') return methodNotAllowed(['GET'])
     return getRevenueBonusPeriod(request, env, context, url)
   }
+  if (path === '/api/revenue-bonus/configs') {
+    if (request.method !== 'GET') return methodNotAllowed(['GET'])
+    return getRevenueBonusConfigs(request, env, context)
+  }
   if (path === '/api/command') {
     if (request.method !== 'POST') return methodNotAllowed(['POST'])
     return executeCommand(request, env, context)
@@ -26547,6 +26805,19 @@ const worker = {
           serverTime: context.now,
           requestId: context.requestId,
         }, 422, extraHeaders)
+      }
+      if (error?.code === REVENUE_BONUS_CONFIG_INVALID) {
+        console.error('IDOSI revenue bonus configuration invalid', error.details)
+        return jsonResponse({
+          ok: false,
+          error: {
+            code: REVENUE_BONUS_CONFIG_INVALID,
+            message: `${error.message} Hệ thống dừng tính thưởng doanh thu để tránh sai tiền; cần Admin kiểm tra cấu hình.`,
+            ...(error.details ? { details: error.details } : {}),
+          },
+          serverTime: context.now,
+          requestId: context.requestId,
+        }, 500, extraHeaders)
       }
       console.error('Unhandled IDOSI worker error', error)
       return jsonResponse({
