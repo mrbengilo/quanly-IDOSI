@@ -103,10 +103,16 @@ export function RewardHistoryTable({ rows = [], employees = [], showEmployee = f
   const filteredTotal = useMemo(() => filteredRows.reduce((total, row) => (
     total + Math.max(0, Number(row.amountVnd) || 0)
   ), 0), [filteredRows])
+  const employeeFilterControl = filterByEmployee && <Field label="Nhân viên">
+    <Select aria-label="Nhân viên nhận thưởng" value={employeeFilter} onChange={(event) => setEmployeeFilter(event.target.value)}>
+      <option value="all">Tất cả nhân viên</option>
+      {employeeOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+    </Select>
+  </Field>
 
   return <>
-    {filterByMonth && <HistoryMonthFilter label="Tháng nhận thưởng" groupLabel="Bộ lọc tháng lịch sử nhận thưởng" value={monthFilter} onChange={setMonthFilter} />}
-    {(filterByDate || filterByShift || filterByEmployee) && <div className="form-grid compensation-history-filters" role="group" aria-label="Bộ lọc lịch sử nhận thưởng">
+    {filterByMonth && <HistoryMonthFilter label="Tháng nhận thưởng" groupLabel="Bộ lọc lịch sử nhận thưởng" value={monthFilter} onChange={setMonthFilter}>{employeeFilterControl}</HistoryMonthFilter>}
+    {(filterByDate || filterByShift || (filterByEmployee && !filterByMonth)) && <div className="form-grid compensation-history-filters" role="group" aria-label="Bộ lọc lịch sử nhận thưởng">
       {filterByDate && <Field label="Ngày">
         <Input type="date" aria-label="Ngày nhận thưởng" value={dateFilter} onChange={(event) => setDateFilter(event.target.value)} />
       </Field>}
@@ -116,15 +122,10 @@ export function RewardHistoryTable({ rows = [], employees = [], showEmployee = f
           {shiftOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
         </Select>
       </Field>}
-      {filterByEmployee && <Field label="Nhân viên">
-        <Select aria-label="Nhân viên nhận thưởng" value={employeeFilter} onChange={(event) => setEmployeeFilter(event.target.value)}>
-          <option value="all">Tất cả nhân viên</option>
-          {employeeOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
-        </Select>
-      </Field>}
+      {!filterByMonth && employeeFilterControl}
     </div>}
     <TableWrap
-      key={filterByMonth ? monthFilter : undefined}
+      key={filterByMonth ? JSON.stringify([monthFilter, employeeFilter]) : undefined}
       className="compensation-table reward-history-table"
       firstPageDates={filterable ? [today()] : []}
       paginationKey={`${monthFilter}:${dateFilter}:${shiftFilter}:${employeeFilter}`}

@@ -30,6 +30,103 @@ beforeEach(() => {
 afterEach(() => { cleanup(); vi.useRealTimers() })
 
 describe('office history month filters', () => {
+  it('combines reward employee and month filters, including former employees, without changing source rows or statistics', () => {
+    const rows = [
+      reward('Thưởng hiện tại', '2026-09-01'),
+      reward('Thưởng cũ', '2026-09-30', { employeeId: 'VP-FORMER', employeeName: 'Người đã nghỉ', amountVnd: 5000, payoutStatus: 'pending' }),
+      reward('Thưởng tháng khác', '2026-10-01', { employeeId: 'VP-FORMER', employeeName: 'Người đã nghỉ', amountVnd: 7000 }),
+      reward('Đã hủy', '2026-09-01', { employeeId: 'VP-FORMER', payoutStatus: 'void' }),
+    ]
+    const before = JSON.stringify(rows)
+    render(<UnitCompensationStatistics targetUnit="office" rewardRows={rows} sections="reward" />)
+    const history = card('Lịch sử nhận thưởng — Khối văn phòng')
+    const summary = card('Thống kê thưởng — Khối văn phòng')
+    const summaryBefore = summary.textContent
+    const employeeSelect = screen.getByLabelText('Nhân viên nhận thưởng')
+    expect(within(employeeSelect).getByRole('option', { name: 'Người đã nghỉ' })).toBeTruthy()
+    changeMonth('Tháng nhận thưởng', '2026-09')
+    fireEvent.change(employeeSelect, { target: { value: 'employee:id:VP-FORMER' } })
+    expect(within(history.querySelector('thead')).getByText('+5,000 đ')).toBeTruthy()
+    expect(within(history).getByText('Thưởng cũ')).toBeTruthy()
+    expect(within(history).queryByText('Thưởng hiện tại')).toBeNull()
+    expect(within(history).queryByText('Thưởng tháng khác')).toBeNull()
+    expect(within(history).queryByText('Đã hủy')).toBeNull()
+    fireEvent.click(within(history).getByRole('button', { name: 'Tất cả tháng' }))
+    expect(employeeSelect.value).toBe('employee:id:VP-FORMER')
+    expect(within(history.querySelector('thead')).getByText('+12,000 đ')).toBeTruthy()
+    changeMonth('Tháng nhận thưởng', '2026-12')
+    expect(within(history).getByText('Không có lịch sử phù hợp bộ lọc.')).toBeTruthy()
+    changeMonth('Tháng nhận thưởng', '2026-09')
+    fireEvent.change(employeeSelect, { target: { value: 'all' } })
+    expect(screen.getByLabelText('Tháng nhận thưởng').value).toBe('2026-09')
+    expect(within(history.querySelector('thead')).getByText('+8,000 đ')).toBeTruthy()
+    expect(summary.textContent).toBe(summaryBefore)
+    expect(JSON.stringify(rows)).toBe(before)
+  })
+
+  it.each(['admin', 'business_support'])('combines violation employee and month filters for %s and preserves cancelled history', (role) => {
+    mocked.app.session.role = role
+    mocked.app.violations = [
+      violation('Đang làm', '2026-09-01'),
+      violation('Lịch sử tiền', '2026-09-01', { employeeId: 'VP-FORMER', employeeName: 'Người đã nghỉ', violationPoints: null, amountVnd: 3000 }),
+      violation('Đã hủy', '2026-09-30', { employeeId: 'VP-FORMER', employeeName: 'Người đã nghỉ', status: 'VOID' }),
+      violation('Tháng khác', '2026-10-01', { employeeId: 'VP-FORMER', employeeName: 'Người đã nghỉ' }),
+      violation('Ngoài văn phòng', '2026-09-01', { employeeId: 'HT-01', targetUnit: 'business_support' }),
+    ]
+    const before = JSON.stringify(mocked.app.violations)
+    render(<ViolationManagementPage targetUnit="office" embedded />)
+    const history = card('Lịch sử vi phạm')
+    const employeeSelect = screen.getByLabelText('Nhân viên vi phạm')
+    expect(within(employeeSelect).getByRole('option', { name: 'Người đã nghỉ' })).toBeTruthy()
+    expect(within(employeeSelect).queryByRole('option', { name: 'HT-01' })).toBeNull()
+    changeMonth('Tháng vi phạm', '2026-09')
+    fireEvent.change(employeeSelect, { target: { value: 'VP-FORMER' } })
+    expect(within(history).getByText('1 đang hiệu lực')).toBeTruthy()
+    expect(within(history).getByText('Lịch sử tiền')).toBeTruthy()
+    expect(within(history).getByText('Đã hủy', { selector: 'td' })).toBeTruthy()
+    expect(within(history).queryByText('Đang làm')).toBeNull()
+    expect(within(history).queryByText('Tháng khác')).toBeNull()
+    fireEvent.click(within(history).getByRole('button', { name: 'Tất cả tháng' }))
+    expect(employeeSelect.value).toBe('VP-FORMER')
+    expect(within(history).getByText('2 đang hiệu lực')).toBeTruthy()
+    changeMonth('Tháng vi phạm', '2026-12')
+    expect(within(history).getByText('Không có lịch sử phù hợp bộ lọc.')).toBeTruthy()
+    changeMonth('Tháng vi phạm', '2026-09')
+    fireEvent.change(employeeSelect, { target: { value: 'all' } })
+    expect(screen.getByLabelText('Tháng vi phạm').value).toBe('2026-09')
+    expect(within(history).getByText('2 đang hiệu lực')).toBeTruthy()
+    expect(screen.getByLabelText('Kỳ đánh giá vi phạm').value).toBe('2026-10')
+    expect(mocked.app.createViolationBatch).not.toHaveBeenCalled()
+    expect(mocked.app.voidViolation).not.toHaveBeenCalled()
+    expect(JSON.stringify(mocked.app.violations)).toBe(before)
+  })
+
+  it.each(['reward', 'violation'])('resets %s pagination when selecting, clearing, and revisiting an employee', (kind) => {
+    const rows = ['VP-01', 'VP-02'].flatMap((employeeId) => Array.from({ length: 25 }, (_, i) => (
+      (kind === 'reward' ? reward : violation)(`${employeeId}-row-${i}`, '2026-10-01', { employeeId })
+    )))
+    if (kind === 'reward') render(<UnitCompensationStatistics targetUnit="office" rewardRows={rows} sections="reward" />)
+    else {
+      mocked.app.violations = rows
+      render(<ViolationManagementPage targetUnit="office" embedded />)
+    }
+    const history = card(kind === 'reward' ? 'Lịch sử nhận thưởng — Khối văn phòng' : 'Lịch sử vi phạm')
+    const employeeSelect = screen.getByLabelText(kind === 'reward' ? 'Nhân viên nhận thưởng' : 'Nhân viên vi phạm')
+    const selectEmployee = (id) => fireEvent.change(employeeSelect, { target: { value: kind === 'reward' && id !== 'all' ? `employee:id:${id}` : id } })
+    selectEmployee('VP-01')
+    fireEvent.click(within(history).getByRole('button', { name: 'Trang 2' }))
+    expect(within(history).getByText('VP-01-row-24')).toBeTruthy()
+    selectEmployee('VP-02')
+    expect(within(history).getByText('VP-02-row-0')).toBeTruthy()
+    selectEmployee('VP-01')
+    expect(within(history).getByText('VP-01-row-0')).toBeTruthy()
+    fireEvent.click(within(history).getByRole('button', { name: 'Trang 2' }))
+    selectEmployee('all')
+    expect(within(history).getByText('VP-01-row-0')).toBeTruthy()
+    selectEmployee('VP-01')
+    expect(within(history).getByText('VP-01-row-0')).toBeTruthy()
+  })
+
   it('filters rewards by business month and year, keeps statuses and totals, and clears to all months', () => {
     const rows = [
       reward('Đầu tháng', '2026-09-01', { completedAt: '2026-10-01T02:00:00Z' }),
