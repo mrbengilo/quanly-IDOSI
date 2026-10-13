@@ -413,6 +413,7 @@ export function ViolationManagementPage({ targetUnit: requestedTargetUnit, store
           </Field>
         </div>}
         <TableWrap
+          key={targetUnit === 'office' ? historyMonthFilter : undefined}
           className="compensation-table"
           firstPageDates={targetUnit === 'store' ? [vietnamToday()] : []}
           paginationKey={`${targetUnit === 'office' ? historyMonthFilter : assessmentPeriod}:${historyDateFilter}:${historyEmployeeFilter}`}
