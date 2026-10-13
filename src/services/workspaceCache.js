@@ -3,7 +3,9 @@
 const SESSION_KEY = 'idosi-workspace-cache-session-v1'
 const LAST_KEY = 'idosi-workspace-cache-last-v1'
 // v2 excludes projections hydrated with client-side catalog seeds.
-const CACHE_FORMAT_VERSION = 2
+// v3 reloads office projections that omitted reward progress and legacy tasks,
+// even when deployment has not changed the server's business-data version.
+const CACHE_FORMAT_VERSION = 3
 const MAX_ENTRIES = 40
 const MAX_AGE_MS = 12 * 60 * 60 * 1000
 let databasePromise
