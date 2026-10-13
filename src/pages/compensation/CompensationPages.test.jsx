@@ -254,7 +254,7 @@ describe('compensation pages', () => {
     />)
     expect(screen.queryByLabelText('Ngày nhận thưởng')).toBeNull()
     expect(screen.queryByLabelText('Ca nhận thưởng')).toBeNull()
-    expect(screen.queryByLabelText('Nhân viên nhận thưởng')).toBeNull()
+    expect(screen.getByLabelText('Nhân viên nhận thưởng')).toBeTruthy()
   })
 
   it('tags transferred employees in store reward history and employee summaries', () => {

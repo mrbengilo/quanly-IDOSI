@@ -94,6 +94,10 @@
   min-width: 0;
 }
 
+.compensation-month-filter--combined {
+  max-width: 800px;
+}
+
 .compensation-fixed-scope {
   align-items: flex-start;
   background: var(--compensation-surface);

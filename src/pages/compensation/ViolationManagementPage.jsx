@@ -250,16 +250,23 @@ export function ViolationManagementPage({ targetUnit: requestedTargetUnit, store
     return options
   }, new Map())].map(([value, label]) => ({ value, label })), [rows, employees])
   const historyFilterable = ['store', 'business_support'].includes(targetUnit)
+  const historyEmployeeFilterable = historyFilterable || targetUnit === 'office'
   const filteredRows = useMemo(() => rows.filter((entry) => (
     // Office history has its own month selection; other units retain the assessment/date filters.
     (targetUnit === 'office'
       ? !historyMonthFilter || violationPointPeriod(entry) === historyMonthFilter
       : historyFilterable && historyDateFilter ? entryDate(entry) === historyDateFilter : violationPointPeriod(entry) === assessmentPeriod)
-    && (!historyFilterable || historyEmployeeFilter === 'all' || entryEmployeeId(entry) === historyEmployeeFilter)
-  )), [rows, targetUnit, historyMonthFilter, historyFilterable, historyDateFilter, historyEmployeeFilter, assessmentPeriod])
+    && (!historyEmployeeFilterable || historyEmployeeFilter === 'all' || entryEmployeeId(entry) === historyEmployeeFilter)
+  )), [rows, targetUnit, historyMonthFilter, historyFilterable, historyEmployeeFilterable, historyDateFilter, historyEmployeeFilter, assessmentPeriod])
   const filteredViolationPoints = useMemo(() => filteredRows
     .filter((entry) => !isVoided(entry))
     .reduce((total, entry) => total + Math.round(Number(violationPointsOf(entry) || 0) * 10), 0) / 10, [filteredRows])
+  const historyEmployeeControl = <Field label="Nhân viên vi phạm">
+    <Select aria-label="Nhân viên vi phạm" value={historyEmployeeFilter} onChange={(event) => setHistoryEmployeeFilter(event.target.value)}>
+      <option value="all">Tất cả nhân viên</option>
+      {historyEmployeeOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+    </Select>
+  </Field>
 
   if (!permittedUnit || !canManage) {
     const subtitle = role === 'store_manager'
@@ -400,20 +407,15 @@ export function ViolationManagementPage({ targetUnit: requestedTargetUnit, store
         <div className="compensation-actions"><Button icon={Save} loading={busyKey === 'create'} disabled={!employees.length || !selectedShift || !selectedPolicies.length || Boolean(busyKey)} onClick={createViolation}>LƯU VI PHẠM</Button></div>
       </Card>
       <Card title="Lịch sử vi phạm" action={<Badge tone="red">{filteredRows.filter((entry) => !isVoided(entry)).length} đang hiệu lực</Badge>}>
-        {targetUnit === 'office' && <HistoryMonthFilter label="Tháng vi phạm" groupLabel="Bộ lọc tháng lịch sử vi phạm" value={historyMonthFilter} onChange={setHistoryMonthFilter} />}
+        {targetUnit === 'office' && <HistoryMonthFilter label="Tháng vi phạm" groupLabel="Bộ lọc lịch sử vi phạm" value={historyMonthFilter} onChange={setHistoryMonthFilter}>{historyEmployeeControl}</HistoryMonthFilter>}
         {historyFilterable && <div className="form-grid compensation-history-filters" role="group" aria-label="Bộ lọc lịch sử vi phạm">
           <Field label="Ngày">
             <Input type="date" aria-label="Ngày vi phạm" value={historyDateFilter} onChange={(event) => setHistoryDateFilter(event.target.value)} />
           </Field>
-          <Field label="Nhân viên vi phạm">
-            <Select aria-label="Nhân viên vi phạm" value={historyEmployeeFilter} onChange={(event) => setHistoryEmployeeFilter(event.target.value)}>
-              <option value="all">Tất cả nhân viên</option>
-              {historyEmployeeOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
-            </Select>
-          </Field>
+          {historyEmployeeControl}
         </div>}
         <TableWrap
-          key={targetUnit === 'office' ? historyMonthFilter : undefined}
+          key={targetUnit === 'office' ? JSON.stringify([historyMonthFilter, historyEmployeeFilter]) : undefined}
           className="compensation-table"
           firstPageDates={targetUnit === 'store' ? [vietnamToday()] : []}
           paginationKey={`${targetUnit === 'office' ? historyMonthFilter : assessmentPeriod}:${historyDateFilter}:${historyEmployeeFilter}`}
