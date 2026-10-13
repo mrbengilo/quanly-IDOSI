@@ -203,7 +203,7 @@ const SYSTEM_SCREEN_COLLECTIONS = Object.freeze({
   'store-managers': ['stores', 'employees', 'deletedEmployees', 'attendance'],
   office: [
     'employees', 'deletedEmployees', 'attendance', 'supportWorkAssignments', 'supportWorkSchedules',
-    'salaryAdjustments', 'compensationEntries', 'violations', 'payrollPeriods',
+    'salaryAdjustments', 'compensationEntries', 'violations', 'payrollPeriods', 'workCatalogProgress', 'tasks',
   ],
   settings: ['employees', 'deletedEmployees', 'accountSettings'],
   policies: [],
@@ -4238,9 +4238,11 @@ const loadOptimizedSystemStateSnapshot = async (db, scope, collectionKeys, scree
   const employees = Array.isArray(employeeState.employees) ? employeeState.employees : []
   const selectedEmployees = screen === 'tasks'
     ? employees.filter((employee) => profileMatchesRole(employee, 'business_support') || employeeUnit(employee) === 'business_support')
-    : [actorRoleEmployeeProfile(employeeState, user)].filter(Boolean)
+    : screen === 'office'
+      ? employees.filter((employee) => employeeUnit(employee) === 'office')
+      : [actorRoleEmployeeProfile(employeeState, user)].filter(Boolean)
   const employeeIds = selectedEmployees.flatMap(employeeIdentifierValues)
-  if (screen !== 'tasks' && user.employee_id) employeeIds.push(user.employee_id)
+  if (!['tasks', 'office'].includes(screen) && user.employee_id) employeeIds.push(user.employee_id)
   const snapshot = await db.readSystemStateSnapshot(scope, collectionKeys, screen, employeeIds)
   if (snapshot?.unchanged !== false
     || !Array.isArray(snapshot.manifests)
@@ -5557,7 +5559,7 @@ const getSystemScreen = async (request, env, context, screen) => {
     && isEmployeeScreen
     && Boolean(String(user.store_id || '').trim())
   const useOptimizedSystemProjection = typeof db?.readSystemStateSnapshot === 'function'
-    && ['tasks', 'support-tasks', 'support-assigned-work', 'support-overview'].includes(screen)
+    && ['tasks', 'office', 'support-tasks', 'support-assigned-work', 'support-overview'].includes(screen)
   const readScreen = () => useEmployeeStoreProjection
     ? loadStoreState(db, 'global', user.store_id, user.employee_id, screen)
     : useOptimizedSystemProjection
