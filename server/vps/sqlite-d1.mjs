@@ -309,7 +309,7 @@ const STORE_SCREEN_PERIOD_COLLECTIONS = Object.freeze({
 })
 
 const systemSnapshotSqlCache = new Map()
-const SYSTEM_ACTOR_SCOPED_SCREENS = new Set(['tasks', 'support-tasks', 'support-assigned-work'])
+const SYSTEM_ACTOR_SCOPED_SCREENS = new Set(['tasks', 'office', 'support-tasks', 'support-assigned-work'])
 const SYSTEM_ACTOR_GLOBAL_COLLECTIONS = new Set(['stores', 'employees', 'workCatalogItems', 'shiftDefinitions'])
 
 const systemStateSnapshotSql = (collectionKeys = [], screen = '') => {
@@ -322,7 +322,12 @@ const systemStateSnapshotSql = (collectionKeys = [], screen = '') => {
   const cacheKey = `${normalizedScreen}:${normalizedCollections.join(',')}`
   if (systemSnapshotSqlCache.has(cacheKey)) return systemSnapshotSqlCache.get(cacheKey)
   const collectionsSql = sqlStringList(normalizedCollections)
-  const actorGlobalCollections = normalizedCollections.filter((key) => SYSTEM_ACTOR_GLOBAL_COLLECTIONS.has(key))
+  // Office retains its existing directory/attendance/compensation inputs. Only
+  // the newly loaded legacy task history is bounded to office employees and
+  // their attendance references, avoiding a full store-task history download.
+  const actorGlobalCollections = normalizedCollections.filter((key) => normalizedScreen === 'office'
+    ? key !== 'tasks'
+    : SYSTEM_ACTOR_GLOBAL_COLLECTIONS.has(key))
   const actorGlobalSql = actorGlobalCollections.length
     ? `entity.collection_key IN (${sqlStringList(actorGlobalCollections)}) OR`
     : ''
