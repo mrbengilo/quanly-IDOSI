@@ -49,6 +49,10 @@ vi.mock('./pages/admin/OrderInformationSettingsPage', () => ({
   OrderInformationSettingsPage: () => <div>Cài đặt thông tin đơn hàng route</div>,
 }))
 
+vi.mock('./pages/admin/RevenueBonusSettingsPage', () => ({
+  RevenueBonusSettingsPage: () => <div>Cấu hình thưởng doanh thu ngày route</div>,
+}))
+
 vi.mock('./pages/admin/DataRestorePage', () => ({
   DataRestorePage: () => <div>Khôi phục dữ liệu route</div>,
 }))
@@ -162,6 +166,18 @@ describe('App role routes', () => {
 
     await waitFor(() => expect(screen.getByTestId('current-route').textContent).toBe('/store/overview'))
     expect(screen.queryByText('Cài đặt thông tin đơn hàng route')).toBeNull()
+  })
+
+  it('lets only Admin open the daily revenue bonus settings', async () => {
+    renderRoute('/admin/revenue-bonus-settings', 'admin')
+    expect(await screen.findByText('Cấu hình thưởng doanh thu ngày route')).toBeTruthy()
+    expect(screen.getByTestId('current-route').textContent).toBe('/admin/revenue-bonus-settings')
+  })
+
+  it.each(['business_support', 'store_manager', 'employee'])('keeps the daily revenue bonus settings unavailable to %s', async (role) => {
+    renderRoute('/admin/revenue-bonus-settings', role)
+    await waitFor(() => expect(screen.getByTestId('current-route').textContent).not.toBe('/admin/revenue-bonus-settings'))
+    expect(screen.queryByText('Cấu hình thưởng doanh thu ngày route')).toBeNull()
   })
 
   it('opens the store statistics page inside the selected store workspace', async () => {

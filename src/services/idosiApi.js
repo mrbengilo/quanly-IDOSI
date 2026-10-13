@@ -248,6 +248,13 @@ export const apiGetRevenueBonusPeriod = ({ storeId, period }) => {
   })
 }
 
+export const apiGetRevenueBonusConfigs = ({ signal } = {}) => request('/api/revenue-bonus/configs', {
+  timeoutMs: REVENUE_BONUS_LIVE_TIMEOUT_MS,
+  timeoutMessage: 'Máy chủ chưa tải được cấu hình thưởng doanh thu. Vui lòng thử lại.',
+  retries: 1,
+  signal,
+})
+
 export const apiCommand = (type, payload, {
   expectedVersion = 0,
   scope = 'global',

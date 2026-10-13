@@ -1,7 +1,9 @@
 // Keep identity and transfer context complete: narrowing employees to their
 // current store would lose historical support work and identifier collisions.
+// Every effective-dated percentage configuration is small and must be read in
+// the same snapshot; without it a day would silently fall back to the legacy table.
 export const REVENUE_BONUS_CONTEXT_COLLECTIONS = Object.freeze([
-  'stores', 'deletedStores', 'employees', 'deletedEmployees', 'supportTransfers',
+  'stores', 'deletedStores', 'employees', 'deletedEmployees', 'supportTransfers', 'revenueBonusConfigs',
 ])
 
 export const REVENUE_BONUS_READ_COLLECTIONS = Object.freeze([

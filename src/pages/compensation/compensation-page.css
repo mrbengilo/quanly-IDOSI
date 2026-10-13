@@ -121,6 +121,12 @@
   border-color: #a9d9bd;
 }
 
+.revenue-milestones-source {
+  color: #4b5a51;
+  font-size: 13px;
+  margin: 0 0 12px;
+}
+
 .revenue-milestones-summary {
   align-items: center;
   background: linear-gradient(100deg, #e8f5ff, #eefaf1);

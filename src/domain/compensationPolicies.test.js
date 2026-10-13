@@ -77,6 +77,22 @@ describe('canonical revenue bonus programs', () => {
     }).bonusVnd).toBe(expected)
   })
 
+  it('uses resolved tiers when given and leaves the legacy result unchanged otherwise', () => {
+    const tiers = [
+      { id: 'cfg.1', minimumRevenueVnd: 1_000_000, minimumInclusive: true, maximumRevenueVnd: 3_000_000, maximumInclusive: true, rateBasisPoints: 125 },
+      { id: 'cfg.2', minimumRevenueVnd: 3_000_000, minimumInclusive: false, maximumRevenueVnd: null, maximumInclusive: false, rateBasisPoints: 250 },
+    ]
+    const programId = REVENUE_BONUS_PROGRAM_IDS.DOSII_DAILY
+    expect(calculateRevenueBonus({ programId, revenueVnd: 1_000_001, tiers }))
+      .toEqual({ programId, revenueVnd: 1_000_001, tierId: 'cfg.1', rateBasisPoints: 125, ratePercent: 1.25, bonusVnd: 12_500 })
+    expect(calculateRevenueBonus({ programId, revenueVnd: 3_000_001, tiers }).bonusVnd).toBe(75_000)
+    // Same keys as before configuration existed: stored fingerprints stay stable.
+    expect(Object.keys(calculateRevenueBonus({ programId, revenueVnd: 2_000_000 })))
+      .toEqual(['programId', 'revenueVnd', 'tierId', 'rateBasisPoints', 'ratePercent', 'bonusVnd'])
+    expect(() => calculateRevenueBonus({ programId, revenueVnd: 1, tiers: 'bad' })).toThrow(TypeError)
+    expect(() => calculateRevenueBonus({ programId: 'other', revenueVnd: 1, tiers })).toThrow(RangeError)
+  })
+
   it('rejects unknown programs and invalid VND input', () => {
     expect(() => calculateRevenueBonus({ programId: 'unknown', revenueVnd: 2_000_000 })).toThrow(RangeError)
     expect(() => calculateRevenueBonus({

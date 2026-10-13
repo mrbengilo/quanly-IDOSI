@@ -9,6 +9,7 @@ import {
   REVENUE_BONUS_PROGRAM_IDS,
   TEAM_MILESTONE_PROGRAM_IDS,
 } from './compensationPolicies'
+import { REVENUE_BONUS_CONFIG_INVALID } from './revenueBonusConfig'
 
 const base = (overrides = {}) => ({
   storeId: 'S01',
@@ -361,5 +362,101 @@ describe('automatic daily revenue bonus', () => {
 
     expect(result.overrideCollisions).toEqual([{ employeeId: 'e01', overrideIds: ['NEW', 'OLD'] }])
     expect(allocation(result, 'E01')).toMatchObject({ amountVnd: 200, overrideId: 'NEW' })
+  })
+})
+
+describe('automatic daily revenue bonus with Admin configuration', () => {
+  // Test-only tables; they differ from the legacy tables on purpose.
+  const dosiiConfig = (overrides = {}) => ({
+    id: 'rbc-dosii-1', storePolicy: 'DOSII', effectiveFrom: '2026-10-20', version: 1, status: 'ACTIVE',
+    tiers: [{ thresholdVnd: 1_000_000, rateBasisPoints: 125 }, { thresholdVnd: 3_000_000, rateBasisPoints: 250 }],
+    ...overrides,
+  })
+  const smConfig = {
+    id: 'rbc-sm-1', storePolicy: 'SM_TNV', effectiveFrom: '2026-10-20', version: 1, status: 'ACTIVE',
+    tiers: [{ thresholdVnd: 2_000_000, rateBasisPoints: 300 }, { thresholdVnd: 5_000_000, rateBasisPoints: 450 }],
+  }
+  const day = (businessDate, amount, overrides = {}) => base({
+    businessDate,
+    orders: [{ id: `O-${businessDate}`, storeId: 'S01', amount, status: 'Hoàn tất', createdAt: `${businessDate}T10:00:00+07:00` }],
+    attendance: [{
+      id: `A-${businessDate}`, storeId: 'S01', employeeId: 'E01', workDate: businessDate,
+      checkInAt: `${businessDate}T08:00:00+07:00`, checkOutAt: `${businessDate}T12:00:00+07:00`, workedSeconds: 14_400,
+    }],
+    nowMs: Date.parse(`${businessDate}T23:00:00+07:00`),
+    ...overrides,
+  })
+
+  it('uses the configuration effective on the business date and stores a snapshot of it', () => {
+    const configs = [dosiiConfig(), smConfig]
+    const before = calculateAutomaticRevenueBonusDay(day('2026-10-19', 3_000_000, { revenueBonusConfigs: configs }))
+    const after = calculateAutomaticRevenueBonusDay(day('2026-10-20', 3_000_000, { revenueBonusConfigs: configs }))
+
+    expect(before).toMatchObject({ rateBasisPoints: 200, percentagePoolVnd: 60_000, revenueBonusConfig: { source: 'LEGACY', configId: null } })
+    expect(after).toMatchObject({
+      status: 'FINALIZED',
+      tierId: 'rbc-dosii-1.tier.1',
+      rateBasisPoints: 125,
+      ratePercent: 1.25,
+      percentagePoolVnd: 37_500,
+      revenueBonusConfig: { source: 'ADMIN_CONFIG', configId: 'rbc-dosii-1', version: 1, storePolicy: 'DOSII', effectiveFrom: '2026-10-20' },
+    })
+    expect(after.revenueBonusConfig.tiers).toHaveLength(2)
+  })
+
+  it('keeps the team milestone component unchanged by the percentage configuration', () => {
+    const legacy = calculateAutomaticRevenueBonusDay(day('2026-10-20', 16_000_000))
+    const configured = calculateAutomaticRevenueBonusDay(day('2026-10-20', 16_000_000, { revenueBonusConfigs: [dosiiConfig()] }))
+    expect(configured.milestonePoolVnd).toBe(legacy.milestonePoolVnd)
+    expect(configured.milestoneId).toBe(legacy.milestoneId)
+    expect(configured.percentagePoolVnd).toBe(400_000)
+    expect(configured.totalPoolVnd).toBe(400_000 + legacy.milestonePoolVnd)
+  })
+
+  it('keeps the legacy result byte-for-byte when no configuration exists', () => {
+    const withoutConfig = calculateAutomaticRevenueBonusDay(base())
+    const emptyConfig = calculateAutomaticRevenueBonusDay(base({ revenueBonusConfigs: [] }))
+    expect(emptyConfig).toEqual(withoutConfig)
+    expect(withoutConfig).toMatchObject({ percentagePoolVnd: 640_000, revenueBonusConfig: { source: 'LEGACY' } })
+  })
+
+  it('exposes the configured table on waiting snapshots and fails closed on corrupt configuration', () => {
+    const waiting = calculateAutomaticRevenueBonusDay(day('2026-10-20', 3_000_000, {
+      revenueBonusConfigs: [dosiiConfig()],
+      nowMs: Date.parse('2026-10-20T21:00:00+07:00'),
+    }))
+    expect(waiting).toMatchObject({ status: 'WAITING_CUTOFF', revenueBonusConfig: { configId: 'rbc-dosii-1' } })
+    expect(() => calculateAutomaticRevenueBonusDay(day('2026-10-20', 3_000_000, {
+      revenueBonusConfigs: [dosiiConfig({ tiers: [] })],
+    }))).toThrow(expect.objectContaining({ code: REVENUE_BONUS_CONFIG_INVALID }))
+  })
+
+  it('resolves every day of a period separately, across a month boundary and several versions', () => {
+    const configs = [
+      dosiiConfig({ effectiveFrom: '2026-10-30' }),
+      dosiiConfig({ id: 'rbc-dosii-2', version: 2, effectiveFrom: '2026-11-02', tiers: [{ thresholdVnd: 1_000_000, rateBasisPoints: 500 }] }),
+    ]
+    const dates = ['2026-10-29', '2026-10-30', '2026-10-31', '2026-11-01', '2026-11-02']
+    const orders = dates.map((date) => ({ id: `O-${date}`, storeId: 'S01', amount: 2_000_000, status: 'Hoàn tất', createdAt: `${date}T10:00:00+07:00` }))
+    const attendance = dates.map((date) => ({
+      id: `A-${date}`, storeId: 'S01', employeeId: 'E01', workDate: date,
+      checkInAt: `${date}T08:00:00+07:00`, checkOutAt: `${date}T12:00:00+07:00`, workedSeconds: 14_400,
+    }))
+    const input = { ...base(), orders, attendance, revenueBonusConfigs: configs, nowMs: Date.parse('2026-11-03T08:00:00+07:00') }
+    const october = calculateAutomaticRevenueBonusPeriod({ ...input, period: '2026-10' })
+    const november = calculateAutomaticRevenueBonusPeriod({ ...input, period: '2026-11' })
+    expect(october.days.map((entry) => [entry.businessDate, entry.rateBasisPoints, entry.percentagePoolVnd, entry.revenueBonusConfig.version]))
+      .toEqual([['2026-10-29', 100, 20_000, null], ['2026-10-30', 125, 25_000, 1], ['2026-10-31', 125, 25_000, 1]])
+    expect(november.days.map((entry) => [entry.businessDate, entry.rateBasisPoints, entry.revenueBonusConfig.version]))
+      .toEqual([['2026-11-01', 125, 1], ['2026-11-02', 500, 2]])
+  })
+
+  it('uses the business date of a late catch-up run, not the time the job executes', () => {
+    const configs = [dosiiConfig({ effectiveFrom: '2026-10-21' })]
+    const lateRun = calculateAutomaticRevenueBonusDay(day('2026-10-20', 3_000_000, {
+      revenueBonusConfigs: configs,
+      nowMs: Date.parse('2026-10-25T09:00:00+07:00'),
+    }))
+    expect(lateRun).toMatchObject({ status: 'FINALIZED', rateBasisPoints: 200, revenueBonusConfig: { source: 'LEGACY' } })
   })
 })
