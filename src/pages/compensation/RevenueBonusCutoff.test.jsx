@@ -144,6 +144,36 @@ describe('RevenueBonusPage automatic mode', () => {
     expect(screen.queryByRole('button', { name: 'Xóa' })).toBeNull()
   })
 
+  it('shows the percentage table stored on the selected day instead of a hard-coded table', async () => {
+    mocked.app = appFor('store_manager', { apiStatus: 'connected' })
+    mocked.liveRevenue.mockResolvedValue({ snapshot: { ...snapshot(), rateBasisPoints: 125, revenueBonusConfig: {
+      source: 'ADMIN_CONFIG', configId: 'rbc_1', version: 3, storePolicy: 'DOSII',
+      programId: 'revenue-bonus.store-dosii-daily.v1', effectiveFrom: '2026-09-02',
+      tiers: [
+        { id: 'rbc_1.tier.1', thresholdVnd: 1_000_000, minimumRevenueVnd: 1_000_000, minimumInclusive: true, maximumRevenueVnd: 3_000_000, maximumInclusive: true, rateBasisPoints: 125 },
+        { id: 'rbc_1.tier.2', thresholdVnd: 3_000_000, minimumRevenueVnd: 3_000_000, minimumInclusive: false, maximumRevenueVnd: null, maximumInclusive: false, rateBasisPoints: 250 },
+      ],
+    } } })
+    render(<RevenueBonusPage storeScoped />)
+
+    expect(await screen.findByText('Từ 1.000.000 đ đến 3.000.000 đ')).toBeTruthy()
+    expect(screen.getByText('Trên 3.000.000 đ')).toBeTruthy()
+    expect(screen.getByText('Thưởng 1,25% doanh thu')).toBeTruthy()
+    expect(screen.getByText('Đang ở mốc 1,25%')).toBeTruthy()
+    expect(screen.getByText(/Áp dụng cấu hình phiên bản 3 có hiệu lực từ 02\/09\/2026/u)).toBeTruthy()
+    expect(screen.queryByText('Từ 1.500.000 đ đến 2.000.000 đ')).toBeNull()
+  })
+
+  it('keeps showing the legacy table for days finalized before any configuration', async () => {
+    mocked.app = appFor('store_manager', { apiStatus: 'connected' })
+    mocked.liveRevenue.mockResolvedValue({ snapshot: snapshot() })
+    render(<RevenueBonusPage storeScoped />)
+
+    expect(await screen.findByText('Từ 1.500.000 đ đến 2.000.000 đ')).toBeTruthy()
+    expect(screen.getByText('Trên 4.000.000 đ')).toBeTruthy()
+    expect(screen.getByText('Đang ở mốc 1%')).toBeTruthy()
+  })
+
   it.each(['FINALIZED', 'WAITING_SHIFT_CLOSE'])('loads %s once without status-triggered or interval requests', async (status) => {
     vi.useFakeTimers()
     mocked.app = appFor('store_manager', { apiStatus: 'connected' })

@@ -5106,6 +5106,18 @@ export function AppProvider({ children }) {
     )
   }
 
+  // Admin-only, server-validated table change. One idempotency key per Save
+  // click; the caller decides what to do on conflict instead of retrying.
+  const saveRevenueBonusConfig = async (payload = {}) => {
+    requireRevenueBonusAdmin()
+    const { idempotencyKey, ...command } = payload
+    return runRemoteDomainCommand(
+      'revenue_bonus_config.save',
+      command,
+      idempotencyKey || `revenue-bonus-config:${crypto.randomUUID()}`,
+    )
+  }
+
   const resolveRevenueBonusDailyCollision = async (payload = {}) => {
     requireRevenueBonusAdmin()
     return runRemoteDomainCommand(
@@ -6812,6 +6824,7 @@ export function AppProvider({ children }) {
     restoreRevenueBonusOverride,
     resolveRevenueBonusDailyCollision,
     calculateRevenueBonusDay,
+    saveRevenueBonusConfig,
     approveRevenueBonusMilestone,
     rejectRevenueBonusMilestone,
     addSalaryAdjustment,

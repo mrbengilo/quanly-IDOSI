@@ -38,6 +38,7 @@ export const DataRestorePage = createLazyRouteComponent(() => import('./pages/ad
 export const AdminWorkRegistrationSchedulePage = createLazyRouteComponent(() => import('./pages/admin/AdminWorkRegistrationSchedulePage'), 'AdminWorkRegistrationSchedulePage')
 export const OrderInformationSettingsPage = createLazyRouteComponent(() => import('./pages/admin/OrderInformationSettingsPage'), 'OrderInformationSettingsPage')
 export const WorkCatalogSettingsPage = createLazyRouteComponent(() => import('./pages/admin/WorkCatalogSettingsPage'), 'WorkCatalogSettingsPage')
+export const RevenueBonusSettingsPage = createLazyRouteComponent(() => import('./pages/admin/RevenueBonusSettingsPage'), 'RevenueBonusSettingsPage')
 
 const loadSupportWorkPages = () => import('./pages/admin/SupportWorkPages')
 export const AdminSupportAssignmentPage = createLazyRouteComponent(loadSupportWorkPages, 'AdminSupportAssignmentPage')
@@ -129,6 +130,7 @@ const routeComponents = {
   '/admin/support-transfers': SupportTransfersPage,
   '/admin/order-information-settings': OrderInformationSettingsPage,
   '/admin/work-catalog': WorkCatalogSettingsPage,
+  '/admin/revenue-bonus-settings': RevenueBonusSettingsPage,
   '/admin/compensation/managers': ManagerCompensationPage,
   '/admin/compensation/revenue': RevenueBonusPage,
   '/admin/tasks': AdminSupportWorkPage,

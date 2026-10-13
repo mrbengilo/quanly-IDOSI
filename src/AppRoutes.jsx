@@ -18,6 +18,7 @@ import {
   AdminWorkRegistrationSchedulePage,
   OrderInformationSettingsPage,
   WorkCatalogSettingsPage,
+  RevenueBonusSettingsPage,
   AdminSupportAssignmentPage,
   AdminSupportWorkPage,
   SupportAssignedWorkPage,
@@ -368,6 +369,7 @@ export default function AppRoutes() {
         <Route path="/admin/data-restore" element={<DataRestorePage />} />
         <Route path="/admin/work-registration-schedules" element={<AdminWorkRegistrationSchedulePage />} />
         <Route path="/admin/violations/business-support" element={<ViolationManagementPage targetUnit="business_support" />} />
+        <Route path="/admin/revenue-bonus-settings" element={<RevenueBonusSettingsPage />} />
       </Route>
 
       <Route element={<WorkspaceShell roles="employee" />}>
