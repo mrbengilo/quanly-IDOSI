@@ -330,6 +330,15 @@ const indexedCandidateKeysSql = (name, collectionsSql, scannedCollectionsSql = '
   )`
 
 const storeSnapshotSqlCache = new Map()
+
+// Shift commands that may load only the task and attendance history of the
+// operational window (see storeStateSnapshotSql). Other commands on these
+// screens, such as manager edits of past attendance, load all of it.
+const STORE_OPERATIONAL_WINDOW_SCREENS = new Set(['command-attendance', 'command-task-progress'])
+const STORE_OPERATIONAL_TASK_COLLECTIONS = Object.freeze(['tasks', 'taskAssignmentHistory'])
+const STORE_OPERATIONAL_WINDOW_COLLECTIONS = Object.freeze([...STORE_OPERATIONAL_TASK_COLLECTIONS, 'attendance'])
+const OPERATIONAL_WINDOW_DISABLED = '0000-01-01'
+
 const STORE_SCREEN_PERIOD_COLLECTIONS = Object.freeze({
   overview: ['orders', 'schedule', 'expenseEntries', 'violationRefunds'],
   'command-task': ['tasks', 'taskAssignmentHistory', 'notifications'],
@@ -507,17 +516,108 @@ const systemStateSnapshotSql = (collectionKeys = [], screen = '') => {
   return sql
 }
 
-const storeStateSnapshotSql = (screen = '') => {
+const storeStateSnapshotSql = (screen = '', operationalWindow = false) => {
   const normalizedScreen = String(screen || '').trim()
   const screenCollections = STORE_SCREEN_COLLECTIONS[normalizedScreen]
   const selectedCollections = screenCollections
     ? [...new Set([...STORE_SCREEN_BASE_COLLECTIONS, ...screenCollections])]
     : STORE_WORKSPACE_COLLECTIONS
-  const cacheKey = screenCollections ? normalizedScreen : 'workspace'
+  const windowed = operationalWindow && STORE_OPERATIONAL_WINDOW_SCREENS.has(normalizedScreen)
+  const cacheKey = `${screenCollections ? normalizedScreen : 'workspace'}${windowed ? ':operational-window' : ''}`
   if (storeSnapshotSqlCache.has(cacheKey)) return storeSnapshotSqlCache.get(cacheKey)
   const storeWorkspaceCollectionsSql = sqlStringList(selectedCollections)
   const scannedCollectionsSql = sqlStringList(STORE_SNAPSHOT_SCANNED_COLLECTIONS
     .filter((key) => selectedCollections.includes(key)))
+  // Shift commands only act on today's work and on the shifts that are still
+  // open, yet every store keeps months of per-shift attendance and checklist
+  // copies. Loading that history made each check-in, check-out and task save
+  // parse and diff tens of MB while blocking the single runtime. Keep every
+  // row a still open attendance can reference: all open attendance, rows
+  // dated from the day before the earliest open shift (or before today)
+  // onward, which covers UTC creation timestamps and overnight schedules,
+  // task ids bound to an open shift and undated legacy rows. Orders stay
+  // complete for the check-out revenue reconciliation.
+  const operationalWindowCteSql = windowed
+    ? `,
+  operational_open_attendance AS MATERIALIZED (
+    SELECT attendance.occurred_on, attendance.value_json
+    FROM params CROSS JOIN state_entities AS attendance
+    WHERE attendance.scope_key = params.scope_key
+      AND attendance.collection_key = 'attendance'
+      AND (attendance.open_flag = 1 OR attendance.open_flag IS NULL)
+      AND (
+        attendance.store_id = params.store_key COLLATE NOCASE
+        OR attendance.store_id IS NULL
+        OR attendance.employee_id IN (
+          SELECT employee_key COLLATE NOCASE FROM selected_employee_ids
+        )
+      )
+  ),
+  operational_window AS MATERIALIZED (
+    SELECT min(window_start) AS window_start
+    FROM (
+      SELECT COALESCE(date(params.operational_date, '-1 day'), '${OPERATIONAL_WINDOW_DISABLED}') AS window_start
+      FROM params
+      UNION ALL
+      SELECT COALESCE(date(substr(COALESCE(
+        NULLIF(trim(CAST(json_extract(attendance.value_json, '$.date') AS TEXT)), ''),
+        NULLIF(trim(CAST(json_extract(attendance.value_json, '$.workDate') AS TEXT)), ''),
+        attendance.occurred_on
+      ), 1, 10), '-1 day'), '${OPERATIONAL_WINDOW_DISABLED}')
+      FROM operational_open_attendance AS attendance
+    )
+  ),
+  open_bound_task_ids AS MATERIALIZED (
+    SELECT DISTINCT lower(trim(CAST(task.value AS TEXT))) AS task_key
+    FROM operational_open_attendance AS attendance
+    CROSS JOIN json_each(attendance.value_json, '$.taskShiftContexts') AS context
+    CROSS JOIN json_each(context.value, '$.taskIds') AS task
+    WHERE context.type = 'object'
+      AND task.value IS NOT NULL
+  )`
+    : ''
+  const taskCollectionsSql = sqlStringList(STORE_OPERATIONAL_TASK_COLLECTIONS)
+  const operationalWindowFilterSql = windowed
+    ? `AND (
+        entity.collection_key NOT IN (${sqlStringList(STORE_OPERATIONAL_WINDOW_COLLECTIONS)})
+        OR entity.occurred_on IS NULL
+        OR trim(entity.occurred_on) = ''
+        OR entity.occurred_on >= (SELECT window_start FROM operational_window)
+        OR (entity.collection_key = 'attendance' AND (entity.open_flag = 1 OR entity.open_flag IS NULL))
+        OR (
+          entity.collection_key IN (${taskCollectionsSql})
+          AND entity.record_id COLLATE NOCASE IN (SELECT task_key FROM open_bound_task_ids)
+        )
+      )`
+    : ''
+  // occurred_on and record_id are indexed, so windowed history rows are chosen
+  // without reading the JSON of the rows outside the window.
+  const windowCollections = windowed
+    ? selectedCollections.filter((key) => STORE_OPERATIONAL_WINDOW_COLLECTIONS.includes(key))
+    : []
+  const windowCollectionsSql = sqlStringList(windowCollections)
+  const candidateCollectionsSql = windowCollections.length
+    ? sqlStringList(selectedCollections.filter((key) => !windowCollections.includes(key)))
+    : storeWorkspaceCollectionsSql
+  const windowCandidateBranchesSql = windowCollections.length
+    ? `${candidateKeyBranchesSql(windowCollectionsSql, `(
+        candidate.occurred_on >= (SELECT window_start FROM operational_window)
+        OR candidate.occurred_on IS NULL
+        OR trim(candidate.occurred_on) = ''
+      )`)}
+    UNION
+    SELECT candidate.collection_key, candidate.entity_key
+    FROM params CROSS JOIN state_entities AS candidate
+    WHERE candidate.scope_key = params.scope_key
+      AND candidate.collection_key IN (${taskCollectionsSql})
+      AND candidate.record_id COLLATE NOCASE IN (SELECT task_key FROM open_bound_task_ids)
+    UNION
+    SELECT candidate.collection_key, candidate.entity_key
+    FROM params CROSS JOIN state_entities AS candidate
+    WHERE candidate.scope_key = params.scope_key
+      AND candidate.collection_key = 'attendance'
+      AND (candidate.open_flag = 1 OR candidate.open_flag IS NULL)`
+    : ''
   const periodCollections = STORE_SCREEN_PERIOD_COLLECTIONS[normalizedScreen] || []
   // The overview combines the selected financial month with today's live
   // operations. Keep undated recurring schedules and today's orders as well.
@@ -601,7 +701,8 @@ const storeStateSnapshotSql = (screen = '') => {
       ? AS scope_key,
       lower(trim(?)) AS store_key,
       lower(trim(?)) AS actor_employee_key,
-      trim(?) AS period_key
+      trim(?) AS period_key,
+      trim(?) AS operational_date
   ),
   open_actor_attendance_ids AS MATERIALIZED (
     SELECT lower(trim(CAST(json_extract(attendance.value_json, '$.id') AS TEXT))) AS attendance_key
@@ -705,8 +806,8 @@ const storeStateSnapshotSql = (screen = '') => {
           WHERE reference.type NOT IN ('object', 'array')
         ))
       )
-  ),
-  ${indexedCandidateKeysSql('candidate_entity_keys', storeWorkspaceCollectionsSql, scannedCollectionsSql)}
+  )${operationalWindowCteSql},
+  ${indexedCandidateKeysSql('candidate_entity_keys', candidateCollectionsSql, scannedCollectionsSql, windowCandidateBranchesSql)}
   SELECT
     0 AS row_kind,
     app.scope_key,
@@ -767,6 +868,7 @@ const storeStateSnapshotSql = (screen = '') => {
     ${periodFilterSql}
     ${sessionFilterSql}
     ${employeeHomeOrderFilterSql}
+    ${operationalWindowFilterSql}
     AND (
       entity.collection_key = 'stores'
       ${normalizedScreen === 'command-violation' ? "OR entity.collection_key = 'payrollPeriods'" : ''}
@@ -1176,10 +1278,14 @@ export class SqliteD1 {
     return decodeStateSnapshotRecords(records)
   }
 
-  readStoreStateSnapshot(scope, storeId, actorEmployeeId = '', screen = '', period = '') {
+  // operationalDate (YYYY-MM-DD, business time) limits shift-command task
+  // history to the operational window; empty loads the complete history.
+  readStoreStateSnapshot(scope, storeId, actorEmployeeId = '', screen = '', period = '', operationalDate = '') {
+    const windowed = Boolean(String(operationalDate || '').trim())
     const records = measuredStatement('reads', () => (
-      this.database.prepare(storeStateSnapshotSql(screen)).all(scope, storeId, actorEmployeeId, period)
-    ), `readStoreStateSnapshot:${screen || 'default'}`)
+      this.database.prepare(storeStateSnapshotSql(screen, windowed))
+        .all(scope, storeId, actorEmployeeId, period, String(operationalDate || ''))
+    ), `readStoreStateSnapshot:${screen || 'default'}${windowed ? ':window' : ''}`)
     return decodeStateSnapshotRecords(records)
   }
 

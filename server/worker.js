@@ -4211,8 +4211,8 @@ const loadOptimizedStateSnapshot = async (db, scope) => {
   return cloneStateSnapshotRow(row)
 }
 
-const loadOptimizedStoreStateSnapshot = async (db, scope, storeId, actorEmployeeId = '', screen = '', period = '') => {
-  const snapshot = await db.readStoreStateSnapshot(scope, storeId, actorEmployeeId, screen, period)
+const loadOptimizedStoreStateSnapshot = async (db, scope, storeId, actorEmployeeId = '', screen = '', period = '', operationalDate = '') => {
+  const snapshot = await db.readStoreStateSnapshot(scope, storeId, actorEmployeeId, screen, period, operationalDate)
   if (snapshot?.unchanged !== false
     || !Array.isArray(snapshot.manifests)
     || !Array.isArray(snapshot.entities)) {
@@ -4274,9 +4274,9 @@ const loadState = async (db, scope) => {
   throw new ApiError(409, 'STATE_READ_CONFLICT', 'Trạng thái đang được cập nhật; vui lòng thử lại.')
 }
 
-const loadStoreState = async (db, scope, storeId, actorEmployeeId = '', screen = '', period = '') => (
+const loadStoreState = async (db, scope, storeId, actorEmployeeId = '', screen = '', period = '', operationalDate = '') => (
   typeof db?.readStoreStateSnapshot === 'function'
-    ? loadOptimizedStoreStateSnapshot(db, scope, storeId, actorEmployeeId, screen, period)
+    ? loadOptimizedStoreStateSnapshot(db, scope, storeId, actorEmployeeId, screen, period, operationalDate)
     : loadState(db, scope)
 )
 
@@ -7788,6 +7788,13 @@ const COMMAND_PROJECTION_BASE_COLLECTIONS = Object.freeze([
   'supportTransfers',
 ])
 
+const SHIFT_OPERATIONAL_WINDOW_COMMANDS = new Set([
+  'attendance.check_in',
+  'attendance.check_out',
+  'task.progress.save',
+  'task.shift.select',
+])
+
 const PAYROLL_COMMAND_COLLECTIONS = Object.freeze([
   'deletedEmployees', 'attendance', 'schedule', 'officeAdjustments', 'salaryAdjustments', 'salaryAdvances',
   'payrollPeriods', 'payrollPayments', 'storeEmployeeSalaryConfigs', 'compensationEntries',
@@ -7819,6 +7826,10 @@ export const commandStateProjection = (body) => {
     // store is the command scope. Without it a Business Support check-in has
     // no store hint and hydrates every store's tasks, history and orders.
     selfServiceAttendance: type === 'attendance.check_in' || type === 'attendance.check_out',
+    // These shift commands read only today's and the still-open shifts' tasks
+    // and attendance; manager edits of past attendance and task.done keep the
+    // full history.
+    operationalWindow: SHIFT_OPERATIONAL_WINDOW_COMMANDS.has(type),
   })
   if (type.startsWith('order.')) {
     return projection(
@@ -8116,12 +8127,16 @@ export const STALE_VERSION_REBASE_COMMANDS = new Set([
 ])
 const MAX_REBASE_COMMAND_ATTEMPTS = 3
 
-const loadGlobalCommandState = async (db, body, actor = null) => {
+const loadGlobalCommandState = async (db, body, actor = null, commandContext = null) => {
   const expectedVersion = commandExpectedVersion(body)
   const rebaseAllowed = STALE_VERSION_REBASE_COMMANDS.has(String(body?.type || ''))
   const projection = commandStateProjection(body)
   const projectionStoreId = projection
     ? await commandProjectionStoreId(db, projection, actor)
+    : ''
+  // Business date of the server clock; without it the full history is loaded.
+  const operationalDate = projection?.operationalWindow && commandContext?.now
+    ? localDateTimeParts(commandContext.now).date
     : ''
   const current = body._preloadedGlobalStateRow
     || (projection && projectionStoreId && typeof db?.readStoreStateSnapshot === 'function'
@@ -8132,6 +8147,7 @@ const loadGlobalCommandState = async (db, body, actor = null) => {
           String(actor?.employee_id || ''),
           projection.screen,
           projection.period,
+          operationalDate,
         )
       : projection
         ? await loadStateCollections(db, 'global', projection.collections)
@@ -16682,7 +16698,7 @@ const attendanceCommand = async (db, actor, body, commandContext, env) => {
   if (!['employee', 'business_support', 'store_manager'].includes(actor.role)) {
     throw new ApiError(403, 'ROLE_FORBIDDEN', 'Lệnh chấm công trực tiếp chỉ dành cho tài khoản nhân sự.')
   }
-  const { current, state } = await loadGlobalCommandState(db, body, actor)
+  const { current, state } = await loadGlobalCommandState(db, body, actor, commandContext)
   const payload = isPlainRecord(body.payload) ? body.payload : {}
   const employeeId = String(actor.employee_id || actor.user_id || '')
   let storeId = String(actor.store_id || '')
@@ -19172,7 +19188,7 @@ const taskShiftSelectCommand = async (db, actor, body, commandContext) => {
     throw new ApiError(403, 'ROLE_FORBIDDEN', 'Chỉ nhân viên cửa hàng được chọn ca công việc.')
   }
   const payload = isPlainRecord(body.payload) ? body.payload : {}
-  const { current, state } = await loadGlobalCommandState(db, body, actor)
+  const { current, state } = await loadGlobalCommandState(db, body, actor, commandContext)
   const employeeId = String(actor.employee_id || '').trim()
   const employee = uniqueEmployeeIdentifierRecordMatch({
     records: state.employees,
@@ -19262,7 +19278,7 @@ const taskProgressCommand = async (db, actor, body, commandContext) => {
     throw new ApiError(403, 'ROLE_FORBIDDEN', 'Chỉ nhân viên được gửi kết quả công việc trong ca.')
   }
   const payload = isPlainRecord(body.payload) ? body.payload : {}
-  const loaded = await loadGlobalCommandState(db, body, actor)
+  const loaded = await loadGlobalCommandState(db, body, actor, commandContext)
   const current = loaded.current
   let state = loaded.state
   const employeeId = String(actor.employee_id || actor.user_id || '').trim()
