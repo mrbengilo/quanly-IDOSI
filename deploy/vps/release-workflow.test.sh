@@ -112,12 +112,21 @@ REPORT
 
 REPORT_FILE="$BACKUP_DIR/deploy-test-${SHA:0:12}.env"
 POINTER_FILE="$BACKUP_DIR/pending-$SHA.report"
+for stamp in 20261001T010000Z 20261002T010000Z 20261003T010000Z 20261004T010000Z 20261005T010000Z; do
+  printf 'archive\n' >"$BACKUP_DIR/idosi-data-$stamp-before-${SHA:0:12}.tar.gz"
+done
+CURRENT_BACKUP="$BACKUP_DIR/idosi-data-20261005T010000Z-before-${SHA:0:12}.tar.gz"
+EMERGENCY_BACKUP="$BACKUP_DIR/idosi-data-20260901T010000Z-before-manual-rollback.tar.gz"
+printf 'emergency\n' >"$EMERGENCY_BACKUP"
+mkdir -p "$BACKUP_DIR/daily"
+printf 'daily\n' >"$BACKUP_DIR/daily/idosi-daily-20260901T010000Z.tar.gz"
 cat >"$REPORT_FILE" <<REPORT
 STATUS=LOCAL_READY
 RELEASE_SHA=$SHA
 PUBLIC_TRAFFIC_RESUMED=1
 PUBLIC_URL=https://idosi.example
 DEPLOYED_AT_UTC=$VERIFIED_AT
+BACKUP_FILE=$CURRENT_BACKUP
 EXTERNAL_VERIFIED_AT_UTC=
 REPORT
 printf '%s\n' "$REPORT_FILE" >"$POINTER_FILE"
@@ -138,6 +147,13 @@ IDOSI_ROOT="$FINALIZE_ROOT" IDOSI_BACKUP_DIR="$BACKUP_DIR" \
 [[ "$(report_value EXTERNAL_VERIFY_RUN_ATTEMPT "$REPORT_FILE")" == "$VERIFY_RUN_ATTEMPT" ]] \
   || fail 'finalizer did not persist the external verification run attempt'
 [[ ! -e "$POINTER_FILE" ]] || fail 'finalizer pointer was not removed'
+REMAINING_DEPLOY_BACKUPS="$(find "$BACKUP_DIR" -maxdepth 1 -name 'idosi-data-*-before-*.tar.gz' \
+  ! -name '*-before-manual-rollback.tar.gz' -printf '%f\n' | sort | tr '\n' ' ')"
+[[ "$REMAINING_DEPLOY_BACKUPS" == "idosi-data-20261003T010000Z-before-${SHA:0:12}.tar.gz idosi-data-20261004T010000Z-before-${SHA:0:12}.tar.gz idosi-data-20261005T010000Z-before-${SHA:0:12}.tar.gz " ]] \
+  || fail "finalizer did not keep exactly the newest three deploy backups: $REMAINING_DEPLOY_BACKUPS"
+[[ -f "$EMERGENCY_BACKUP" ]] || fail 'finalizer removed a manual-rollback emergency backup'
+[[ -f "$BACKUP_DIR/daily/idosi-daily-20260901T010000Z.tar.gz" ]] || fail 'finalizer removed a daily backup'
+[[ -f "$REPORT_FILE" ]] || fail 'finalizer removed the deployment report'
 
 MISSING_ATTESTATION_REPORT="$BACKUP_DIR/deploy-missing-attestation-${SHA:0:12}.env"
 cat >"$MISSING_ATTESTATION_REPORT" <<REPORT
