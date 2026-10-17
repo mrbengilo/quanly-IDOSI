@@ -214,6 +214,42 @@ grep '"slow":true' <<<"$app_logs" \
   | grep -o '"maxMs":[0-9.]*,"maxStatement":"[^"]*"' \
   | sed -E 's/"maxMs":([0-9.]+),"maxStatement":"([^"]*)"/max_ms=\1 statement=\2/' \
   | sort -t= -k2 -rn | head -n 15 || true
+printf -- '--- slow_command_attribution ---\n'
+# The request log does not name the command type. Join each slow command's
+# requestId with audit_log and the idempotency-key prefix of the receipts
+# written while it ran, so the command that blocked the runtime is known.
+slow_commands="$(grep '"path":"/api/command"' <<<"$app_logs" \
+  | grep -E '"durationMs":[0-9]{5,}' | tail -n 10 \
+  | sed -nE 's/.*"timestamp":"([^"]+)","requestId":"([^"]+)".*"durationMs":([0-9.]+).*/\2|\1|\3/p' || true)"
+if [[ -n "$slow_commands" ]]; then
+  compose exec -T -e "SLOW_COMMANDS=$slow_commands" app node --input-type=module <<'NODE' || true
+import { DatabaseSync } from 'node:sqlite'
+const db = new DatabaseSync(process.env.IDOSI_DB_PATH || '/app/data/idosi.sqlite', { readOnly: true })
+db.exec('PRAGMA query_only = ON')
+const audits = db.prepare(`
+  SELECT action, entity_type, actor_role, server_timestamp,
+         COALESCE(length(after_json), 0) AS after_bytes, COALESCE(length(metadata_json), 0) AS metadata_bytes
+  FROM audit_log WHERE request_id = ? OR request_id LIKE ? ORDER BY id LIMIT 10`)
+const receipts = db.prepare(`
+  SELECT r.idempotency_key, r.status_code, r.created_at, u.role
+  FROM command_receipts r LEFT JOIN users u ON u.id = r.actor_id
+  WHERE r.created_at BETWEEN ? AND ? ORDER BY r.created_at LIMIT 10`)
+for (const line of String(process.env.SLOW_COMMANDS || '').split('\n').filter(Boolean)) {
+  const [requestId, finishedAt, durationMs] = line.split('|')
+  const finished = Date.parse(finishedAt)
+  const started = new Date(finished - Number(durationMs)).toISOString()
+  console.log(`slow_command finished=${finishedAt} ms=${durationMs}`)
+  for (const row of audits.all(requestId, `${requestId}:%`)) console.log('  audit=' + JSON.stringify(row))
+  for (const row of receipts.all(started, new Date(finished + 1_000).toISOString())) {
+    console.log('  receipt=' + JSON.stringify({
+      keyPrefix: String(row.idempotency_key || '').split(':')[0].slice(0, 60),
+      status: row.status_code, createdAt: row.created_at, role: row.role,
+    }))
+  }
+}
+db.close()
+NODE
+fi
 printf -- '--- recent_error_lines ---\n'
 grep -Ei 'error|unhandled|SQLITE_BUSY|database is locked' <<<"$app_logs" | grep -v '"event":"idosi.api.request"' | tail -n 20 | cut -c1-400 || true
 printf -- '--- context_before_oom ---\n'
