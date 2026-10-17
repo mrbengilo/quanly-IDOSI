@@ -855,6 +855,19 @@ console.log(`checkout_revenue_integrity=${JSON.stringify({
   dosiiCanThoStoreMatches: dosiiCanThoStores.length,
   dosiiCanThoExpectedShiftMatches,
 })}`)
+// Shift commands load history from the day before the oldest open shift of
+// their store, so a shift left open for weeks widens every command's read.
+const openShiftWindowByStore = new Map()
+for (const record of openAttendance) {
+  if (record.deletedAt) continue
+  const storeId = String(record.storeId || '').trim() || '(none)'
+  const date = String(record.date || record.workDate || '').slice(0, 10) || '(undated)'
+  const current = openShiftWindowByStore.get(storeId) || { open: 0, oldestDate: date }
+  current.open += 1
+  if (date < current.oldestDate) current.oldestDate = date
+  openShiftWindowByStore.set(storeId, current)
+}
+console.log(`open_shift_window_by_store=${JSON.stringify(Object.fromEntries([...openShiftWindowByStore].sort()))}`)
 console.log(`attendance_unlinked_by_month=${JSON.stringify(Object.fromEntries([...attendanceUnlinkedByMonth].sort()))}`)
 console.log(`frontend_attendance_ambiguity_by_scope=${scopeIssuesJson(frontendAttendanceAmbiguityByScope)}`)
 console.log(`frontend_attendance_out_of_scope_by_scope=${scopeIssuesJson(frontendAttendanceOutOfScopeByScope)}`)
