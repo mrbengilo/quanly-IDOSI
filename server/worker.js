@@ -4102,7 +4102,23 @@ const loadStateEntityRows = async (db, scope, collectionKeys = null) => {
   return rows
 }
 
-const hydrateStateSnapshot = (row, manifests = [], entities = []) => {
+// Read endpoints may reuse the object a row was serialized from instead of
+// parsing value_json again. Only a row whose value_json is still that exact
+// serialization, and whose state no command has adopted, qualifies; cached
+// clones never carry the marker and always parse.
+const defineSnapshotRowState = (row, state, json) => {
+  Object.defineProperty(row, '_valueState', { value: state, enumerable: false, configurable: true })
+  Object.defineProperty(row, '_valueJson', { value: json, enumerable: false, configurable: true })
+}
+
+const snapshotRowState = (row) => (
+  row._valueJson !== undefined && row.value_json === row._valueJson && !row._commandState
+    && isPlainRecord(row._valueState)
+    ? row._valueState
+    : parseStoredJson(row.value_json, {})
+)
+
+const hydrateStateSnapshot = (row, manifests = [], entities = [], { retainCollections = null } = {}) => {
   if (!row) {
     if (manifests.length || entities.length) {
       throw new ApiError(500, 'STATE_ENTITY_ORPHANED', 'Bản ghi trạng thái không có trạng thái cha.')
@@ -4146,9 +4162,14 @@ const hydrateStateSnapshot = (row, manifests = [], entities = []) => {
       updatedAt: entity.updated_at,
     })
   }
-  row.value_json = JSON.stringify(hydrated)
+  // Selected-collection reads drop unrequested inline arrays here, avoiding a
+  // second parse/serialize of the whole snapshot. _hydratedState keeps the
+  // complete object for command paths exactly as before.
+  const retained = retainCollections ? retainedStateCollections(hydrated, retainCollections) : hydrated
+  row.value_json = JSON.stringify(retained)
   Object.defineProperty(row, '_hydratedState', { value: hydrated, enumerable: false })
   Object.defineProperty(row, '_externalCollections', { value: metadata, enumerable: false })
+  defineSnapshotRowState(row, retained, row.value_json)
   return row
 }
 
@@ -4309,14 +4330,18 @@ const loadStoreState = async (db, scope, storeId, actorEmployeeId = '', screen =
     : loadState(db, scope)
 )
 
+const retainedStateCollections = (state, collectionKeys) => {
+  const retained = new Set(collectionKeys)
+  return Object.fromEntries(Object.entries(state).filter(([key, value]) => (
+    !Array.isArray(value) || retained.has(key)
+  )))
+}
+
 const retainStateCollections = (row, collectionKeys) => {
   if (!row) return null
-  const retained = new Set(collectionKeys)
   const state = parseStoredJson(row.value_json, null)
   if (!isPlainRecord(state)) throw new ApiError(500, 'STATE_CORRUPT', 'Trạng thái lưu trữ không hợp lệ.')
-  row.value_json = JSON.stringify(Object.fromEntries(Object.entries(state).filter(([key, value]) => (
-    !Array.isArray(value) || retained.has(key)
-  ))))
+  row.value_json = JSON.stringify(retainedStateCollections(state, collectionKeys))
   return row
 }
 
@@ -4332,10 +4357,11 @@ const loadStateCollections = async (db, scope, collectionKeys) => {
       || !Array.isArray(snapshot.entities)) {
       throw new ApiError(500, 'STATE_SNAPSHOT_INVALID', 'SQLite không trả về snapshot danh mục hợp lệ.')
     }
-    return retainStateCollections(
-      hydrateStateSnapshot(snapshot.row, snapshot.manifests, snapshot.entities),
-      collectionFilter.keys,
-    )
+    const row = hydrateStateSnapshot(snapshot.row, snapshot.manifests, snapshot.entities, {
+      retainCollections: collectionFilter.keys,
+    })
+    // Without manifests the shell row is returned as stored and still needs filtering.
+    return snapshot.manifests.length ? row : retainStateCollections(row, collectionFilter.keys)
   }
   for (let attempt = 0; attempt < 3; attempt += 1) {
     const row = await first(db, `
@@ -5469,7 +5495,7 @@ const getBootstrap = async (request, env, context, url) => {
     stateRow = await persistOpenStoreAttendanceChecklistRepairs(db, user, context, stateRow)
   }
   const policies = await listPolicies(db)
-  const rawState = stateRow ? parseStoredJson(stateRow.value_json, {}) : {}
+  const rawState = stateRow ? snapshotRowState(stateRow) : {}
   const effectiveUser = partialBootstrap
     ? await resolveEffectiveEmployeeStore(db, user, context.now, rawState)
     : user
@@ -5518,7 +5544,7 @@ const getState = async (request, env, context, url) => {
     row = await persistOpenStoreAttendanceChecklistRepairs(db, user, context, row)
   }
   const policies = await listPolicies(db)
-  const rawState = row ? parseStoredJson(row.value_json, {}) : {}
+  const rawState = row ? snapshotRowState(row) : {}
   const storeId = requestedStoreWorkspaceId(url, user, rawState, scope)
   return jsonResponse(apiPayload(context, {
     user: publicUser(user),
@@ -5615,7 +5641,7 @@ const getSystemScreen = async (request, env, context, screen) => {
       ? visibleUserRowsForActor(db, user)
       : Promise.resolve(null),
   ])
-  let rawState = row ? parseStoredJson(row.value_json, {}) : {}
+  let rawState = row ? snapshotRowState(row) : {}
   if (screen === 'support-overview') {
     // The personal support dashboard only renders the actor's attendance and
     // working-time overrides. Keep complete own records, including historical
