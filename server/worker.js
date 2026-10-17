@@ -4073,7 +4073,7 @@ const loadStateEntityRows = async (db, scope, collectionKeys = null) => {
   return rows
 }
 
-const hydrateStateSnapshot = (row, manifests = [], entities = []) => {
+export const hydrateStateSnapshot = (row, manifests = [], entities = []) => {
   if (!row) {
     if (manifests.length || entities.length) {
       throw new ApiError(500, 'STATE_ENTITY_ORPHANED', 'Bản ghi trạng thái không có trạng thái cha.')
@@ -4117,7 +4117,15 @@ const hydrateStateSnapshot = (row, manifests = [], entities = []) => {
       updatedAt: entity.updated_at,
     })
   }
-  row.value_json = JSON.stringify(hydrated)
+  // Each entity is already valid JSON text, so joining the stored strings is
+  // equivalent to JSON.stringify(hydrated) without re-serializing every record.
+  const shellJson = JSON.stringify(Object.fromEntries(
+    Object.entries(hydrated).filter(([key]) => !metadata.has(key)),
+  ))
+  const collectionsJson = [...metadata].map(([collectionKey, collection]) => (
+    `${JSON.stringify(collectionKey)}:[${collection.rows.map(({ valueJson }) => valueJson).join(',')}]`
+  )).join(',')
+  row.value_json = shellJson === '{}' ? `{${collectionsJson}}` : `${shellJson.slice(0, -1)},${collectionsJson}}`
   Object.defineProperty(row, '_hydratedState', { value: hydrated, enumerable: false })
   Object.defineProperty(row, '_externalCollections', { value: metadata, enumerable: false })
   return row
@@ -4419,9 +4427,15 @@ const repairScopedStoreStateIfNeeded = async (db, actor, context, row, storeId, 
   return loadStoreState(db, 'global', storeId, actor.employee_id, screen, period)
 }
 
+// A store snapshot row is read for this request only, so its hydrated state
+// can be read directly instead of parsing the serialized copy again.
+const requestStateSnapshotValue = (row) => (
+  isPlainRecord(row?._hydratedState) ? row._hydratedState : parseStoredJson(row?.value_json, {})
+)
+
 const repairEmployeeScreenStateIfNeeded = async (db, actor, context, row, screen) => {
   if (!row) return row
-  const state = parseStoredJson(row.value_json, {})
+  const state = requestStateSnapshotValue(row)
   const employee = (Array.isArray(state.employees) ? state.employees : []).find((record) => (
     employeeIdentifierValues(record).some((id) => sameIdentifier(id, actor.employee_id))
   ))
@@ -5586,7 +5600,9 @@ const getSystemScreen = async (request, env, context, screen) => {
       ? visibleUserRowsForActor(db, user)
       : Promise.resolve(null),
   ])
-  let rawState = row ? parseStoredJson(row.value_json, {}) : {}
+  let rawState = !row ? {} : useEmployeeStoreProjection
+    ? requestStateSnapshotValue(row)
+    : parseStoredJson(row.value_json, {})
   if (screen === 'support-overview') {
     // The personal support dashboard only renders the actor's attendance and
     // working-time overrides. Keep complete own records, including historical
