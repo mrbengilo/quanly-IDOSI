@@ -4,6 +4,7 @@ import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { resolve } from 'node:path'
 import { readFileSync } from 'node:fs'
+import { createHash } from 'node:crypto'
 import { createIdosiServer } from '../server/vps/server.mjs'
 
 const scale = Number(process.argv[2] || 1)
@@ -95,7 +96,12 @@ const time = async (path) => {
   const started = performance.now()
   const response = await fetch(`${base}${path}`, { headers: { authorization: `Bearer ${token}` } })
   const body = await response.arrayBuffer()
-  return { status: response.status, ms: performance.now() - started, kb: body.byteLength / 1024 }
+  const ms = performance.now() - started
+  // requestId/timestamps differ per call; hash the state so runs on two
+  // revisions can prove the payload is unchanged.
+  const { state, version } = JSON.parse(Buffer.from(body).toString('utf8'))
+  const sha = createHash('sha256').update(JSON.stringify({ state, version })).digest('hex').slice(0, 12)
+  return { status: response.status, ms, kb: body.byteLength / 1024, sha }
 }
 const median = (values) => values.sort((a, b) => a - b)[Math.floor(values.length / 2)]
 const measure = async (path) => {
@@ -103,7 +109,7 @@ const measure = async (path) => {
   const runs = []
   let last
   for (let index = 0; index < 3; index += 1) { last = await time(path); runs.push(last.ms) }
-  return { path, status: last.status, ms: Math.round(median(runs)), kb: Math.round(last.kb) }
+  return { path, status: last.status, ms: Math.round(median(runs)), kb: Math.round(last.kb), sha: last.sha }
 }
 
 const systemScreens = process.env.SCREENS?.split(',') || [
