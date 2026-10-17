@@ -4073,7 +4073,7 @@ const loadStateEntityRows = async (db, scope, collectionKeys = null) => {
   return rows
 }
 
-const hydrateStateSnapshot = (row, manifests = [], entities = []) => {
+export const hydrateStateSnapshot = (row, manifests = [], entities = []) => {
   if (!row) {
     if (manifests.length || entities.length) {
       throw new ApiError(500, 'STATE_ENTITY_ORPHANED', 'Bản ghi trạng thái không có trạng thái cha.')
@@ -4117,7 +4117,15 @@ const hydrateStateSnapshot = (row, manifests = [], entities = []) => {
       updatedAt: entity.updated_at,
     })
   }
-  row.value_json = JSON.stringify(hydrated)
+  // Each entity is already valid JSON text, so joining the stored strings is
+  // equivalent to JSON.stringify(hydrated) without re-serializing every record.
+  const shellJson = JSON.stringify(Object.fromEntries(
+    Object.entries(hydrated).filter(([key]) => !metadata.has(key)),
+  ))
+  const collectionsJson = [...metadata].map(([collectionKey, collection]) => (
+    `${JSON.stringify(collectionKey)}:[${collection.rows.map(({ valueJson }) => valueJson).join(',')}]`
+  )).join(',')
+  row.value_json = shellJson === '{}' ? `{${collectionsJson}}` : `${shellJson.slice(0, -1)},${collectionsJson}}`
   Object.defineProperty(row, '_hydratedState', { value: hydrated, enumerable: false })
   Object.defineProperty(row, '_externalCollections', { value: metadata, enumerable: false })
   return row
@@ -4419,9 +4427,15 @@ const repairScopedStoreStateIfNeeded = async (db, actor, context, row, storeId, 
   return loadStoreState(db, 'global', storeId, actor.employee_id, screen, period)
 }
 
-const repairEmployeeScreenStateIfNeeded = async (db, actor, context, row, screen) => {
+// A store snapshot row is read for this request only, so its hydrated state
+// can be read directly instead of parsing the serialized copy again.
+const requestStateSnapshotValue = (row) => (
+  isPlainRecord(row?._hydratedState) ? row._hydratedState : parseStoredJson(row?.value_json, {})
+)
+
+const repairEmployeeScreenStateIfNeeded = async (db, actor, context, row, screen, period = '') => {
   if (!row) return row
-  const state = parseStoredJson(row.value_json, {})
+  const state = requestStateSnapshotValue(row)
   const employee = (Array.isArray(state.employees) ? state.employees : []).find((record) => (
     employeeIdentifierValues(record).some((id) => sameIdentifier(id, actor.employee_id))
   ))
@@ -4442,7 +4456,25 @@ const repairEmployeeScreenStateIfNeeded = async (db, actor, context, row, screen
   // Persistence still reconciles the complete canonical state under its
   // existing optimistic-concurrency and audit guards; never save a projection.
   await persistOpenStoreAttendanceChecklistRepairs(db, actor, context)
-  return loadStoreState(db, 'global', actor.store_id, actor.employee_id, screen)
+  return loadStoreState(db, 'global', actor.store_id, actor.employee_id, screen, period)
+}
+
+// A store employee's task page lists the current month only. The open shift
+// keeps its checklist even when it started on the previous month's last day.
+// Rows without any date stay visible, matching the SQLite projection.
+const limitEmployeeTaskStateToPeriod = (state, period) => {
+  const openDates = new Set((Array.isArray(state.attendance) ? state.attendance : [])
+    .map((record) => stateEntityQueryDimensions('attendance', record))
+    .filter((dimensions) => dimensions.openFlag === 1 && dimensions.occurredOn)
+    .map((dimensions) => dimensions.occurredOn))
+  for (const collectionKey of ['tasks', 'taskAssignmentHistory']) {
+    if (!Array.isArray(state[collectionKey])) continue
+    state[collectionKey] = state[collectionKey].filter((record) => {
+      const { periodKey, occurredOn } = stateEntityQueryDimensions(collectionKey, record)
+      return !periodKey || periodKey === period || openDates.has(occurredOn)
+    })
+  }
+  return state
 }
 
 const assignStateEntityOrders = (descriptors) => {
@@ -5558,10 +5590,16 @@ const getSystemScreen = async (request, env, context, screen) => {
   const useEmployeeStoreProjection = user.role === 'employee'
     && isEmployeeScreen
     && Boolean(String(user.store_id || '').trim())
+  const actorEmployee = (Array.isArray(user._globalState?.employees) ? user._globalState.employees : [])
+    .find((record) => employeeIdentifierValues(record).some((id) => sameIdentifier(id, user.employee_id)))
+  const taskPeriod = useEmployeeStoreProjection && screen === 'employee-tasks'
+    && actorEmployee && employeeUnit(actorEmployee) === 'store'
+    ? localDateTimeParts(context.now).date.slice(0, 7)
+    : ''
   const useOptimizedSystemProjection = typeof db?.readSystemStateSnapshot === 'function'
     && ['tasks', 'office', 'support-tasks', 'support-assigned-work', 'support-overview'].includes(screen)
   const readScreen = () => useEmployeeStoreProjection
-    ? loadStoreState(db, 'global', user.store_id, user.employee_id, screen)
+    ? loadStoreState(db, 'global', user.store_id, user.employee_id, screen, taskPeriod)
     : useOptimizedSystemProjection
       ? loadOptimizedSystemStateSnapshot(
           db,
@@ -5574,7 +5612,7 @@ const getSystemScreen = async (request, env, context, screen) => {
   let row = await readScreen()
   if (collections.includes('attendance') && screen !== 'support-overview') {
     if (useEmployeeStoreProjection) {
-      row = await repairEmployeeScreenStateIfNeeded(db, user, context, row, screen)
+      row = await repairEmployeeScreenStateIfNeeded(db, user, context, row, screen, taskPeriod)
     } else if (await hasPendingOpenStoreAttendanceChecklistRepair(db)) {
       await persistOpenStoreAttendanceChecklistRepairs(db, user, context)
       row = await readScreen()
@@ -5586,7 +5624,9 @@ const getSystemScreen = async (request, env, context, screen) => {
       ? visibleUserRowsForActor(db, user)
       : Promise.resolve(null),
   ])
-  let rawState = row ? parseStoredJson(row.value_json, {}) : {}
+  let rawState = !row ? {} : useEmployeeStoreProjection
+    ? requestStateSnapshotValue(row)
+    : parseStoredJson(row.value_json, {})
   if (screen === 'support-overview') {
     // The personal support dashboard only renders the actor's attendance and
     // working-time overrides. Keep complete own records, including historical
@@ -5608,7 +5648,9 @@ const getSystemScreen = async (request, env, context, screen) => {
     scope: 'global',
     projection: 'global',
     screen,
-    state: projectSharedState(rawState, user),
+    state: taskPeriod
+      ? limitEmployeeTaskStateToPeriod(projectSharedState(rawState, user), taskPeriod)
+      : projectSharedState(rawState, user),
     version: Number(row?.version || 0),
     updatedAt: row?.updated_at || null,
     policies,
