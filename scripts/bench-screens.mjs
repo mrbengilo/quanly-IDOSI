@@ -1,5 +1,7 @@
 // Local load-time benchmark for every menu (screen) projection on a synthetic
 // dataset. Usage: node scripts/bench-screens.mjs [scale]
+// BENCH_PROFILE=production adds task/checklist history shaped like the
+// production diagnostic (large taskAssignmentHistory and attendance rows).
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { resolve } from 'node:path'
@@ -35,7 +37,7 @@ const employees = Array.from({ length: EMPLOYEES }, (_, index) => ({
   id: `E${index + 1}`, name: `Nhân viên ${index + 1}`, storeId: stores[index % STORES].id,
   unit: index % 20 === 0 ? 'office' : index % 25 === 1 ? 'business_support' : 'store',
 }))
-const seedCollections = ['orders', 'attendance', 'expenseEntries', 'tasks', 'notifications', 'compensationEntries',
+const seedCollections = ['taskAssignmentHistory', 'orders', 'attendance', 'expenseEntries', 'tasks', 'notifications', 'compensationEntries',
   'violations', 'schedule', 'salaryAdjustments', 'workCatalogProgress', 'orderAudit', 'cashTransactions']
 const initialState = { stores, employees }
 for (const key of seedCollections) initialState[key] = [{ id: `${key}-seed`, storeId: 'S1', date: day(0) }]
@@ -81,6 +83,36 @@ for (let offset = 0; offset < DAYS; offset += 1) {
     if (offset % 7 === 0) add('violations', { id: `V-${store.id}-${date}`, storeId: store.id, employeeId: `E${Number(store.id.slice(1))}`, date, createdAt, points: 1 })
     if (offset % 2 === 0) add('workCatalogProgress', { id: `W-${store.id}-${date}`, storeId: store.id, employeeId: `E${Number(store.id.slice(1))}`, date, createdAt, status: 'DONE' })
   }
+}
+if (process.env.BENCH_PROFILE === 'production') {
+  const checklist = (date, count) => Array.from({ length: count }, (_, index) => ({
+    catalogItemId: `ITEM-${index}`, name: `Hạng mục kiểm tra số ${index}`, kind: 'CHECKLIST', checked: index % 2 === 0,
+    completedAt: `${date}T02:00:00Z`, note: 'Ghi chú hoàn thành hạng mục kiểm tra ca làm việc',
+    evidence: { by: 'E1', at: `${date}T02:00:00Z`, comment: 'Đã kiểm tra và xác nhận đầy đủ theo quy trình' },
+  }))
+  for (let offset = 0; offset < DAYS; offset += 1) {
+    const date = day(offset)
+    const createdAt = `${date}T03:00:00.000Z`
+    for (const store of stores) {
+      if (offset % 2 === 0) {
+        add('taskAssignmentHistory', {
+          id: `TAH-${store.id}-${date}`, storeId: store.id, date, createdAt, action: 'assign',
+          before: checklist(date, 60), after: checklist(date, 60),
+        })
+      }
+      for (let index = 0; index < 8; index += 1) {
+        add('tasks', {
+          id: `TX-${store.id}-${date}-${index}`, storeId: store.id, employeeId: `E${Number(store.id.slice(1))}`, date, createdAt,
+          title: 'Công việc theo ca', status: 'done', checklist: checklist(date, 4),
+        })
+      }
+    }
+  }
+  const snapshot = JSON.stringify({ source: 'work-catalog', tasks: checklist(day(0), 50) })
+  db.prepare(`UPDATE state_entities
+    SET value_json = json_set(value_json, '$.checklistSnapshot', json(?1)),
+      value_bytes = length(CAST(json_set(value_json, '$.checklistSnapshot', json(?1)) AS BLOB))
+    WHERE collection_key = 'attendance' AND entity_order % 9 = 0`).run(snapshot)
 }
 db.exec('COMMIT')
 // Rebuild indexed query columns exactly as migration 0012 does.
