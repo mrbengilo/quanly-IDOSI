@@ -1,10 +1,9 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import {
   BarChart3,
   Box,
   CalendarDays,
-  Check,
   ClipboardCheck,
   Clock3,
   Edit3,
@@ -29,7 +28,6 @@ import {
   Card,
   DateRange,
   Drawer,
-  ExportButton,
   Field,
   InfoNote,
   Input,
@@ -50,6 +48,7 @@ import { IdentityDocumentViewer } from '../../components/IdentityDocumentViewer'
 import { optimizeIdentityImage } from '../../domain/identityImage'
 import { cashSeries, shifts } from '../../data'
 import { apiGetIdentityImage } from '../../services/idosiApi'
+import { canonicalEmployeeStatus, EMPLOYEE_STATUS, employeeStatusChangePermission, employeeStatusLabel, employeeStatusOptions, employeeStatusTone, isDepartedEmployeeStatus } from '../../domain/employeeStatus'
 import { useApp } from '../../state/AppContext'
 import { nextSupportTransferBoundaryDelay } from '../../domain/supportScheduling'
 import { UnitCompensationStatistics } from '../compensation/UnitCompensationStatistics'
@@ -57,7 +56,6 @@ import { ViolationManagementPage } from '../compensation/ViolationManagementPage
 import { workRewardRows } from '../compensation/compensationStatistics'
 import { formatVietnamTransferPeriod, supportTransferMatchesMoment } from '../../domain/supportTransferTime'
 import {
-  downloadCsv,
   getEmployeeType,
   getHourlyRate,
   money,
@@ -94,18 +92,7 @@ const identifierMatch = (records, reference, identifiersOf = (record) => [record
 const employeeIdentifiers = (employee = {}) => [employee.id, employee.code, employee.employeeId]
 const employeeFor = (employees, reference) => identifierMatch(employees, reference, employeeIdentifiers)
 const storeFor = (stores, reference) => identifierMatch(stores, reference, (store) => [store.id])
-const shiftById = (id) => identifierMatch(shifts, id, (shift) => [shift.id])
-const shiftHours = (shift) => {
-  const [startHour, startMinute] = String(shift?.start || '').split(':').map(Number)
-  const [endHour, endMinute] = String(shift?.end || '').split(':').map(Number)
-  if (![startHour, startMinute, endHour, endMinute].every(Number.isFinite)) return 0
-  const start = startHour * 60 + startMinute
-  let end = endHour * 60 + endMinute
-  if (end < start) end += 24 * 60
-  return Math.max(0, end - start) / 60
-}
-
-const EMPLOYEE_STATUSES = ['Đang làm việc', 'Tạm ngưng', 'Đã nghỉ việc']
+const EMPLOYEE_STATUSES = [EMPLOYEE_STATUS.ACTIVE, EMPLOYEE_STATUS.PAUSED, EMPLOYEE_STATUS.DEPARTED]
 const EMPLOYMENT_TYPES = ['Full-Time', 'Part-Time', 'Thử Việc']
 const emptyEmployeeForm = {
   id: '',
@@ -288,7 +275,7 @@ const employeeToForm = (employee = {}, storeId = '') => {
     age: employee.age ?? '',
     username: employee.username || '',
     password: '',
-    status: employee.status === 'Tạm nghỉ' ? 'Tạm ngưng' : (employee.status || 'Đang làm việc'),
+    status: canonicalEmployeeStatus(employee.status),
     storeId: employee.storeId || storeId,
   }
 }
@@ -315,11 +302,6 @@ const fullTimeSalaryPolicyFor = ({ configs, employee, store, period }) => {
   }
 }
 
-const employeeStatusTone = (status) => {
-  if (status === 'Đang làm việc') return 'green'
-  if (status === 'Đã nghỉ việc') return 'red'
-  return 'orange'
-}
 
 export function StoreOverview() {
   const { employees, attendance, imports, activeStore } = useStoreScope()
@@ -355,114 +337,6 @@ export function StoreOverview() {
           <TableWrap><thead><tr><th>Mặt hàng</th><th>Số lượng</th><th>Khối lượng</th><th>Thành tiền</th></tr></thead><tbody>{imports.slice(0, 5).map((item) => <tr key={item.id}><td><strong>{item.name}</strong></td><td>{item.quantity} {item.unit}</td><td>{item.weight} kg</td><td>{money(item.weight * item.price + item.shipping)}</td></tr>)}</tbody></TableWrap>
           <div className="mini-total"><span>Tổng giá trị nhập</span><strong>{money(importTotal)}</strong></div>
         </Card>
-      </div>
-    </div>
-  )
-}
-
-export function StoreShifts() {
-  const { employees, schedule, saveSchedule, notify } = useStoreScope()
-  const [mode, setMode] = useState('day')
-  const [open, setOpen] = useState(false)
-  const [date, setDate] = useState(new Date().toISOString().slice(0, 10))
-  const [shiftId, setShiftId] = useState('ca1')
-  const [note, setNote] = useState('')
-  const [selected, setSelected] = useState([])
-  const [shiftFilter, setShiftFilter] = useState('all')
-  const [positionFilter, setPositionFilter] = useState('all')
-  const visibleEmployees = employees.filter((employee) => positionFilter === 'all' || employeePosition(employee) === positionFilter)
-  const selectedDate = new Date(`${date}T00:00:00`)
-  const startOfWeek = new Date(selectedDate)
-  startOfWeek.setDate(selectedDate.getDate() - ((selectedDate.getDay() + 6) % 7))
-  const endOfWeek = new Date(startOfWeek)
-  endOfWeek.setDate(startOfWeek.getDate() + 6)
-  const visibleSchedule = schedule.filter((item) => {
-    const itemDate = item.date ? new Date(`${item.date}T00:00:00`) : null
-    const inPeriod = !itemDate || (mode === 'day' ? item.date === date : itemDate >= startOfWeek && itemDate <= endOfWeek)
-    return inPeriod && (shiftFilter === 'all' || item.shiftIds?.some((id) => shiftById(id) === shiftById(shiftFilter)))
-  })
-  const positions = [...new Set(employees.map(employeePosition))]
-  const totalAssignments = visibleSchedule.reduce((sum, item) => sum + (item.shiftIds?.length || 0), 0)
-  const countForShift = (id) => visibleSchedule.filter((item) => item.shiftIds?.some((candidate) => shiftById(candidate) === shiftById(id))).length
-  const save = () => {
-    if (!selected.length) return notify('Vui lòng chọn ít nhất một nhân viên.', 'info')
-    saveSchedule(selected, shiftId, { date, note })
-    setOpen(false)
-    setSelected([])
-    setNote('')
-  }
-  return (
-    <div className="page">
-      <PageHeader title="Ca làm việc" subtitle="Quản lý và phân ca làm việc cho nhân viên" actions={<><Input icon={CalendarDays} type="date" value={date} onChange={(event) => setDate(event.target.value)} /><Button icon={Plus} onClick={() => setOpen(true)}>Tạo lịch ca</Button><ExportButton onClick={() => downloadCsv('ca-lam-viec.csv', visibleSchedule)} /></>} />
-      <div className="shift-summary-grid">
-        {shifts.map((shift) => <Card key={shift.id} className={`shift-summary shift-summary--${shift.id}`}><div style={{ borderColor: shift.color }}><span style={{ color: shift.color }}>{shift.name}</span><strong>{shift.time}</strong><small><Users size={18} /> {countForShift(shift.id)} nhân viên</small></div></Card>)}
-        <Card className="day-overview"><h3>Tổng quan {mode === 'day' ? `ngày ${date.split('-').reverse().join('/')}` : 'tuần đã chọn'}</h3><div><span><Clock3 />Tổng ca <b>{shifts.filter((shift) => countForShift(shift.id) > 0).length}</b></span><span><Users />Tổng nhân viên <b>{new Set(visibleSchedule.map((item) => employeeFor(employees, item.employeeId)?.id).filter(Boolean)).size}</b></span><span><CalendarDays />Tổng lượt ca <b>{totalAssignments}</b></span></div></Card>
-      </div>
-      <Card className="schedule-card">
-        <div className="tabs"><button className={mode === 'day' ? 'active' : ''} onClick={() => setMode('day')}>Lịch theo ngày</button><button className={mode === 'week' ? 'active' : ''} onClick={() => setMode('week')}>Lịch theo tuần</button></div>
-        <div className="card__subheader"><h2>Lịch phân ca {mode === 'day' ? `ngày ${date.split('-').reverse().join('/')}` : 'theo tuần'}</h2><div><Select value={shiftFilter} onChange={(event) => setShiftFilter(event.target.value)}><option value="all">Tất cả ca</option>{shifts.map((shift) => <option value={shift.id} key={shift.id}>{shift.name}</option>)}</Select><Select value={positionFilter} onChange={(event) => setPositionFilter(event.target.value)}><option value="all">Tất cả vị trí</option>{positions.map((position) => <option key={position}>{position}</option>)}</Select><Button variant="outline" icon={Filter} onClick={() => { setShiftFilter('all'); setPositionFilter('all') }}>Đặt lại</Button></div></div>
-        <ScheduleTable employees={visibleEmployees} schedule={visibleSchedule} />
-      </Card>
-      <div className="bottom-info-grid">
-        <Card title="Ghi chú"><ul className="plain-list"><li>Nhân viên có thể làm 1 đến 3 ca trong một ngày.</li><li>Mỗi ca có thể có nhiều nhân viên cùng làm việc.</li><li>Nhấp vào ca để xem chi tiết hoặc chỉnh sửa.</li></ul></Card>
-        <Card title="Thông tin ca làm việc"><div className="shift-info-row">{shifts.map((shift) => <div key={shift.id} style={{ borderColor: shift.color }}><strong style={{ color: shift.color }}>{shift.name}</strong><span>{shift.time}</span><small>5 giờ</small></div>)}</div></Card>
-        <Card title="Thống kê lượt ca trong ngày"><div className="shift-bars">{shifts.map((shift, index) => <p key={shift.id}><span>{shift.name}: {[12, 13, 7][index]} lượt</span><i><b style={{ width: `${[37.5, 40.6, 21.9][index]}%`, background: shift.color }} /></i></p>)}</div></Card>
-      </div>
-      <Modal open={open} onClose={() => setOpen(false)} title="Tạo lịch ca" footer={<><Button variant="outline" onClick={() => setOpen(false)}>Hủy</Button><Button icon={Save} onClick={save} disabled={!selected.length}>Lưu lịch ca</Button></>}>
-        <div className="form-grid"><Field label="Ngày áp dụng"><Input type="date" value={date} onChange={(event) => setDate(event.target.value)} /></Field><Field label="Ca làm"><Select value={shiftId} onChange={(event) => setShiftId(event.target.value)}>{shifts.map((shift) => <option key={shift.id} value={shift.id}>{shift.name} • {shift.time}</option>)}</Select></Field><Field label={`Nhân viên • Đã chọn ${selected.length}`} className="span-2"><div className="employee-picker">{employees.map((employee) => <label key={employee.id} className={selected.includes(employee.id) ? 'selected' : ''}><input type="checkbox" checked={selected.includes(employee.id)} onChange={() => setSelected((current) => current.includes(employee.id) ? current.filter((id) => id !== employee.id) : [...current, employee.id])} /><Avatar name={employee.name} src={employee.avatar} employeeId={employee.id || employee.code} color={employee.color} size={30} /><strong>{employee.name}</strong><small>{employee.shortRole}</small></label>)}</div></Field><Field label="Ghi chú" className="span-2"><textarea value={note} onChange={(event) => setNote(event.target.value)} placeholder="Nhập ghi chú..." /></Field></div>
-      </Modal>
-    </div>
-  )
-}
-
-function ScheduleTable({ employees, schedule }) {
-  return (
-    <TableWrap className="schedule-table">
-      <thead><tr><th>Nhân viên</th>{shifts.map((shift) => <th key={shift.id} style={{ color: shift.color }}>{shift.name} <small>({shift.time})</small></th>)}</tr></thead>
-      <tbody>{employees.map((employee) => {
-        const item = schedule.find((row) => employeeFor(employees, row.employeeId) === employee)
-        return <tr key={employee.id}><td><div className="person-cell"><Avatar name={employee.name} src={employee.avatar} employeeId={employee.id || employee.code} color={employee.color} /><span><strong>{employee.name}</strong><small>{employee.shortRole}</small></span></div></td>{shifts.map((shift) => <td key={shift.id}>{item?.shiftIds?.some((id) => shiftById(id) === shift) ? <span className={`shift-chip shift-chip--${shift.id}`}><Clock3 />{shift.name} • {shift.time}</span> : '–'}</td>)}</tr>
-      })}</tbody>
-    </TableWrap>
-  )
-}
-
-export function StoreSchedule() {
-  const { employees, schedule, saveSchedule } = useStoreScope()
-  const [open, setOpen] = useState(true)
-  const [shiftId, setShiftId] = useState('ca1')
-  const [date, setDate] = useState(new Date().toISOString().slice(0, 10))
-  const [note, setNote] = useState('')
-  const [employeeQuery, setEmployeeQuery] = useState('')
-  const [selected, setSelected] = useState(() => employees.slice(0, 3).map((employee) => employee.id))
-  const toggle = (id) => setSelected((current) => current.includes(id) ? current.filter((item) => item !== id) : [...current, id])
-  const visibleEmployees = employees.filter((employee) => `${employee.id} ${employee.name} ${employee.shortRole}`.toLowerCase().includes(employeeQuery.toLowerCase()))
-  const visibleSchedule = schedule.filter((item) => !item.date || item.date === date)
-  const countForShift = (id) => visibleSchedule.filter((item) => item.shiftIds?.some((candidate) => shiftById(candidate) === shiftById(id))).length
-  const totalScheduledHours = visibleSchedule.reduce((total, item) => total + (item.shiftIds || [])
-    .reduce((hours, id) => hours + shiftHours(shiftById(id)), 0), 0)
-  const save = () => {
-    if (!selected.length) return
-    saveSchedule(selected, shiftId, { date, note })
-    setNote('')
-    setOpen(false)
-  }
-  return (
-    <div className="page">
-      <PageHeader title="Lịch phân ca" subtitle="Tạo và quản lý lịch phân công ca làm việc cho nhân viên" actions={<><Input icon={CalendarDays} type="date" value={date} onChange={(event) => setDate(event.target.value)} /><Button icon={Plus} onClick={() => setOpen(true)}>Tạo ca</Button></>} />
-      <div className="schedule-summary">{shifts.map((shift) => <Card key={shift.id} className={`schedule-summary__item schedule-summary__item--${shift.id}`}><Clock3 style={{ color: shift.color }} /><div><span>{shift.name}</span><strong>{shift.time}</strong><small>{countForShift(shift.id)} nhân viên</small></div></Card>)}<Card className="schedule-day-stats"><h3>Tổng quan ngày {date.split('-').reverse().join('/')}</h3><div><span>Tổng ca<b>{shifts.filter((shift) => countForShift(shift.id) > 0).length}</b></span><span>Nhân viên<b>{new Set(visibleSchedule.map((item) => employeeFor(employees, item.employeeId)?.id).filter(Boolean)).size}</b></span><span>Ca trống<b>{shifts.filter((shift) => countForShift(shift.id) === 0).length}</b></span><span>Tổng giờ<b>{totalScheduledHours.toFixed(2)}</b></span></div></Card></div>
-      <div className={`schedule-builder ${open ? 'schedule-builder--open' : ''}`}>
-        <Card title="Danh sách lịch phân ca" className="schedule-builder__table"><ScheduleTable employees={employees} schedule={visibleSchedule} /><TableFooter shown={employees.length} total={employees.length} /></Card>
-        {open && <Card className="schedule-panel">
-          <div className="card__header"><h2>Tạo lịch phân ca</h2><button onClick={() => setOpen(false)}>×</button></div>
-          <Field label="1. Chọn ngày"><Input type="date" value={date} onChange={(event) => setDate(event.target.value)} /></Field>
-          <Field label="2. Chọn ca & thời gian"><div className="shift-selector">{shifts.map((shift) => <button key={shift.id} className={shiftId === shift.id ? 'active' : ''} style={{ '--shift-color': shift.color }} onClick={() => setShiftId(shift.id)}>{shift.name}{shiftId === shift.id && <Check />}</button>)}</div></Field>
-          <div className="time-row"><Input type="time" value={shiftById(shiftId).start} readOnly /><span>–</span><Input type="time" value={shiftById(shiftId).end} readOnly /></div>
-          <Field label={`3. Chọn nhân viên • Đã chọn: ${selected.length}`}><SearchInput value={employeeQuery} onChange={setEmployeeQuery} placeholder="Tìm kiếm nhân viên..." /></Field>
-          <div className="employee-picker">{visibleEmployees.map((employee) => <label key={employee.id} className={selected.includes(employee.id) ? 'selected' : ''}><input type="checkbox" checked={selected.includes(employee.id)} onChange={() => toggle(employee.id)} /><Avatar name={employee.name} src={employee.avatar} employeeId={employee.id || employee.code} color={employee.color} size={30} /><strong>{employee.name}</strong><small>{employee.shortRole}</small></label>)}</div>
-          <Field label="4. Ghi chú (tùy chọn)"><textarea value={note} onChange={(event) => setNote(event.target.value)} placeholder="Nhập ghi chú..." /></Field>
-          <div className="panel-actions"><Button variant="outline" onClick={() => setOpen(false)}>Hủy</Button><Button onClick={save} disabled={!date || !selected.length}>Lưu lịch ca</Button></div>
-        </Card>}
       </div>
     </div>
   )
@@ -509,16 +383,34 @@ export function StoreEmployees() {
   const [imageBusy, setImageBusy] = useState('')
   const [viewingImage, setViewingImage] = useState(null)
   const [viewingSide, setViewingSide] = useState('')
+  const [pendingDelete, setPendingDelete] = useState(null)
+  const [isDeleting, setIsDeleting] = useState(false)
+  const [deleteError, setDeleteError] = useState('')
+  const deletingRef = useRef(false)
+  const [saving, setSaving] = useState(false)
+  const savingRef = useRef(false)
   const canManageStore = ['admin', 'business_support', 'manager', 'store_manager'].includes(session?.role)
   const canCreateStoreEmployee = ['admin', 'business_support', 'manager', 'store_manager'].includes(session?.role)
   const isBusinessSupport = ['business_support', 'manager'].includes(session?.role)
-  const canDeleteEmployee = session?.role === 'admin'
+  const canDeleteEmployee = session?.role === 'admin' || isBusinessSupport
   const linkingExistingProfile = !editing && ['business_support', 'office'].includes(form.employeeSource)
   const editingSharedLogin = Boolean(editing?.linkedEmployeeId)
   const sharedLoginOwner = editingSharedLogin ? employeeFor(employees, editing.linkedEmployeeId) : null
   const editingRequiresPassword = Boolean(editing) && !editingSharedLogin && !(
     editing.authUserId || editing.authVersion || editing.passwordHash || editing.legacyPassword
   )
+  const statusActorRole = isBusinessSupport ? 'business_support' : session?.role
+  const originalStatus = editing ? canonicalEmployeeStatus(editing.status) : EMPLOYEE_STATUS.ACTIVE
+  const formStatus = canonicalEmployeeStatus(form.status)
+  const statusChanged = Boolean(editing) && formStatus !== originalStatus
+  const departing = statusChanged && isDepartedEmployeeStatus(formStatus)
+  const editingDeparted = Boolean(editing) && isDepartedEmployeeStatus(originalStatus) && statusActorRole !== 'admin'
+  const canChangeStatus = ['admin', 'business_support'].includes(statusActorRole) && !editingDeparted
+  const statusOptions = employeeStatusOptions({ actorRole: statusActorRole, current: originalStatus })
+  const departingHasOpenAttendance = departing && (Array.isArray(app.attendance) ? app.attendance : []).some((record) => (
+    !record.deletedAt && !record.checkOutAt && !record.checkOut
+    && employeeFor(employees, record.employeeId) === employeeFor(employees, editing?.id || editing?.code)
+  ))
 
   useEffect(() => {
     const url = viewingImage?.url
@@ -536,6 +428,31 @@ export function StoreEmployees() {
     && !activeSupportTransferFromStore(supportTransfers, employees, stores, employee, scopedStore, transferClock)
   )
 
+  const confirmDelete = async () => {
+    if (!canDeleteEmployee || !pendingDelete || deletingRef.current) return
+    const canonical = employeeFor(employees, pendingDelete.id || pendingDelete.code)
+    if (!canonical || !canEditEmployee(canonical)) {
+      setDeleteError('Hồ sơ đã thay đổi hoặc đang hỗ trợ tại cửa hàng khác. Vui lòng tải lại danh sách.')
+      return
+    }
+    deletingRef.current = true
+    setIsDeleting(true)
+    setDeleteError('')
+    try {
+      const result = await deleteEmployee(canonical.id || canonical.code)
+      if (result === false || result?.ok === false) {
+        setDeleteError(result?.message || 'Không thể xóa nhân viên.')
+        return
+      }
+      setPendingDelete(null)
+    } catch (error) {
+      setDeleteError(error?.message || 'Không thể xóa nhân viên.')
+    } finally {
+      deletingRef.current = false
+      setIsDeleting(false)
+    }
+  }
+
   const normalizedQuery = normalizeText(query)
   const filtered = scopedEmployees.filter((employee) => {
     const haystack = [
@@ -548,7 +465,7 @@ export function StoreEmployees() {
       employeeType(employee),
       employeeAddressLabel(employee),
     ].join(' ').toLowerCase()
-    const employeeStatus = employee.status === 'Tạm nghỉ' ? 'Tạm ngưng' : employee.status
+    const employeeStatus = canonicalEmployeeStatus(employee.status)
     return (!normalizedQuery || haystack.includes(normalizedQuery)) && (status === 'all' || employeeStatus === status)
   })
 
@@ -676,45 +593,74 @@ export function StoreEmployees() {
   const save = async (event) => {
     event?.preventDefault()
     if (editing ? !canManageStore : !canCreateStoreEmployee) return
-    const editingId = editing?.id || editing?.code || ''
-    const scopedForm = { ...form, storeId: scopedStoreId }
-    const validationErrors = validateStoreEmployee(
-      scopedForm,
-      employees,
-      editingId,
-      !editing || editingRequiresPassword,
-      { requireIdentityImages: !editing, linkedEmployeeId: form.linkedEmployeeId, credentialsReadOnly: editingSharedLogin },
-    )
-    if (validationErrors.length) {
-      setErrors(validationErrors)
-      notify?.('Vui lòng kiểm tra lại thông tin nhân viên.', 'info')
+    if (savingRef.current) return
+    if (editingDeparted) {
+      setErrors(['Nhân viên đã nghỉ làm. Chỉ Admin được khôi phục hoặc chỉnh sửa hồ sơ này.'])
       return
     }
-
-    const payload = buildStoreEmployeePayload(form, {
-      storeId: scopedStoreId,
-      store: scopedStore,
-    })
-    if (editingSharedLogin) {
-      delete payload.username
-      delete payload.password
+    const editingId = editing?.id || editing?.code || ''
+    const statusPermission = employeeStatusChangePermission({ actorRole: statusActorRole, unit: 'store', from: originalStatus, to: formStatus })
+    if (!statusPermission.ok) {
+      setErrors([statusPermission.message])
+      return
     }
-
-    if (editing) {
-      if (typeof updateEmployee !== 'function') return notify?.('Chức năng cập nhật nhân viên đang được kết nối.', 'info')
-      const result = await updateEmployee(editingId, payload)
-      if (!result?.ok) return notify?.(result?.message || 'Không thể cập nhật nhân viên.', 'info')
+    // Changing only the working status must not force re-entering unrelated
+    // credentials or identity data; the server keeps every other field.
+    const unchangedExceptStatus = Boolean(editing) && statusChanged && JSON.stringify({ ...form, status: '' })
+      === JSON.stringify({ ...employeeToForm(editing, scopedStoreId), status: '' })
+    let payload
+    if (unchangedExceptStatus) {
+      payload = { status: formStatus }
     } else {
-      if (typeof addEmployee !== 'function') return notify?.('Chức năng thêm nhân viên đang được kết nối.', 'info')
-      const result = await addEmployee(payload)
-      if (!result?.ok) return notify?.(result?.message || 'Không thể thêm nhân viên.', 'info')
+      const scopedForm = { ...form, storeId: scopedStoreId }
+      const validationErrors = validateStoreEmployee(
+        scopedForm,
+        employees,
+        editingId,
+        !editing || editingRequiresPassword,
+        { requireIdentityImages: !editing, linkedEmployeeId: form.linkedEmployeeId, credentialsReadOnly: editingSharedLogin },
+      )
+      if (validationErrors.length) {
+        setErrors(validationErrors)
+        notify?.('Vui lòng kiểm tra lại thông tin nhân viên.', 'info')
+        return
+      }
+      payload = buildStoreEmployeePayload({ ...form, status: formStatus }, {
+        storeId: scopedStoreId,
+        store: scopedStore,
+      })
+      if (editingSharedLogin) {
+        delete payload.username
+        delete payload.password
+      }
     }
-    closeDrawer()
+
+    savingRef.current = true
+    setSaving(true)
+    setErrors([])
+    try {
+      if (editing) {
+        if (typeof updateEmployee !== 'function') return notify?.('Chức năng cập nhật nhân viên đang được kết nối.', 'info')
+        const result = await updateEmployee(editingId, payload)
+        if (!result?.ok) {
+          setErrors([result?.message || 'Không thể cập nhật nhân viên.'])
+          return
+        }
+      } else {
+        if (typeof addEmployee !== 'function') return notify?.('Chức năng thêm nhân viên đang được kết nối.', 'info')
+        const result = await addEmployee(payload)
+        if (!result?.ok) return notify?.(result?.message || 'Không thể thêm nhân viên.', 'info')
+      }
+      closeDrawer()
+    } finally {
+      savingRef.current = false
+      setSaving(false)
+    }
   }
 
-  const activeCount = scopedEmployees.filter((item) => item.status === 'Đang làm việc').length
-  const pausedCount = scopedEmployees.filter((item) => item.status === 'Tạm ngưng' || item.status === 'Tạm nghỉ').length
-  const stoppedCount = scopedEmployees.filter((item) => item.status === 'Đã nghỉ việc').length
+  const activeCount = scopedEmployees.filter((item) => canonicalEmployeeStatus(item.status) === EMPLOYEE_STATUS.ACTIVE).length
+  const pausedCount = scopedEmployees.filter((item) => canonicalEmployeeStatus(item.status) === EMPLOYEE_STATUS.PAUSED).length
+  const stoppedCount = scopedEmployees.filter((item) => isDepartedEmployeeStatus(item.status)).length
   return (
     <div className="page">
       <PageHeader title="Quản lý nhân viên" subtitle={canManageStore ? 'Thêm, sửa và quản lý hồ sơ nhân viên theo cửa hàng.' : isBusinessSupport ? 'Thêm mới và xem danh sách nhân viên theo cửa hàng.' : 'Danh sách nhân viên theo cửa hàng — chế độ chỉ xem.'} actions={<><SearchInput value={query} onChange={setQuery} placeholder="Tìm mã, tên, CCCD..." />{canCreateStoreEmployee && <Button icon={Plus} onClick={openCreate}>Thêm nhân viên</Button>}</>} />
@@ -723,15 +669,15 @@ export function StoreEmployees() {
         <MetricCard label="Tổng nhân viên" value={scopedEmployees.length} helper="Thuộc cửa hàng đang chọn" icon={Users} tone="green" compact />
         <MetricCard label="Đang làm việc" value={activeCount} helper="Theo trạng thái" icon={UserCheck} tone="green" compact />
         <MetricCard label="Tạm ngưng" value={pausedCount} helper="Theo trạng thái" icon={Clock3} tone="orange" compact />
-        <MetricCard label="Đã nghỉ việc" value={stoppedCount} helper="Theo trạng thái" icon={Users} tone="red" compact />
+        <MetricCard label="Đã nghỉ làm" value={stoppedCount} helper="Theo trạng thái" icon={Users} tone="red" compact />
       </div>
-      <div className="filter-pills"><button className={status === 'all' ? 'active' : ''} onClick={() => setStatus('all')}>Tất cả ({scopedEmployees.length})</button>{EMPLOYEE_STATUSES.map((item) => <button key={item} className={status === item ? 'active' : ''} onClick={() => setStatus(item)}>{item}</button>)}</div>
+      <div className="filter-pills"><button className={status === 'all' ? 'active' : ''} onClick={() => setStatus('all')}>Tất cả ({scopedEmployees.length})</button>{EMPLOYEE_STATUSES.map((item) => <button key={item} className={status === item ? 'active' : ''} aria-pressed={status === item} onClick={() => setStatus(item)}>{employeeStatusLabel(item)}</button>)}</div>
       <Card>
         <TableWrap>
           <thead><tr><th>Mã nhân viên</th><th>Nhân viên</th><th>Phân bổ</th><th>Loại</th><th>Vị trí</th><th>CCCD</th><th>Liên hệ</th><th>Địa chỉ</th><th>Lương</th><th>Tài khoản</th><th>Trạng thái</th>{canManageStore && <th>Thao tác</th>}</tr></thead>
           <tbody>
             {filtered.map((employee) => {
-              const normalizedStatus = employee.status === 'Tạm nghỉ' ? 'Tạm ngưng' : (employee.status || 'Đang làm việc')
+              const normalizedStatus = canonicalEmployeeStatus(employee.status)
               const type = employeeType(employee)
               const hourlyEmployee = isHourlyEmployee(type)
               const fullTimeSalary = hourlyEmployee ? null : fullTimeSalaryPolicyFor({
@@ -769,8 +715,8 @@ export function StoreEmployees() {
                     ? <><strong>{money(fullTimeSalary.policy.standardHourlyRateVnd)}/giờ</strong><small className="table-sub">Tới {fullTimeSalary.policy.thresholdHours} giờ; phần vượt {money(fullTimeSalary.policy.excessHourlyRateVnd)}/giờ</small><small className={`table-sub ${fullTimeSalary.configured ? 'green-text' : 'orange-text'}`}>{fullTimeSalary.configured ? 'Đã cài đặt theo nhân viên' : 'Đang dùng mức mặc định an toàn'}</small></>
                     : <span className="orange-text">Cửa hàng chưa có chính sách lương</span>}</td>
                 <td>{employee.username || '—'}</td>
-                <td>{outboundTransfer ? <Badge tone="orange">Đang hỗ trợ</Badge> : <Badge tone={employeeStatusTone(normalizedStatus)}>{normalizedStatus}</Badge>}</td>
-                {canManageStore && <td>{canEditEmployee(employee) ? <div className="row-actions"><button onClick={() => openEdit(employee)} aria-label={`Sửa ${employee.name}`}><Edit3 /></button>{canDeleteEmployee && <button className="danger" onClick={() => window.confirm(`Xóa ${employee.name}?`) && deleteEmployee?.(employee.id)} aria-label={`Xóa ${employee.name}`}><Trash2 /></button>}</div> : <Badge tone="blue">Chỉ xem</Badge>}</td>}
+                <td>{outboundTransfer ? <Badge tone="orange">Đang hỗ trợ</Badge> : <Badge tone={employeeStatusTone(normalizedStatus)}>{employeeStatusLabel(normalizedStatus)}</Badge>}</td>
+                {canManageStore && <td>{canEditEmployee(employee) ? <div className="row-actions"><button onClick={() => openEdit(employee)} aria-label={`Sửa ${employee.name}`}><Edit3 /></button>{canDeleteEmployee && (session?.role === 'admin' || !isDepartedEmployeeStatus(employee.status)) && <button className="danger" disabled={isDeleting} onClick={() => { setDeleteError(''); setPendingDelete(employeeFor(employees, employee.id || employee.code)) }} aria-label={`Xóa ${employee.name}`}><Trash2 /></button>}</div> : <Badge tone="blue">Chỉ xem</Badge>}</td>}
               </tr>
             })}
             {!filtered.length && <tr><td colSpan={canManageStore ? 12 : 11}>Không có nhân viên phù hợp.</td></tr>}
@@ -778,7 +724,11 @@ export function StoreEmployees() {
         </TableWrap>
         <TableFooter shown={filtered.length} total={filtered.length} />
       </Card>
-      {canCreateStoreEmployee && <Modal wide open={open} onClose={closeDrawer} title={editing ? 'Cập nhật nhân viên' : 'Thêm nhân viên'} footer={<><Button type="button" variant="outline" onClick={closeDrawer} disabled={Boolean(imageBusy)}>Hủy bỏ</Button><Button type="button" icon={Save} onClick={save} disabled={Boolean(imageBusy)}>{editing ? 'Lưu thay đổi' : 'Lưu nhân viên'}</Button></>}>
+      {canDeleteEmployee && <Modal open={Boolean(pendingDelete)} onClose={() => { if (!deletingRef.current) setPendingDelete(null) }} title="Xóa nhân viên cửa hàng" footer={<><Button variant="outline" disabled={isDeleting} onClick={() => setPendingDelete(null)}>Hủy</Button><Button variant="danger" icon={Trash2} loading={isDeleting} disabled={isDeleting} onClick={confirmDelete}>XÓA NHÂN VIÊN</Button></>}>
+        <InfoNote tone="orange">Xóa hồ sơ <strong>{pendingDelete?.name}</strong> ({pendingDelete?.id || pendingDelete?.code}) tại <strong>{storeFor(stores, pendingDelete?.storeId)?.name || pendingDelete?.storeId}</strong>? {pendingDelete?.linkedEmployeeId ? 'Chỉ gỡ vai trò nhân viên cửa hàng này; tài khoản nguồn và các vai trò hợp lệ khác được giữ lại.' : 'Tài khoản của hồ sơ sẽ ngừng đăng nhập.'} Lịch sử chấm công, đơn hàng và lương được giữ lại.</InfoNote>
+        {deleteError && <div role="alert"><InfoNote tone="orange">{deleteError}</InfoNote></div>}
+      </Modal>}
+      {canCreateStoreEmployee && <Modal wide open={open} onClose={closeDrawer} title={editing ? 'Cập nhật nhân viên' : 'Thêm nhân viên'} footer={<><Button type="button" variant="outline" onClick={closeDrawer} disabled={Boolean(imageBusy) || saving}>Hủy bỏ</Button><Button type="button" variant={departing ? 'danger' : 'primary'} icon={Save} onClick={save} loading={saving} disabled={Boolean(imageBusy) || saving || editingDeparted}>{departing ? 'Xác nhận nghỉ làm' : editing ? 'Lưu thay đổi' : 'Lưu nhân viên'}</Button></>}>
         <form className="form-stack" onSubmit={save}>
           {errors.length > 0 && <InfoNote tone="orange"><strong>Thông tin chưa hợp lệ</strong><ul>{errors.map((error) => <li key={error}>{error}</li>)}</ul></InfoNote>}
           <h3>Thông tin nhân viên</h3>
@@ -804,6 +754,25 @@ export function StoreEmployees() {
               ? <Input value="Nhân viên bán hàng" readOnly aria-readonly="true" />
               : <Select value={form.position} onChange={updateField('position')}><option>Nhân viên bán hàng</option><option>Nhân viên thu ngân</option><option>Nhân viên kho</option><option>Trưởng ca</option><option>Khác</option></Select>}</Field>
           </div>}
+          {editing && <>
+            <h3>Trạng thái làm việc</h3>
+            <div className="form-grid">
+              <Field label="Trạng thái làm việc" required hint={canChangeStatus ? 'Nhân viên mới luôn ở trạng thái Đang làm việc.' : undefined}>
+                <Select value={formStatus} onChange={updateField('status')} disabled={!canChangeStatus || saving}>
+                  {statusOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+                </Select>
+              </Field>
+            </div>
+            {editingDeparted && <InfoNote tone="orange">Nhân viên đã nghỉ làm. Chỉ Admin được khôi phục hoặc chỉnh sửa hồ sơ này.</InfoNote>}
+            {!editingDeparted && !canChangeStatus && <InfoNote>Chỉ Admin hoặc Hỗ trợ KD được thay đổi trạng thái làm việc của nhân viên.</InfoNote>}
+            {departing && <div role="alert"><InfoNote tone="orange">
+              {editingSharedLogin
+                ? <>Hồ sơ này dùng chung tài khoản với <strong>{sharedLoginOwner?.name || editing.linkedEmployeeId}</strong>. Khi lưu, chỉ vai trò Nhân viên cửa hàng này bị gỡ khỏi tài khoản và các phiên đang dùng vai trò này bị đăng xuất; tài khoản gốc và các vai trò khác vẫn đăng nhập bình thường.</>
+                : <>Khi lưu, tài khoản <strong>{editing.username || editing.id}</strong> bị khóa ngay: mọi phiên đang đăng nhập trên các thiết bị bị đăng xuất và không thể đăng nhập lại.</>}
+              {' '}Hồ sơ, chấm công, đơn hàng, lương/thưởng và lịch sử được giữ nguyên; hệ thống không tự kết ca hay xóa nhân viên. Chỉ Admin có thể khôi phục.
+              {departingHasOpenAttendance && <> <strong>Nhân viên đang có ca chưa kết thúc</strong>; ca này được giữ nguyên để quản lý xử lý.</>}
+            </InfoNote></div>}
+          </>}
           {!linkingExistingProfile && <>
           <h3>Địa chỉ</h3>
           <AddressAutocomplete

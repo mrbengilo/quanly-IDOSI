@@ -410,7 +410,7 @@ describe('role management permissions and form', () => {
     expect(screen.getByRole('img', { name: /Quản lý liên kết · Mặt trước CCCD/i })).toBeTruthy()
   })
 
-  it('lets Business Support create and edit a store manager while keeping delete Admin-only', () => {
+  it('lets Business Support create, edit and delete a store manager', () => {
     mocked.app = {
       ...baseApp('business_support'),
       stores: [
@@ -423,9 +423,9 @@ describe('role management permissions and form', () => {
     render(createElement(StoreManagerManagement))
 
     expect(screen.getAllByRole('button', { name: /Thêm tài khoản/i }).length).toBeGreaterThan(0)
-    expect(screen.getByText(/Hỗ trợ KD được tạo hoặc sửa Quản lý cửa hàng/i)).toBeTruthy()
+    expect(screen.getByText(/Hỗ trợ KD được tạo, sửa và xóa hồ sơ Quản lý cửa hàng/i)).toBeTruthy()
     expect(screen.getByRole('button', { name: /Sửa Quản lý một/i })).toBeTruthy()
-    expect(screen.queryByRole('button', { name: /Xóa Quản lý một/i })).toBeNull()
+    expect(screen.getByRole('button', { name: /Xóa Quản lý một/i })).toBeTruthy()
 
     fireEvent.click(screen.getAllByRole('button', { name: /Thêm tài khoản/i })[0])
     const dialog = screen.getByRole('dialog')

@@ -135,8 +135,8 @@ export const normalizeWorkCatalogItem = (item = {}) => {
   const kind = normalizeKind(item.kind)
   const targetGroup = normalizeTargetGroup(item.targetGroup)
   const pointViolation = item.violationPoints != null
-  if (pointViolation && (kind !== WORK_CATALOG_KIND.VIOLATION || targetGroup !== WORK_CATALOG_TARGET.STORE)) {
-    throw new TypeError('Điểm vi phạm chỉ áp dụng cho vi phạm của nhân viên cửa hàng.')
+  if (pointViolation && kind !== WORK_CATALOG_KIND.VIOLATION) {
+    throw new TypeError('Điểm vi phạm chỉ áp dụng cho danh mục vi phạm.')
   }
   const code = normalizeCode(item.code)
   const id = stableToken(item.id || createWorkCatalogItemId({ targetGroup, kind, code }), 'id')
@@ -247,16 +247,20 @@ export const activeWorkCatalogItems = (items, {
   shiftStart = null,
   shiftEnd = null,
   shiftCheckInTime = null,
+  selectedTaskShiftId,
   date = new Date(),
   kinds = null,
 } = {}) => {
+  const manualSelection = selectedTaskShiftId !== undefined
+  if (manualSelection && !text(selectedTaskShiftId)) return []
+  if (manualSelection) shiftId = selectedTaskShiftId
   const normalizedTarget = normalizeTargetGroup(targetGroup)
   const normalizedDate = calendarDate(date, 'date')
   const requestedKinds = kinds == null
     ? null
     : new Set((Array.isArray(kinds) ? kinds : [kinds]).map(normalizeKind))
   const requestedStoreId = text(storeId) || null
-  const timeDerivedStoreShift = normalizedTarget === WORK_CATALOG_TARGET.STORE && text(shiftCheckInTime)
+  const timeDerivedStoreShift = !manualSelection && normalizedTarget === WORK_CATALOG_TARGET.STORE && text(shiftCheckInTime)
     ? resolveStoreChecklistCatalogShift({ checkInTime: shiftCheckInTime })
     : null
   const canonicalStoreShift = normalizedTarget === WORK_CATALOG_TARGET.STORE
@@ -265,7 +269,7 @@ export const activeWorkCatalogItems = (items, {
         name: shiftName,
         start: shiftStart,
         end: shiftEnd,
-        checkInTime: shiftCheckInTime,
+        ...(manualSelection ? { selectedTaskShiftId } : { checkInTime: shiftCheckInTime }),
       })
     : null
   const requestedShiftId = text(shiftId)

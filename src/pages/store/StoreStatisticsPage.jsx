@@ -111,11 +111,12 @@ export function StoreStatisticsPage() {
       <OrderProductWeightTable key={`${storeId}:${scopeLabel}`} rows={products.weightByProduct} totals={products} scopeLabel={scopeLabel} />
       <Card title={groupTitle}>
         {groups.length ? <TableWrap tableClassName="store-statistics-revenue" paginate={false}>
-          <thead><tr><th>{mode === 'month' ? 'Ngày' : 'Ca'}</th><th>Số đơn</th><th>Bán thường</th><th>Sale theo ký</th><th>Sale theo cái</th><th>Tổng doanh thu</th><th>Khối lượng</th>{mode !== 'shift' && <th>Chi tiết</th>}</tr></thead>
+          <thead><tr><th>{mode === 'month' ? 'Ngày' : 'Ca'}</th><th>Số đơn</th><th>Bán thường</th><th>Sale theo ký</th><th>Sale theo cái</th><th>Chưa phân loại</th><th>Tổng doanh thu</th><th>Khối lượng</th>{mode !== 'shift' && <th>Chi tiết</th>}</tr></thead>
           <tbody>{groups.map((group) => <tr key={group.key}>
             <td data-label={mode === 'month' ? 'Ngày' : 'Ca'}>{mode === 'month' ? group.key.split('-').reverse().join('/') : group.shiftName || group.shiftId || 'Chưa gắn ca'}</td>
             <td data-label="Số đơn">{group.orders}</td>
-            {['NORMAL', 'SALE_KG', 'SALE_PIECE'].map((type) => <td key={type} data-label={ORDER_REVENUE_LABELS[type]}>{group.revenueByType ? money(group.revenueByType[type]) : '—'}</td>)}
+            {['NORMAL', 'SALE_KG', 'SALE_PIECE'].map((type) => <td key={type} data-label={ORDER_REVENUE_LABELS[type]}>{group.revenueByType ? money(type === 'NORMAL' ? group.revenueByType.NORMAL - (group.unclassifiedRevenue || 0) : group.revenueByType[type]) : '—'}</td>)}
+            <td data-label="Chưa phân loại">{money(group.unclassifiedRevenue || 0)}</td>
             <td data-label="Tổng doanh thu"><strong>{money(group.revenue)}</strong></td>
             <td data-label="Khối lượng">{weightTotalText(group.weight)}</td>
             {mode !== 'shift' && <td data-label="Chi tiết">{mode === 'month'
@@ -130,7 +131,7 @@ export function StoreStatisticsPage() {
           <tbody>{products.items.map((item) => <tr key={`${item.productId || item.productCode || item.productName}:${item.revenueType || 'NORMAL'}`}>
             <td data-label="Mặt hàng">{item.productName || 'Mặt hàng chưa đặt tên'}</td>
             <td data-label="Mã">{item.productCode || '—'}</td>
-            <td data-label="Loại doanh thu">{ORDER_REVENUE_LABELS[item.revenueType || 'NORMAL']}</td>
+            <td data-label="Loại doanh thu">{item.classification === 'UNCLASSIFIED' ? 'Chưa phân loại' : ORDER_REVENUE_LABELS[item.revenueType || 'NORMAL']}</td>
             <td data-label="Số đơn">{Number(item.orders || 0).toLocaleString('vi-VN')}</td>
             <td data-label="Số lượng"><strong>{Number(item.quantity || 0).toLocaleString('vi-VN')} {item.unit === 'KG' ? 'kg' : 'cái'}</strong></td>
             <td data-label="Khối lượng">{weightTotalText(item.weight)}<small className="table-note">{item.unit === 'KG' ? 'Thực bán' : 'Quy đổi ước tính'}</small></td>

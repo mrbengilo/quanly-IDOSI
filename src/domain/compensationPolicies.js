@@ -116,18 +116,30 @@ export const REVENUE_BONUS_PROGRAMS = deepFreeze({
   },
 })
 
-export function selectRevenueBonusTier({ programId, revenueVnd } = {}) {
-  const normalizedProgramId = stableId(programId, 'programId')
-  const program = REVENUE_BONUS_PROGRAMS[normalizedProgramId]
-  if (!program) throw new RangeError(`Unknown revenue bonus program: ${normalizedProgramId}`)
-  const normalizedRevenue = nonNegativeInteger(revenueVnd, 'revenueVnd')
-  return program.tiers.find((tier) => isWithinRevenueTier(normalizedRevenue, tier)) || null
+const programTiers = (programId, tiers) => {
+  const program = REVENUE_BONUS_PROGRAMS[programId]
+  if (!program) throw new RangeError(`Unknown revenue bonus program: ${programId}`)
+  if (tiers == null) return program.tiers
+  if (!Array.isArray(tiers)) throw new TypeError('tiers must be an array of resolved revenue bonus tiers.')
+  return tiers
 }
 
-export function calculateRevenueBonus({ programId, revenueVnd } = {}) {
+/**
+ * Selects the single tier for a daily revenue. `tiers` is an optional resolved,
+ * effective-dated table (see revenueBonusConfig.js); without it the legacy
+ * table of the program applies, exactly as before configuration existed.
+ */
+export function selectRevenueBonusTier({ programId, revenueVnd, tiers } = {}) {
+  const normalizedProgramId = stableId(programId, 'programId')
+  const candidates = programTiers(normalizedProgramId, tiers)
+  const normalizedRevenue = nonNegativeInteger(revenueVnd, 'revenueVnd')
+  return candidates.find((tier) => isWithinRevenueTier(normalizedRevenue, tier)) || null
+}
+
+export function calculateRevenueBonus({ programId, revenueVnd, tiers } = {}) {
   const normalizedProgramId = stableId(programId, 'programId')
   const normalizedRevenue = nonNegativeInteger(revenueVnd, 'revenueVnd')
-  const tier = selectRevenueBonusTier({ programId: normalizedProgramId, revenueVnd: normalizedRevenue })
+  const tier = selectRevenueBonusTier({ programId: normalizedProgramId, revenueVnd: normalizedRevenue, tiers })
   const rateBasisPoints = tier?.rateBasisPoints || 0
   return {
     programId: normalizedProgramId,
@@ -339,8 +351,8 @@ export const OFFICE_REWARDS = deepFreeze([
 ])
 
 export const OFFICE_VIOLATIONS = deepFreeze([
-  { code: 'office.violation.late', label: 'Đi trễ', amountVnd: 3_000 },
-  { code: 'office.violation.forgot_attendance', label: 'Quên điểm danh', amountVnd: 3_000 },
+  { code: 'office.violation.late', label: 'Đi trễ', amountVnd: 3_000, violationPoints: 0.5 },
+  { code: 'office.violation.forgot_attendance', label: 'Quên điểm danh', amountVnd: 3_000, violationPoints: 0.5 },
 ])
 
 export const HTKD_REWARDS = deepFreeze([
@@ -350,9 +362,9 @@ export const HTKD_REWARDS = deepFreeze([
 ])
 
 export const HTKD_VIOLATIONS = deepFreeze([
-  { code: 'htkd.violation.late', label: 'Đi trễ', amountVnd: 3_000 },
-  { code: 'htkd.violation.forgot_attendance', label: 'Quên điểm danh', amountVnd: 3_000 },
-  { code: 'htkd.violation.assigned_store_error_requires_admin', label: 'Cửa hàng phụ trách thao tác sai sót => kêu admin sửa', amountVnd: 5_000 },
+  { code: 'htkd.violation.late', label: 'Đi trễ', amountVnd: 3_000, violationPoints: 0.5 },
+  { code: 'htkd.violation.forgot_attendance', label: 'Quên điểm danh', amountVnd: 3_000, violationPoints: 0.5 },
+  { code: 'htkd.violation.assigned_store_error_requires_admin', label: 'Cửa hàng phụ trách thao tác sai sót => kêu admin sửa', amountVnd: 5_000, violationPoints: 0.5 },
 ])
 
 export const WORKBOOK_COMPENSATION_POLICY = deepFreeze({

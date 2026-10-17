@@ -113,6 +113,13 @@
       "when": 1789948800000,
       "tag": "0015_retire_legacy_product_names",
       "breakpoints": true
+    },
+    {
+      "idx": 16,
+      "version": "6",
+      "when": 1790812800000,
+      "tag": "0016_staff_violation_points",
+      "breakpoints": true
     }
   ]
 }

@@ -310,6 +310,43 @@ Mỗi deployment tạo backup, checksum, log, operation status và report tại:
 
 Sao chép định kỳ các backup quan trọng sang nơi lưu trữ khác. Không tự động xóa
 backup mới nhất, report cần audit hoặc previous image còn dùng để rollback.
+
+### Backup hằng ngày không dừng hệ thống
+
+Backup theo deployment chỉ có khi deploy. `deploy/vps/backup-daily.sh` tạo thêm
+một bản mỗi ngày mà **không dừng app/Caddy**:
+
+1. App đang chạy tạo snapshot SQLite nhất quán bằng `VACUUM INTO`
+   (`server/vps/online-backup.mjs`), kiểm tra `integrity_check`,
+   `foreign_key_check` và phải có state `global`.
+2. Snapshot + thư mục ảnh (`identity-images`, gồm CCCD và ảnh đại diện) được
+   đóng gói trên host theo đúng cấu trúc data volume (`./idosi.sqlite`,
+   `./identity-images/...`), nên có thể restore bằng quy trình hiện có.
+3. Ghi `idosi-daily-YYYYMMDDTHHMMSSZ.tar.gz` + `.sha256` vào `backups/daily/`
+   và chỉ giữ `IDOSI_BACKUP_KEEP_DAILY` bản mới nhất (mặc định 14). Không bao giờ
+   xóa backup deployment, report hay file ngoài `backups/daily/`.
+4. Bỏ qua nếu đang có deployment giữ lock `/tmp/idosi-production-deploy.lock`.
+
+Biến tùy chọn (đặt trong môi trường của cron, **không** commit):
+
+- `IDOSI_BACKUP_ENCRYPTION_KEY_FILE=$HOME/.idosi-backup-key` — mã hóa
+  AES-256 (`openssl enc -aes-256-cbc -pbkdf2 -iter 600000`); chỉ giữ file `.enc`.
+  Tạo khóa: `openssl rand -base64 48 > $HOME/.idosi-backup-key && chmod 600 $HOME/.idosi-backup-key`
+  và **cất một bản khóa ngoài VPS**; mất khóa là mất backup.
+  Giải mã: `openssl enc -d -aes-256-cbc -pbkdf2 -iter 600000 -pass file:KEY -in X.tar.gz.enc -out X.tar.gz`.
+- `IDOSI_BACKUP_RCLONE_REMOTE=remote:idosi-backups` — sao chép ra ngoài VPS bằng
+  `rclone` (cấu hình remote trước bằng `rclone config`). Lỗi đẩy ra ngoài làm
+  script báo lỗi nhưng bản local vẫn được giữ.
+
+Cài đặt một lần trên VPS (`crontab -e` của user deploy):
+
+```cron
+17 2 * * * IDOSI_BACKUP_ENCRYPTION_KEY_FILE=/home/<user-deploy>/.idosi-backup-key bash /opt/idosi/deploy/vps/backup-daily.sh >> /opt/idosi/deploy/vps/backups/daily/backup.log 2>&1
+```
+
+Chạy thử thủ công lần đầu và kiểm tra: `bash /opt/idosi/deploy/vps/backup-daily.sh`,
+sau đó `sha256sum -c backups/daily/<file>.sha256`. Định kỳ hằng tháng thử restore
+một bản vào máy khác để chắc chắn backup dùng được.
 Giữ cả static volume của current release và rollback release; đây là artifact
 không chứa dữ liệu người dùng và có thể tái tạo từ exact image, nhưng không được
 xóa khi còn là rollback point.

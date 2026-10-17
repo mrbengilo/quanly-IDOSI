@@ -1,3 +1,4 @@
+import { taskIsAttendanceShiftObligation } from '../domain/taskProgress'
 /* eslint-disable react-refresh/only-export-components */
 import { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react'
 import {
@@ -270,6 +271,8 @@ const revenueBonusView = (dailyRecords = [], allocationRecords = []) => {
     }
   })
 }
+
+export const REMOTE_POLL_INTERVAL_MS = 30_000
 
 const REMOTE_ARRAY_KEYS = [
   'supportRoster', 'scheduleBusy', 'violationPointSummaries',
@@ -839,8 +842,11 @@ export const storeTasksForAttendance = ({
       attendance,
       checklistAttendanceId,
     )) return false
-    const taskShiftId = String(task.shiftId || task.shift || '')
-    if (taskShiftId && !operationalIdentifierReferenceMatchesRecord(shiftRecords, scopedShift, taskShiftId)) return false
+    if (!taskIsAttendanceShiftObligation({
+      task,
+      attendance,
+      matchesAttendanceShift: (taskShiftId) => operationalIdentifierReferenceMatchesRecord(shiftRecords, scopedShift, taskShiftId),
+    })) return false
     const assignmentId = String(task.assignmentId || task.taskAssignmentId || '').trim()
     if (assignmentId && taskAssignmentHistory.length) {
       const assignmentMatch = resolveRecordIdentifier(
@@ -1074,6 +1080,9 @@ const hydrateRemoteState = (remoteState, remoteUser, policyRecords = [], preferr
   const hydrated = migrateDomainState(normalized, { stores, imports: normalized.imports })
   return {
     ...hydrated,
+    // A screen projection may omit migration markers. Never append demo seeds
+    // to an authoritative server catalog while hydrating production data.
+    workCatalogItems: safeRemote.workCatalogItems,
     session,
     activeStoreId: resolveRemoteActiveStoreId({
       stores: hydrated.stores,
@@ -1584,7 +1593,7 @@ const remoteCommandResultPatches = (type, result) => {
     add('supportSchedulePresetHistory', result.history)
   } else if (type.startsWith('support_schedule.')) add('supportWorkSchedules', result.schedule || result.schedules)
   if (type === 'task.done' || type === 'task.set_done') add('tasks', result.task)
-  if (type === 'task.progress.save') {
+  if (type === 'task.progress.save' || type === 'task.shift.select') {
     add('tasks', result.tasks)
     add('attendance', result.attendance)
   }
@@ -1623,6 +1632,11 @@ const employeePrefixForStore = (store = {}) => {
         : ''
   return brand && branch && !branch.startsWith(`${brand}-`) ? `${brand}-${branch}` : branch
 }
+
+// A revoked/expired session or a disabled account (for example an employee
+// marked "Đã nghỉ làm") must end the workspace instead of leaving stale data.
+const isRemoteSessionInvalid = (error) => Number(error?.status) === 401
+  || ['SESSION_INVALID', 'SESSION_REQUIRED', 'AUTH_REQUIRED'].includes(String(error?.code || ''))
 
 const MAX_VISITED_PROJECTION_CACHE_ENTRIES = 40
 const ACCOUNT_DIRECTORY_SCREENS = new Set(['employees', 'business-support', 'store-managers', 'office'])
@@ -2157,6 +2171,8 @@ export function AppProvider({ children }) {
 
   const runRemoteDomainCommand = async (type, payload, idempotencyKey = `${type}:${crypto.randomUUID()}`) => {
     const remote = apiRef.current
+    const partialTaskResult = type === 'task.shift.select' || type === 'task.progress.save'
+    const previousProjectionVersion = Number(remote.hydratedVersion || 0)
     cancelPrefetch(remote)
     const reconcileProjection = ({ blocking = false } = {}) => loadCompleteRemoteProjection(remote.user, {
       kind: remote.projection === 'store' ? 'store' : 'global',
@@ -2182,6 +2198,8 @@ export function AppProvider({ children }) {
           if (type === 'employee.delete' && result.employee) {
             const deletedId = remoteResultRecordId(result.employee)
             next.employees = (current.employees || []).filter((record) => remoteResultRecordId(record) !== deletedId)
+            next.stores = countStoreEmployees(current.stores, next.employees)
+            next.schedule = (current.schedule || []).filter((record) => String(record.employeeId) !== deletedId)
           }
           if (type === 'store.delete' && result.store) {
             const deletedId = remoteResultRecordId(result.store)
@@ -2197,7 +2215,9 @@ export function AppProvider({ children }) {
             storeId: remote.projectionStoreId,
             screen: remote.projectionScreen,
             period: remote.projectionPeriod,
-          }, next, remote.version)
+          // Task deltas omit assignment history. Until the authoritative read
+          // finishes, reload/navigation must treat this cached copy as stale.
+          }, next, partialTaskResult ? previousProjectionVersion : remote.version)
           return next
         })
       }
@@ -2214,9 +2234,13 @@ export function AppProvider({ children }) {
         }).finally(() => {
           currentRemote.domainReconciliations = Math.max(0, currentRemote.domainReconciliations - 1)
         })
-      }, remote.projection === 'store' ? 1_500 : 15_000)
+      }, partialTaskResult ? 0 : remote.projection === 'store' ? 1_500 : 15_000)
       return result
     } catch (error) {
+      if (isRemoteSessionInvalid(error)) {
+        apiRef.current.expireSession?.()
+        throw error
+      }
       if (error.code === 'VERSION_CONFLICT') {
         try {
           await reconcileProjection({ blocking: true })
@@ -2421,15 +2445,20 @@ export function AppProvider({ children }) {
           latest.state.employees = mergeEmployeeAuthUsers(latest.state.employees, users.users)
         }
         if (active) activateRemotePayload(latest, latest.user || remote.user, activeStoreIdRef.current)
-      } catch {
-        // Polling is best-effort; the next interval or a foreground action will retry.
+      } catch (error) {
+        // Polling is best-effort; the next interval or a foreground action will
+        // retry. A revoked session is final and returns the user to login.
+        if (active && isRemoteSessionInvalid(error)) apiRef.current.expireSession?.()
       } finally {
         busy = false
         if (active && pendingForce && (typeof document === 'undefined' || !document.hidden)) void refresh()
       }
     }
-    const supportScreen = ['overview', 'employee-home', 'employee-attendance', 'employee-schedule', 'schedule', 'support-transfers'].includes(remote.projectionScreen)
-    const timer = window.setInterval(refresh, supportScreen ? 5_000 : 30_000)
+    // Every open client polls; a 5s cadence on busy screens made each state
+    // change trigger heavy screen reloads from all clients and saturated the
+    // single VPS runtime. Commands, tab focus and shift boundaries still
+    // refresh immediately.
+    const timer = window.setInterval(refresh, REMOTE_POLL_INTERVAL_MS)
     let boundaryTimer = null
     if (['store_manager', 'employee'].includes(role)) {
       // Load scheduling rules only inside the authenticated workspace.
@@ -2718,6 +2747,16 @@ export function AppProvider({ children }) {
   }
 
   const quickLogin = () => null
+
+  const expireRemoteSession = () => {
+    if (!apiRef.current.enabled) return
+    clearApiSession()
+    logout()
+    notify('Phiên đăng nhập không còn hiệu lực hoặc tài khoản đã bị khóa. Vui lòng đăng nhập lại.', 'info')
+  }
+  useEffect(() => {
+    apiRef.current.expireSession = expireRemoteSession
+  })
 
   const logout = () => {
     const wasRemote = apiRef.current.enabled
@@ -3013,6 +3052,15 @@ export function AppProvider({ children }) {
       return { ok: false, message: 'Quản lý cửa hàng chỉ được cập nhật nhân viên thuộc cửa hàng được phân công.' }
     }
     if (payload.phone !== undefined && !isValidEmployeePhone(payload.phone)) return { ok: false, message: 'Số điện thoại phải gồm đúng 10 số và bắt đầu bằng số 0.' }
+    if (payload.status !== undefined) {
+      // Mirror of the server rule (the server remains authoritative). Loaded
+      // on demand so the login bundle stays within its budget.
+      const { employeeStatusChangePermission } = await import('../domain/employeeStatus')
+      const statusPermission = employeeStatusChangePermission({
+        actorRole, unit: previous.unit || previous.unitType, from: previous.status, to: payload.status,
+      })
+      if (!statusPermission.ok) return { ok: false, code: statusPermission.code, message: statusPermission.message }
+    }
     let authVersion = previous.authVersion
     if (apiRef.current.enabled) {
       try {
@@ -3054,38 +3102,14 @@ export function AppProvider({ children }) {
   }
 
   const deleteEmployee = async (id) => {
-    if (state.session?.role !== 'admin') {
-      notify('Chỉ Admin được xóa nhân viên khỏi hệ thống.', 'info')
-      return false
-    }
-    const previous = state.employees.find((employee) => accountKey(employee) === String(id))
-    if (!previous) return false
-    const deletedAuthVersion = previous.authVersion
-    if (apiRef.current.enabled) {
-      try {
-        const result = await runRemoteDomainCommand('employee.delete', { employeeId: id })
-        notify('Đã xóa nhân viên.', 'info')
-        return { ok: true, employee: result.employee }
-      } catch (error) {
-        notify(error.message || 'Không thể vô hiệu hóa tài khoản nhân viên.', 'info')
-        return { ok: false, message: error.message }
-      }
-    }
-    setState((current) => {
-      const employees = current.employees.filter((employee) => accountKey(employee) !== String(id))
-      const timestamp = new Date().toISOString()
-      const actor = actorSnapshot(current.session)
-      return {
-        ...current,
-        employees,
-        stores: countStoreEmployees(current.stores, employees),
-        schedule: current.schedule.filter((item) => item.employeeId !== id),
-        deletedEmployees: [{ ...previous, authVersion: deletedAuthVersion, password: undefined, deletedAt: timestamp, deletedBy: actor }, ...current.deletedEmployees],
-        auditLogs: [{ id: uid('AUD'), entity: 'employee', entityId: id, action: 'delete', before: { ...previous, password: undefined }, after: null, actor, createdAt: timestamp }, ...current.auditLogs],
-      }
+    const { deleteEmployeeProfile } = await import('./employeeDeletion')
+    return deleteEmployeeProfile({
+      id,
+      previous: state.employees.find((employee) => accountKey(employee) === String(id)),
+      actorRole: normalizeAuthRole(state.session?.role),
+      remote: apiRef.current.enabled,
+      runRemoteDomainCommand, setState, notify, actorSnapshot, countStoreEmployees,
     })
-    notify('Đã xóa nhân viên.', 'info')
-    return true
   }
 
   const addBusinessSupport = (payload = {}) => addEmployee({
@@ -3334,174 +3358,36 @@ export function AppProvider({ children }) {
     return { ok: true, expense }
   }
 
+  // Authoritative re-read used when a command outcome is unknown (timeout or
+  // lost connection): the UI must reflect the server, never assume either way.
+  const refreshRemoteProjection = async () => {
+    const remote = apiRef.current
+    if (!remote.enabled) return
+    await loadCompleteRemoteProjection(remote.user, {
+      kind: remote.projection === 'store' ? 'store' : 'global',
+      storeId: remote.projectionStoreId,
+      screen: remote.projectionScreen,
+      period: remote.projectionPeriod,
+      preferredActiveStoreId: activeStoreIdRef.current,
+      force: true,
+      blocking: true,
+    })
+  }
+
+  const selectTaskShift = async (payload = {}) => {
+    const { selectTaskShiftForState } = await import('./storeTaskProgress')
+    return selectTaskShiftForState(payload, {
+      remoteEnabled: apiRef.current.enabled,
+      state, notify, setState, runRemoteDomainCommand, refreshRemoteProjection, resolveEmployeeIdentifier, normalizeAuthRole, isOfficeUnit, isBusinessSupportUnit, isStoreManagerUnit, accountKey, resolveOpenAttendanceIdentifier, actorSnapshot,
+    })
+  }
+
   const saveStoreTaskProgress = async (payload = {}) => {
-    const employeeId = String(state.session?.employeeId || state.session?.code || '')
-    const employeeMatch = resolveEmployeeIdentifier(state.employees, employeeId)
-    if (employeeMatch.ambiguous) {
-      return { ok: false, code: 'EMPLOYEE_IDENTIFIER_COLLISION', message: 'Không thể xác định nhân viên vì có mã trùng nhau khi không phân biệt chữ hoa/thường.' }
-    }
-    const employee = employeeMatch.record
-    const role = normalizeAuthRole(state.session?.role)
-    const employeeUnit = String(employee?.unit || employee?.unitType || employee?.department || '').trim()
-    if (role !== 'employee' || !employee || isOfficeUnit(employeeUnit) || isBusinessSupportUnit(employeeUnit) || isStoreManagerUnit(employeeUnit)) {
-      return { ok: false, message: 'Chức năng này chỉ dành cho nhân viên cửa hàng.' }
-    }
-    const attendanceId = String(payload.attendanceId || '')
-    const attendanceMatch = resolveOpenAttendanceIdentifier(state.attendance, {
-      employeeId: accountKey(employee),
-      attendanceId,
+    const { saveStoreTaskProgressForState } = await import('./storeTaskProgress')
+    return saveStoreTaskProgressForState(payload, {
+      remoteEnabled: apiRef.current.enabled,
+      state, notify, setState, runRemoteDomainCommand, resolveEmployeeIdentifier, normalizeAuthRole, isOfficeUnit, isBusinessSupportUnit, isStoreManagerUnit, accountKey, resolveOpenAttendanceIdentifier, storeTasksForAttendance, normalizedIdentifier, sameIdentifier, withCanonicalIdentifierEntry, actorSnapshot,
     })
-    if (attendanceMatch.ambiguous) {
-      return { ok: false, code: 'ATTENDANCE_IDENTIFIER_COLLISION', message: 'Không thể xác định ca đang mở vì có mã chấm công trùng nhau khi không phân biệt chữ hoa/thường.' }
-    }
-    const openAttendance = attendanceMatch.record
-    if (!openAttendance) return { ok: false, message: 'Bạn cần điểm danh và đang trong ca để lưu kết quả công việc.' }
-    const storeId = String(openAttendance.storeId || employee.storeId || '')
-    const date = String(openAttendance.date || openAttendance.workDate || '').slice(0, 10)
-    const shiftId = String(openAttendance.shiftId || openAttendance.shift || '')
-    const scopedTasks = storeTasksForAttendance({
-      tasks: state.tasks,
-      attendance: openAttendance,
-      attendanceRecords: state.attendance,
-      employeeId,
-      employees: state.employees,
-      stores: state.stores,
-      shiftDefinitions: state.shiftDefinitions,
-      taskAssignmentHistory: state.taskAssignmentHistory,
-    })
-    if (!scopedTasks.length) return { ok: false, message: 'Ca đang làm chưa có công việc được giao.' }
-    if (scopedTasks.some((task) => operationalIdentifierEntry(task.completedBy, employeeId).ambiguous)) {
-      return { ok: false, code: 'TASK_COMPLETION_IDENTIFIER_COLLISION', message: 'Không thể lưu kết quả vì trạng thái hoàn thành có mã nhân viên trùng nhau khi không phân biệt chữ hoa/thường.' }
-    }
-    const statuses = Array.isArray(payload.tasks) ? payload.tasks : []
-    const submitted = new Map()
-    const taskIdByKey = new Map(scopedTasks.map((task) => [normalizedIdentifier(task.id), String(task.id || '')]))
-    if (taskIdByKey.size !== scopedTasks.length) {
-      return { ok: false, code: 'TASK_IDENTIFIER_COLLISION', message: 'Không thể lưu kết quả vì danh sách công việc có mã trùng nhau khi không phân biệt chữ hoa/thường.' }
-    }
-    const taskIds = new Set(taskIdByKey.keys())
-    for (const item of statuses) {
-      const taskId = String(item?.id || item?.taskId || '')
-      const taskKey = normalizedIdentifier(taskId)
-      if (!taskIds.has(taskKey) || submitted.has(taskKey) || typeof item?.completed !== 'boolean') {
-        return { ok: false, message: 'Danh sách kết quả có công việc không hợp lệ hoặc không thuộc ca đang làm.' }
-      }
-      submitted.set(taskKey, item.completed)
-    }
-    if (submitted.size !== taskIds.size) return { ok: false, message: 'Cần gửi trạng thái của đầy đủ công việc được giao trong ca.' }
-    const incompleteReason = String(payload.incompleteReason || payload.note || '').trim()
-    const requiredTaskIds = new Set(scopedTasks.filter((task) => task.required !== false).map((task) => normalizedIdentifier(task.id)))
-    const incompleteTaskIds = [...submitted]
-      .filter(([taskId, completed]) => requiredTaskIds.has(taskId) && !completed)
-      .map(([taskId]) => taskId)
-    if (incompleteReason.length > 1_000) return { ok: false, message: 'Ghi chú chưa hoàn thành không được vượt quá 1.000 ký tự.' }
-    if (incompleteTaskIds.length && !incompleteReason) return { ok: false, message: 'Cần nhập ghi chú khi chưa hoàn thành công việc cố định.' }
-    const idempotencyKey = String(payload.idempotencyKey || `task-progress:${crypto.randomUUID()}`)
-    if (apiRef.current.enabled) {
-      try {
-        const result = await runRemoteDomainCommand('task.progress.save', {
-          attendanceId: openAttendance.id,
-          tasks: [...submitted].map(([id, completed]) => ({ id: taskIdByKey.get(id) || id, completed })),
-          incompleteReason,
-        }, idempotencyKey)
-        notify(`Đã lưu kết quả: hoàn thành ${result.completionRate || 0}%.`)
-        return { ok: true, ...result }
-      } catch (error) {
-        notify(error.message || 'Không thể lưu kết quả công việc.', 'info')
-        return { ok: false, message: error.message }
-      }
-    }
-    const normalizedStatuses = [...submitted].sort(([left], [right]) => left.localeCompare(right))
-    const fingerprint = JSON.stringify({ attendanceId: openAttendance.id, tasks: normalizedStatuses, incompleteReason })
-    const existing = state.taskAssignmentHistory.flatMap((assignment) => assignment.progressHistory || [])
-      .find((event) => sameIdentifier(event.employeeId, employeeId) && String(event.fingerprint || '') === fingerprint)
-    const mandatoryProgress = (items = scopedTasks) => {
-      const mandatoryIds = items
-        .filter((task) => task.required !== false)
-        .map((task) => normalizedIdentifier(task.id))
-      const totalTasks = mandatoryIds.length
-      const completedTasks = mandatoryIds.filter((taskId) => submitted.get(taskId) === true).length
-      return {
-        completedTasks,
-        totalTasks,
-        completionRate: totalTasks ? Math.round((completedTasks / totalTasks) * 100) : 0,
-      }
-    }
-    const { completedTasks, totalTasks, completionRate } = mandatoryProgress()
-    if (existing) return { ok: true, existing: true, completedTasks, totalTasks, completionRate, submittedAt: existing.at }
-    const timestamp = new Date().toISOString()
-    const assignmentIds = [...new Set(scopedTasks.map((task) => String(task.assignmentId || '')).filter(Boolean))]
-    const assignmentKeys = new Set(assignmentIds.map(normalizedIdentifier))
-    if (assignmentKeys.size !== assignmentIds.length) {
-      return { ok: false, code: 'TASK_ASSIGNMENT_IDENTIFIER_COLLISION', message: 'Không thể lưu kết quả vì lượt giao việc có mã trùng nhau khi không phân biệt chữ hoa/thường.' }
-    }
-    const submittedByExactTaskId = new Map(scopedTasks.map((task) => [
-      String(task.id || ''),
-      submitted.get(normalizedIdentifier(task.id)),
-    ]))
-    const assignmentSummaries = (assignmentIds.length ? assignmentIds : ['']).map((assignmentId) => {
-      const scopedAssignmentTasks = scopedTasks
-        .filter((task) => !assignmentId || sameIdentifier(task.assignmentId, assignmentId))
-      const progress = mandatoryProgress(scopedAssignmentTasks)
-      return {
-        assignmentId,
-        ...progress,
-      }
-    })
-    setState((current) => ({
-      ...current,
-      tasks: current.tasks.map((task) => submittedByExactTaskId.has(String(task.id || '')) ? {
-        ...task,
-        completedBy: withCanonicalIdentifierEntry(task.completedBy, employeeId, submittedByExactTaskId.get(String(task.id || ''))),
-        completionHistory: [...(task.completionHistory || []), { done: submittedByExactTaskId.get(String(task.id || '')), at: timestamp, employeeId, actor: actorSnapshot(current.session) }],
-        updatedAt: timestamp,
-      } : task),
-      taskAssignmentHistory: current.taskAssignmentHistory.map((assignment) => {
-        const assignmentId = String(assignment.assignmentId || assignment.id || '')
-        if (!assignmentIds.some((reference) => operationalIdentifierReferenceMatchesRecord(
-          current.taskAssignmentHistory,
-          assignment,
-          reference,
-          (record) => record.assignmentId || record.id,
-        ))) return assignment
-        const assignmentProgress = mandatoryProgress(scopedTasks.filter((task) => String(task.assignmentId || '') === assignmentId))
-        const assignmentCompleted = assignmentProgress.completedTasks
-        const assignmentTotal = assignmentProgress.totalTasks
-        const assignmentRate = assignmentProgress.completionRate
-        const requiredComplete = assignmentTotal === 0 || assignmentCompleted === assignmentTotal
-        const event = { action: 'progress-submitted', employeeId, employeeName: employee.name || employeeId, attendanceId: openAttendance.id, storeId, date, shiftId, assignmentId, completedTasks: assignmentCompleted, totalTasks: assignmentTotal, completionRate: assignmentRate, incompleteReason: requiredComplete ? '' : incompleteReason, fingerprint, at: timestamp, actor: actorSnapshot(current.session) }
-        return {
-          ...assignment,
-          status: requiredComplete ? 'completed' : 'incomplete',
-          completionRate: assignmentRate,
-          completedTasks: assignmentCompleted,
-          totalTasks: assignmentTotal,
-          incompleteReason: requiredComplete ? '' : incompleteReason,
-          progressHistory: [...(assignment.progressHistory || []), event],
-          updatedAt: timestamp,
-        }
-      }),
-      notifications: assignmentSummaries.flatMap((summary) => (
-        ['admin', 'business_support', 'store_manager'].map((targetRole) => ({
-          id: uid('NTF'),
-          type: 'store-task-progress-submitted',
-          targetRole,
-          storeId,
-          employeeId,
-          attendanceId: openAttendance.id,
-          assignmentId: summary.assignmentId || null,
-          route: `/store/tasks${summary.assignmentId ? `?assignment=${encodeURIComponent(summary.assignmentId)}` : ''}`,
-          title: `${employee.name || employeeId} đã gửi kết quả công việc`,
-          message: `Hoàn thành ${summary.completedTasks}/${summary.totalTasks} công việc (${summary.completionRate}%).`,
-          createdAt: timestamp,
-          readAt: null,
-        }))
-      )).concat(current.notifications || []),
-      auditLogs: [{ id: uid('AUD'), entity: 'task-progress', entityId: `${openAttendance.id}:${employeeId}`, action: 'submit', before: null, after: normalizedStatuses, actor: actorSnapshot(current.session), createdAt: timestamp }, ...current.auditLogs],
-      stateVersion: current.stateVersion + 1,
-    }))
-    notify(`Đã lưu kết quả: hoàn thành ${completionRate}%.`)
-    return { ok: true, completedTasks, totalTasks, completionRate, incompleteReason, submittedAt: timestamp }
   }
 
   const replaceTasks = async (input) => {
@@ -3905,6 +3791,7 @@ export function AppProvider({ children }) {
       start,
       end,
       shiftName: partTime ? String(payload.shiftName || '').trim() : (String(payload.shiftName || '').trim() || 'Làm việc Full-Time'),
+      workMode: payload.workMode,
       note: String(payload.note || '').trim(),
     }
     if (partTime && !commandPayload.shiftName) return { ok: false, message: 'Cần nhập tên ca làm việc.' }
@@ -3941,6 +3828,7 @@ export function AppProvider({ children }) {
       targetUnit,
       employmentType,
       ...commandPayload,
+      workMode: commandPayload.workMode || previous?.workMode || '',
       version: Number(previous?.version || 0) + 1,
       createdAt: previous?.createdAt || timestamp,
       updatedAt: timestamp,
@@ -4103,11 +3991,12 @@ export function AppProvider({ children }) {
         // the cleanup response is emitted before the mutation executes.
         const remote = apiRef.current
         let result
+        let expectedVersion = remote.version
+        let rebasedOnNewerVersion = false
         for (let versionAttempt = 0; versionAttempt < 2; versionAttempt += 1) {
           // A VERSION_CONFLICT represents a different mutation attempt because
           // expectedVersion is part of the request contract. Cleanup retries,
           // on the other hand, must keep the exact same key and payload.
-          const expectedVersion = remote.version
           const idempotencyKey = `account_settings.update:${crypto.randomUUID()}`
           try {
             for (let cleanupAttempt = 0; cleanupAttempt < 3; cleanupAttempt += 1) {
@@ -4125,8 +4014,12 @@ export function AppProvider({ children }) {
           } catch (error) {
             if (error?.code !== 'VERSION_CONFLICT' || versionAttempt === 1) throw error
             try {
-              const latest = await apiGetState('global')
-              activateRemotePayload(latest, latest.user || remote.user, activeStoreIdRef.current)
+              // Only the current version is needed to retry this person's own
+              // settings. Downloading the whole global state here cost an Admin
+              // tens of MB; the regular metadata poll refreshes other screens.
+              const metadata = await apiGetStateMetadata('global')
+              expectedVersion = Number(metadata.version || 0)
+              rebasedOnNewerVersion = true
             } catch {
               const refreshError = new Error('Dữ liệu tài khoản vừa thay đổi nhưng không thể tải bản mới nhất. Ảnh và thông tin cũ vẫn được giữ nguyên; vui lòng thử lại.')
               refreshError.code = 'VERSION_CONFLICT'
@@ -4135,7 +4028,11 @@ export function AppProvider({ children }) {
           }
         }
         remote.version = Math.max(Number(remote.version || 0), Number(result.version || 0))
-        remote.hydratedVersion = Math.max(Number(remote.hydratedVersion || 0), Number(result.version || 0))
+        // After a rebase other people's intermediate changes are not rendered
+        // yet; keep hydratedVersion behind so the next poll downloads them.
+        if (!rebasedOnNewerVersion) {
+          remote.hydratedVersion = Math.max(Number(remote.hydratedVersion || 0), Number(result.version || 0))
+        }
         const remoteSettings = result.settings || {}
         const avatarMetadata = accountAvatarMetadata(remoteSettings.avatar)
         const avatarWasChanged = payload.avatar !== undefined
@@ -4807,8 +4704,11 @@ export function AppProvider({ children }) {
           })
         } catch (error) {
           if (error.code !== 'VERSION_CONFLICT') throw error
-          const latest = await apiGetState('global')
-          remote.policyVersions = Object.fromEntries((latest.policies || []).map((policy) => [policy.key, Number(policy.version || 0)]))
+          // Policy versions come from the lightweight metadata endpoint; the full
+          // global state is not needed to retry a policy save.
+          const metadata = await apiGetStateMetadata('global')
+          remote.policyVersions = Object.fromEntries(Object.entries(metadata.policyVersions || {})
+            .map(([key, version]) => [key, Number(version || 0)]))
           result = await apiCommand('policies.set', { updates: makeUpdates() }, {
             idempotencyKey: `policies-retry:${crypto.randomUUID()}`,
           })
@@ -5208,6 +5108,18 @@ export function AppProvider({ children }) {
       'revenue_bonus.restore_employee',
       payload,
       payload.idempotencyKey || `revenue-bonus-restore:${crypto.randomUUID()}`,
+    )
+  }
+
+  // Admin-only, server-validated table change. One idempotency key per Save
+  // click; the caller decides what to do on conflict instead of retrying.
+  const saveRevenueBonusConfig = async (payload = {}) => {
+    requireRevenueBonusAdmin()
+    const { idempotencyKey, ...command } = payload
+    return runRemoteDomainCommand(
+      'revenue_bonus_config.save',
+      command,
+      idempotencyKey || `revenue-bonus-config:${crypto.randomUUID()}`,
     )
   }
 
@@ -6874,6 +6786,7 @@ export function AppProvider({ children }) {
     setTaskDone,
     addShiftExpense,
     saveStoreTaskProgress,
+    selectTaskShift,
     replaceTasks,
     assignSupportWork,
     updateSupportWork,
@@ -6916,6 +6829,7 @@ export function AppProvider({ children }) {
     restoreRevenueBonusOverride,
     resolveRevenueBonusDailyCollision,
     calculateRevenueBonusDay,
+    saveRevenueBonusConfig,
     approveRevenueBonusMilestone,
     rejectRevenueBonusMilestone,
     addSalaryAdjustment,

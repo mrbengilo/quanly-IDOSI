@@ -101,6 +101,56 @@ export const findProductOption = (options, productId, { includeInactive = true }
     .find((option) => String(option.id) === requestedId) || null
 }
 
+const productIdentityOf = (option) => ({
+  id: String(option.id),
+  code: String(option.code || ''),
+  label: option.label,
+})
+
+/**
+ * Orders keep the product exactly as it was sold, so a snapshot can point at an
+ * option that has since been renamed, retired, or superseded by another entry.
+ * This resolver maps such a snapshot back to the entry the catalog uses today,
+ * which is what keeps aggregation and exported identities agreeing with each
+ * other after a catalog change. It reads only catalog data — no hard-coded name.
+ */
+export const productIdentityResolver = (options) => {
+  const catalog = productOptions(options, { includeInactive: true })
+  const byId = new Map(catalog.map((option) => [String(option.id), option]))
+  const byCode = new Map()
+  const byLabel = new Map()
+  for (const option of catalog) {
+    // An active entry owns its code and label; a retired one only fills a gap, so
+    // a code that was handed out twice can never hide the entry using it now.
+    if (option.code && (option.active || !byCode.has(option.code))) byCode.set(option.code, option)
+    if (option.active || !byLabel.has(option.normalizedLabel)) byLabel.set(option.normalizedLabel, option)
+  }
+  const follow = (option) => {
+    const visited = new Set()
+    let current = option
+    while (current?.supersededBy && !visited.has(String(current.id))) {
+      visited.add(String(current.id))
+      const next = byId.get(String(current.supersededBy))
+      if (!next || next === current) break
+      current = next
+    }
+    return current
+  }
+  return (item = {}) => {
+    const label = normalizeOrderInformationLabel(item?.productName)
+    // `normalizeOrderItems` already rewrites a retired product name to the name in
+    // use today, so an ACTIVE entry carrying that name is the current identity.
+    // This also covers a snapshot id whose name has since moved to another entry.
+    const named = label ? byLabel.get(label) : null
+    if (named?.active) return productIdentityOf(named)
+    const snapshot = byId.get(String(item?.productId || '').trim())
+      || byCode.get(String(item?.productCode || '').trim().toUpperCase())
+      || named
+    const resolved = follow(snapshot)
+    return resolved ? productIdentityOf(resolved) : null
+  }
+}
+
 export const occupationValueAllowed = ({ options, value, previousValue = '', allowUnchangedInactive = false } = {}) => {
   const option = findOccupationOption(options, value, { includeInactive: true })
   const normalizedPreviousValue = normalizeOrderInformationLabel(previousValue)

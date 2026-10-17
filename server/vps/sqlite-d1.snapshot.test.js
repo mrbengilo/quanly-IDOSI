@@ -5,7 +5,7 @@ import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { resolve } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
-import { createSqliteD1, runWithSqliteMetrics } from './sqlite-d1.mjs'
+import { createSqliteD1, runWithSqliteMetrics, sqlStatementLabel } from './sqlite-d1.mjs'
 
 const temporaryDirectories = []
 const timestamp = '2026-08-31T08:00:00.000Z'
@@ -121,9 +121,36 @@ describe('SQLite state snapshots', () => {
           },
         ],
       })
-      expect(metrics).toMatchObject({ statements: 1, reads: 1, writes: 0, batches: 0 })
+      expect(metrics).toMatchObject({
+        statements: 1,
+        reads: 1,
+        writes: 0,
+        batches: 0,
+        maxStatement: 'readStateSnapshot',
+      })
       expect(metrics.totalMs).toBeGreaterThanOrEqual(0)
       expect(metrics.maxMs).toBeGreaterThanOrEqual(0)
+    } finally {
+      database.close()
+    }
+  })
+
+  it('names the slowest prepared statement by bounded SQL text without its bindings', async () => {
+    const { database } = await createSnapshotDatabase()
+    const metrics = emptyMetrics()
+    try {
+      await runWithSqliteMetrics(metrics, () => database.prepare(`
+        SELECT collection_key
+        FROM state_entities
+        WHERE scope_key = ?   AND entity_key = ?
+      `).bind('global', 'private-binding-value').all())
+
+      expect(metrics.statements).toBe(1)
+      expect(metrics.maxStatement).toBe(
+        'SELECT collection_key FROM state_entities WHERE scope_key = ? AND entity_key = ?',
+      )
+      expect(metrics.maxStatement).not.toContain('private-binding-value')
+      expect(sqlStatementLabel(`SELECT ${'x, '.repeat(200)}1`)).toHaveLength(160)
     } finally {
       database.close()
     }

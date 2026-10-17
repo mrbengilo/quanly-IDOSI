@@ -43,6 +43,11 @@ import {
   calculateAutomaticRevenueBonusPeriod,
 } from '../../domain/automaticRevenueBonus'
 import { classifyStorePayrollPolicy, STORE_PAYROLL_POLICY } from '../../domain/storeTieredPayroll'
+import {
+  describeRevenueBonusTierRange,
+  formatRatePercent,
+  REVENUE_BONUS_CONFIG_SOURCE,
+} from '../../domain/revenueBonusConfig'
 import { apiGetRevenueBonusLive, apiGetRevenueBonusPeriod } from '../../services/idosiApi'
 import { revenueBonusHistoryProjection, revenueBonusStatistics } from './compensationStatistics'
 import {
@@ -146,7 +151,8 @@ const buildLocalLiveSnapshot = ({ app, storeId, selectedDate, programId, milesto
     employees: Array.isArray(app.employees) ? app.employees : [],
     supportTransfers: Array.isArray(app.supportTransfers) ? app.supportTransfers : [],
     overrides: Array.isArray(app.revenueBonusOverrides) ? app.revenueBonusOverrides : [],
-      violations: Array.isArray(app.violations) ? app.violations : [],
+    violations: Array.isArray(app.violations) ? app.violations : [],
+    revenueBonusConfigs: app.revenueBonusConfigs,
     nowMs,
   })
 )
@@ -182,13 +188,6 @@ const formatWorkedHours = (hours) => {
   const minutes = Math.round((normalized - wholeHours) * 60)
   if (minutes === 60) return `${wholeHours + 1} giờ 00 phút`
   return `${wholeHours} giờ ${String(minutes).padStart(2, '0')} phút`
-}
-
-const revenueTierLabel = (tier) => {
-  const minimum = tier.minimumInclusive ? '≥' : '>'
-  if (tier.maximumRevenueVnd == null) return `${minimum} ${tier.minimumRevenueVnd.toLocaleString('vi-VN')} đ`
-  const maximum = tier.maximumInclusive ? '≤' : '<'
-  return `${minimum} ${tier.minimumRevenueVnd.toLocaleString('vi-VN')} – ${maximum} ${tier.maximumRevenueVnd.toLocaleString('vi-VN')} đ`
 }
 
 const displayMonth = (month) => {
@@ -419,6 +418,7 @@ export function RevenueBonusPage({ storeScoped = false }) {
             supportTransfers: app.supportTransfers,
             revenueBonusOverrides: app.revenueBonusOverrides,
             violations: app.violations,
+            revenueBonusConfigs: app.revenueBonusConfigs,
           },
           storeId: selectedStoreId,
           selectedDate: businessDate,
@@ -431,6 +431,7 @@ export function RevenueBonusPage({ storeScoped = false }) {
     app.attendance,
     app.employees,
     app.orders,
+    app.revenueBonusConfigs,
     app.revenueBonusOverrides,
     app.violations,
     app.supportTransfers,
@@ -523,10 +524,17 @@ export function RevenueBonusPage({ storeScoped = false }) {
   const adminAdjustmentTotal = automaticMode ? Number(liveSnapshot?.adminAdjustmentVnd || 0) : 0
   const excludedSupportShareTotal = automaticMode ? Number(liveSnapshot?.excludedSupportShareVnd || 0) : 0
   const allocationTotal = allocations.reduce((sum, allocation) => sum + allocationAmount(allocation), 0)
+  // The table of the selected business date comes from the server snapshot
+  // (finalized days keep the one they were paid with); never a UI formula.
+  const appliedRevenueConfig = (automaticMode ? liveSnapshot?.revenueBonusConfig : records[0]?.revenueBonusConfig) || null
+  const appliedRevenueTiers = Array.isArray(appliedRevenueConfig?.tiers) && appliedRevenueConfig.tiers.length
+    ? appliedRevenueConfig.tiers
+    : revenueProgram?.tiers || []
   const currentRevenueTier = revenueProgram && (!automaticMode || liveSnapshot?.status === 'FINALIZED')
     ? selectRevenueBonusTier({
-        programId: revenueProgram.id,
+        programId: appliedRevenueConfig?.programId || revenueProgram.id,
         revenueVnd: Math.max(0, Math.trunc(revenueTotal)),
+        tiers: appliedRevenueTiers,
       })
     : null
   const storeAttendance = (app.attendance || []).filter((attendance) => (
@@ -605,12 +613,14 @@ export function RevenueBonusPage({ storeScoped = false }) {
       supportTransfers: Array.isArray(app.supportTransfers) ? app.supportTransfers : [],
       overrides: Array.isArray(app.revenueBonusOverrides) ? app.revenueBonusOverrides : [],
       violations: Array.isArray(app.violations) ? app.violations : [],
+      revenueBonusConfigs: app.revenueBonusConfigs,
       nowMs,
     })
   }, [
     app.attendance,
     app.employees,
     app.orders,
+    app.revenueBonusConfigs,
     app.revenueBonusOverrides,
     app.violations,
     app.supportTransfers,
@@ -850,8 +860,13 @@ export function RevenueBonusPage({ storeScoped = false }) {
       <Card
         className="revenue-milestones-card"
         title={`Mốc thưởng doanh thu ${revenueProgram.id === REVENUE_BONUS_PROGRAM_IDS.SM_DAILY ? 'SM TNV' : 'Dosii'}`}
-        action={<Badge tone={currentRevenueTier ? 'green' : 'blue'}>{currentRevenueTier ? `Đang ở mốc ${currentRevenueTier.rateBasisPoints / 100}%` : 'Chưa đạt mốc'}</Badge>}
+        action={<Badge tone={currentRevenueTier ? 'green' : 'blue'}>{currentRevenueTier ? `Đang ở mốc ${formatRatePercent(currentRevenueTier.rateBasisPoints)}` : 'Chưa đạt mốc'}</Badge>}
       >
+        {appliedRevenueConfig && <p className="revenue-milestones-source">
+          {appliedRevenueConfig.source === REVENUE_BONUS_CONFIG_SOURCE.ADMIN
+            ? `Áp dụng cấu hình phiên bản ${appliedRevenueConfig.version} có hiệu lực từ ${displayDate(appliedRevenueConfig.effectiveFrom)}.`
+            : 'Áp dụng bảng thưởng mặc định của hệ thống.'}
+        </p>}
         <div className="revenue-milestones-summary">
           <span>Doanh thu đã ghi nhận</span><strong>{metricValue(money(revenueTotal))}</strong>
         </div>
@@ -859,15 +874,15 @@ export function RevenueBonusPage({ storeScoped = false }) {
           Hệ thống đã tự động cộng thưởng mốc cao nhất: {money(liveSnapshot.milestonePoolVnd)}. Không cần duyệt thủ công.
         </InfoNote>}
         <div className="revenue-milestone-list">
-          {revenueProgram.tiers.map((tier) => {
+          {appliedRevenueTiers.map((tier) => {
             const reached = tier.minimumInclusive
               ? revenueTotal >= tier.minimumRevenueVnd
               : revenueTotal > tier.minimumRevenueVnd
             const active = currentRevenueTier?.id === tier.id
             return <div key={tier.id} className={`revenue-milestone ${reached ? 'is-reached' : ''} ${active ? 'is-active' : ''}`}>
               <span className="revenue-milestone-check" aria-hidden="true">{reached ? '✓' : '○'}</span>
-              <span><strong>{revenueTierLabel(tier)}</strong><small>{reached ? 'Đã đạt mốc' : 'Chưa đạt mốc'}</small></span>
-              <b>Thưởng {tier.rateBasisPoints / 100}% doanh thu</b>
+              <span><strong>{describeRevenueBonusTierRange(tier)}</strong><small>{reached ? 'Đã đạt mốc' : 'Chưa đạt mốc'}</small></span>
+              <b>Thưởng {formatRatePercent(tier.rateBasisPoints)} doanh thu</b>
             </div>
           })}
         </div>

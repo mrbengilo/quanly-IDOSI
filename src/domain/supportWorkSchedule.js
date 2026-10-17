@@ -10,6 +10,10 @@ export const SUPPORT_SCHEDULE_PRESETS = Object.freeze(
   SUPPORT_SCHEDULE_PRESET_BLUEPRINTS.map((preset) => Object.freeze({ ...preset })),
 )
 
+export const supportScheduleWorkMode = (value) => (
+  value === 'Online' || value === 'Offline' ? value : ''
+)
+
 const normalizeTime = (value) => {
   const match = String(value || '').trim().match(/^([01]\d|2[0-3]):([0-5]\d)(?::[0-5]\d)?$/u)
   return match ? `${match[1]}:${match[2]}` : ''

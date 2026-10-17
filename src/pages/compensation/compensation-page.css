@@ -81,6 +81,23 @@
   margin-bottom: 16px;
 }
 
+.compensation-month-filter {
+  display: flex;
+  align-items: flex-end;
+  flex-wrap: wrap;
+  gap: 12px;
+  max-width: 480px;
+}
+
+.compensation-month-filter .field {
+  flex: 1 1 220px;
+  min-width: 0;
+}
+
+.compensation-month-filter--combined {
+  max-width: 800px;
+}
+
 .compensation-fixed-scope {
   align-items: flex-start;
   background: var(--compensation-surface);
@@ -119,6 +136,12 @@
 
 .revenue-milestones-card {
   border-color: #a9d9bd;
+}
+
+.revenue-milestones-source {
+  color: #4b5a51;
+  font-size: 13px;
+  margin: 0 0 12px;
 }
 
 .revenue-milestones-summary {

@@ -1,7 +1,8 @@
+import { taskShiftContext, bindTaskShiftContext, mergeTaskShiftProgress, attendanceTaskShiftLock, taskShiftLockAllows, taskIsAttendanceShiftObligation, taskProgressForObligations, taskShiftLockedTaskIds, selectAttendanceTaskShift, TASK_SHIFT_LOCK_STATUS } from '../src/domain/taskShift.js'
 import { normalizeOrderItems as normalizedHistoricalOrderItems, resolveOrderItems as resolveConfiguredOrderItems, totalOrderItemQuantity, totalOrderItemWeightKg } from '../src/domain/orderItems.js'
 import { orderRevenueByType, validateOrderRevenue } from '../src/domain/orderRevenue.js'
 import { salesOverviewFromSummary } from '../src/domain/salesOverview.js'
-import { applyRevenueSnapshotPointPolicy, restorePointBonusRecord, restorePointRevenueSnapshot, storeViolationPointAssessment, violationPointsOf, isActivePointViolation, violationPointPeriod, formatViolationPoints } from '../src/domain/violationPoints.js'
+import { applyRevenueSnapshotPointPolicy, normalizeViolationPointInput, restorePointBonusRecord, restorePointRevenueSnapshot, storeViolationPointAssessment, violationPointsOf, isActivePointViolation, violationPointPeriod, formatViolationPoints } from '../src/domain/violationPoints.js'
 import { attendanceMatchesWindow, scheduleAssignmentIsUsable, scheduleConflict, scheduleWindows, scheduledCheckInChoices, shiftWindow, supportAllowsScheduling, supportForScheduledWindow } from '../src/domain/supportScheduling.js'
 import {
   validateStoreChecklistCheckout,
@@ -21,6 +22,24 @@ import {
 } from '../src/domain/compensationPolicies.js'
 import { allocateByLargestRemainder } from '../src/domain/compensationAllocation.js'
 import { REVENUE_BONUS_READ_COLLECTIONS } from './revenue-bonus-read.mjs'
+import {
+  isRevenueBonusConfigStorePolicy,
+  legacyRevenueBonusThresholds,
+  resolveRevenueBonusProgram,
+  REVENUE_BONUS_CONFIG_INVALID,
+  REVENUE_BONUS_CONFIG_STATUS,
+  REVENUE_BONUS_CONFIG_STORE_POLICIES,
+  revenueBonusConfigOverview,
+  revenueBonusConfigsForStorePolicy,
+  revenueBonusConfigSnapshot,
+  revenueBonusProgramIdForStorePolicy,
+  revenueBonusStorePolicyForProgramId,
+  revenueBonusStorePolicyLabel,
+  validateRevenueBonusEffectiveFrom,
+  validateRevenueBonusTierRows,
+  minimumRevenueBonusEffectiveFrom,
+  vietnamBusinessDate,
+} from '../src/domain/revenueBonusConfig.js'
 import { profileMatchesRole } from '../src/domain/roleProfiles.js'
 import {
   AUTOMATIC_REVENUE_BONUS_CUTOFF_HOUR,
@@ -65,9 +84,11 @@ import {
   canConfigureSupportSchedulePresets,
   normalizeSupportSchedulePresets,
   supportSchedulePresetsEqual,
+  supportScheduleWorkMode,
   validateSupportSchedulePresets,
 } from '../src/domain/supportWorkSchedule.js'
-import { orderBusinessDate, orderMatchesFilters, parseOrderAmountFilter, paymentChannel, summarizeOrders } from '../src/domain/orderSummary.js'
+import { ORDER_DATA_INVALID, orderBusinessDate, orderMatchesFilters, parseOrderAmountFilter, paymentChannel, summarizeOrders } from '../src/domain/orderSummary.js'
+import { productOptions } from '../src/domain/orderInformationSettings.js'
 import { resolveOrderCustomFields as resolveConfiguredOrderCustomFields } from '../src/domain/orderCustomFields.js'
 
 const API_PREFIX = '/api/'
@@ -182,7 +203,7 @@ const SYSTEM_SCREEN_COLLECTIONS = Object.freeze({
   'store-managers': ['stores', 'employees', 'deletedEmployees', 'attendance'],
   office: [
     'employees', 'deletedEmployees', 'attendance', 'supportWorkAssignments', 'supportWorkSchedules',
-    'salaryAdjustments', 'compensationEntries', 'violations', 'payrollPeriods',
+    'salaryAdjustments', 'compensationEntries', 'violations', 'payrollPeriods', 'workCatalogProgress', 'tasks',
   ],
   settings: ['employees', 'deletedEmployees', 'accountSettings'],
   policies: [],
@@ -238,7 +259,7 @@ const SYSTEM_SCREEN_COLLECTIONS = Object.freeze({
     'officeAdjustments', 'salaryAdjustments', 'payrollPeriods', 'shiftDefinitions', 'notifications',
   ],
   'employee-tasks': [
-    'stores', 'employees', 'tasks', 'taskAssignmentHistory', 'supportWorkAssignments',
+    'stores', 'employees', 'tasks', 'taskAssignmentHistory', 'supportWorkAssignments', 'shiftDefinitions',
     'workCatalogItems', 'workCatalogProgress', 'compensationEntries', 'attendance', 'notifications', 'violations',
   ],
   'employee-assigned-work': ['employees', 'supportWorkAssignments', 'notifications'],
@@ -880,6 +901,7 @@ const BUSINESS_SUPPORT_DOMAIN_COMMANDS = new Set([
   'store.update',
   'employee.create',
   'employee.update',
+  'employee.delete',
   'order_information.create',
   'order_information.update',
   'order_information.disable',
@@ -943,6 +965,13 @@ const ADDRESS_SUGGESTION_RATE_LIMIT = 30
 const ADDRESS_SUGGESTION_RATE_WINDOW_MS = 60_000
 const MAX_LEGACY_ATTENDANCE_AUDITS = 10_000
 const addressSuggestionRateWindows = new Map()
+// Failed-login throttling. Keyed per database binding so each runtime (and each
+// isolated test environment) has its own counters. Failures are counted per
+// (username, client IP) to stop guessing, per username across all IPs to slow
+// distributed guessing, and per IP to stop spraying many usernames.
+const LOGIN_FAILURE_WINDOW_MS = 15 * 60_000
+const LOGIN_FAILURE_LIMITS = Object.freeze({ account: 5, username: 30, ip: 50 })
+const loginFailureStores = new WeakMap()
 
 const DEFAULT_POLICIES = Object.freeze({
   late_tolerance_minutes: 10,
@@ -4209,9 +4238,11 @@ const loadOptimizedSystemStateSnapshot = async (db, scope, collectionKeys, scree
   const employees = Array.isArray(employeeState.employees) ? employeeState.employees : []
   const selectedEmployees = screen === 'tasks'
     ? employees.filter((employee) => profileMatchesRole(employee, 'business_support') || employeeUnit(employee) === 'business_support')
-    : [actorRoleEmployeeProfile(employeeState, user)].filter(Boolean)
+    : screen === 'office'
+      ? employees.filter((employee) => employeeUnit(employee) === 'office')
+      : [actorRoleEmployeeProfile(employeeState, user)].filter(Boolean)
   const employeeIds = selectedEmployees.flatMap(employeeIdentifierValues)
-  if (screen !== 'tasks' && user.employee_id) employeeIds.push(user.employee_id)
+  if (!['tasks', 'office'].includes(screen) && user.employee_id) employeeIds.push(user.employee_id)
   const snapshot = await db.readSystemStateSnapshot(scope, collectionKeys, screen, employeeIds)
   if (snapshot?.unchanged !== false
     || !Array.isArray(snapshot.manifests)
@@ -4396,7 +4427,7 @@ const repairEmployeeScreenStateIfNeeded = async (db, actor, context, row, screen
   ))
   if (!employee || employeeUnit(employee) !== 'store') return row
   const pending = (Array.isArray(state.attendance) ? state.attendance : []).some((record) => (
-    record && !record.deletedAt && !record.checkOut && !record.checkOutAt
+    record && !record.deletedAt && !record.checkOut && !record.checkOutAt && !record.taskShiftContexts?.length
     && employeeIdentifierValues(employee).some((id) => sameIdentifier(id, record.employeeId || record.employee_id))
     && (Number(record.checklistSnapshot?.storeChecklistRepairVersion || 0) < STORE_ATTENDANCE_CHECKLIST_REPAIR_VERSION
       || record.checklistRepairError != null)
@@ -5025,7 +5056,7 @@ const bootstrapDatabase = async (request, env, context) => {
       throw new ApiError(400, 'DUPLICATE_ORDER_CODE', 'Dữ liệu ban đầu chứa mã đơn hàng bị trùng.')
     }
     seenOrderCodes.add(orderCode)
-    const suffix = orderCode.match(/-(\d{5})$/u)
+    const suffix = orderCode.match(ORDER_CODE_SEQUENCE_PATTERN)
     if (!suffix) continue
     const value = Number(suffix[1])
     orderCounterValues.set(storeId, Math.max(orderCounterValues.get(storeId) || 0, value))
@@ -5091,6 +5122,66 @@ const bootstrapDatabase = async (request, env, context) => {
   }), created ? 201 : 200)
 }
 
+const loginFailureStore = (db) => {
+  let store = loginFailureStores.get(db)
+  if (!store) {
+    store = new Map()
+    loginFailureStores.set(db, store)
+  }
+  return store
+}
+
+const loginThrottleKeys = (request, username) => {
+  const ip = String(request.headers.get('cf-connecting-ip') || '').trim().slice(0, 64)
+  return [
+    ['account', `account:${username}:${ip}`],
+    ['username', `username:${username}`],
+    ...(ip ? [['ip', `ip:${ip}`]] : []),
+  ]
+}
+
+const pruneLoginFailures = (store, now) => {
+  if (store.size <= 5_000) return
+  for (const [key, entry] of store) {
+    if (now - entry.startedAt >= LOGIN_FAILURE_WINDOW_MS) store.delete(key)
+  }
+}
+
+const assertLoginNotThrottled = (db, request, username, context) => {
+  const now = Date.parse(context.now)
+  const store = loginFailureStore(db)
+  for (const [kind, key] of loginThrottleKeys(request, username)) {
+    const entry = store.get(key)
+    if (!entry) continue
+    if (now - entry.startedAt >= LOGIN_FAILURE_WINDOW_MS) {
+      store.delete(key)
+      continue
+    }
+    if (entry.failures >= LOGIN_FAILURE_LIMITS[kind]) {
+      throw new ApiError(429, 'LOGIN_RATE_LIMITED', 'Bạn đã nhập sai quá nhiều lần. Vui lòng thử lại sau ít phút.', {
+        retryAfterSeconds: Math.max(1, Math.ceil((entry.startedAt + LOGIN_FAILURE_WINDOW_MS - now) / 1_000)),
+      })
+    }
+  }
+}
+
+const recordLoginFailure = (db, request, username, context) => {
+  const now = Date.parse(context.now)
+  const store = loginFailureStore(db)
+  for (const [, key] of loginThrottleKeys(request, username)) {
+    const entry = store.get(key)
+    if (!entry || now - entry.startedAt >= LOGIN_FAILURE_WINDOW_MS) store.set(key, { startedAt: now, failures: 1 })
+    else entry.failures += 1
+  }
+  pruneLoginFailures(store, now)
+}
+
+const clearLoginFailures = (db, request, username) => {
+  const store = loginFailureStore(db)
+  const [[, accountKey]] = loginThrottleKeys(request, username)
+  store.delete(accountKey)
+}
+
 const login = async (request, env, context) => {
   const db = getDatabase(env)
   const body = await readJson(request)
@@ -5100,6 +5191,9 @@ const login = async (request, env, context) => {
   if (!/^[A-Za-z0-9._-]{3,80}$/u.test(submittedUsername) || passwordValue.length < 1 || passwordValue.length > 256) {
     throw new ApiError(400, 'CREDENTIALS_INVALID', 'Tên đăng nhập hoặc mật khẩu không hợp lệ.')
   }
+  // Checked before the PBKDF2 work so a throttled client cannot keep the CPU
+  // busy, and applied to unknown usernames too so it reveals nothing.
+  assertLoginNotThrottled(db, request, username, context)
   const user = await first(db, `
     SELECT * FROM users WHERE username_normalized = ? LIMIT 1
   `, username)
@@ -5120,8 +5214,10 @@ const login = async (request, env, context) => {
   // storage, but authentication itself follows the exact username spelling.
   // Password verification is already byte/case sensitive through PBKDF2.
   if (!user || user.username !== submittedUsername || !matches) {
+    recordLoginFailure(db, request, username, context)
     throw new ApiError(401, 'INVALID_CREDENTIALS', 'Tên đăng nhập hoặc mật khẩu chưa đúng.')
   }
+  clearLoginFailures(db, request, username)
   if (!VALID_ACCOUNT_STATUSES.has(user.status) || user.status !== 'active') {
     throw new ApiError(403, 'ACCOUNT_DISABLED', 'Tài khoản hiện không ở trạng thái hoạt động.')
   }
@@ -5463,7 +5559,7 @@ const getSystemScreen = async (request, env, context, screen) => {
     && isEmployeeScreen
     && Boolean(String(user.store_id || '').trim())
   const useOptimizedSystemProjection = typeof db?.readSystemStateSnapshot === 'function'
-    && ['tasks', 'support-tasks', 'support-assigned-work', 'support-overview'].includes(screen)
+    && ['tasks', 'office', 'support-tasks', 'support-assigned-work', 'support-overview'].includes(screen)
   const readScreen = () => useEmployeeStoreProjection
     ? loadStoreState(db, 'global', user.store_id, user.employee_id, screen)
     : useOptimizedSystemProjection
@@ -5800,6 +5896,9 @@ const summarizeOrderRows = (rows, scope) => {
   try {
     return summarizeOrders(scope.ownOrdersOnly ? orders.filter((order) => orderCreatedByEmployee(order, scope.employeeId)) : orders, scope)
   } catch (error) {
+    if (error?.code === ORDER_DATA_INVALID) {
+      throw new ApiError(422, ORDER_DATA_INVALID, `${error.message}. Cần sửa đơn này để báo cáo/thống kê chạy được.`, error.details)
+    }
     if (!(error instanceof TypeError || error instanceof RangeError)) throw error
     throw new ApiError(500, 'ORDER_SUMMARY_INVALID', 'Dữ liệu tổng hợp đơn hàng không hợp lệ.')
   }
@@ -5810,14 +5909,22 @@ const getSalesOverview = async (request, env, context, url) => {
   const user = await requireSession(request, db, context, { resolveOperationalContext: false })
   if (user.role !== 'admin') throw new ApiError(403, 'ROLE_FORBIDDEN', 'Chỉ Admin được xem thống kê bán hàng toàn hệ thống.')
   const period = asMonth(url.searchParams.get('period'), 'Kỳ thống kê bán hàng')
-  const row = await loadStateCollections(db, 'global', ['stores'])
+  const row = await loadStateCollections(db, 'global', ['stores', 'orderInformationOptions'])
   const state = row ? parseStoredJson(row.value_json, {}) : {}
   const storeIds = [...new Set((state.stores || []).map((store) => String(store.id || '').trim().toLowerCase()).filter(Boolean))]
+  const productCatalog = Array.isArray(state.orderInformationOptions) ? state.orderInformationOptions : []
   // Reuse store-indexed history reads; never hydrate unrelated payroll/task history.
   const rows = []
   for (const storeId of storeIds) rows.push(await readOrderSummaryRows(db, storeId, '', period))
-  const summary = summarizeOrderRows(rows.flat(), { period })
+  const summary = summarizeOrderRows(rows.flat(), { period, productCatalog })
   return jsonResponse(apiPayload(context, { period, ...salesOverviewFromSummary(summary) }))
+}
+
+// Product identity comes from the catalog, never from a hard-coded name list.
+const loadProductCatalog = async (db) => {
+  const row = await loadStateCollections(db, 'global', ['orderInformationOptions'])
+  const state = row ? parseStoredJson(row.value_json, {}) : {}
+  return Array.isArray(state.orderInformationOptions) ? state.orderInformationOptions : []
 }
 
 const getOrderSummary = async (request, env, context, url) => {
@@ -5826,7 +5933,10 @@ const getOrderSummary = async (request, env, context, url) => {
   const period = asMonth(url.searchParams.get('period'), 'Kỳ tổng hợp đơn hàng')
   const filters = orderReadFilters(url)
   const rows = await readOrderSummaryRows(db, storeId, employeeId, period)
-  const summary = summarizeOrderRows(rows, { storeId, period, employeeId, ownOrdersOnly: user.role === 'employee', ...filters })
+  // Every statistics route resolves product identity from the same catalog, so the
+  // in-app tables and the warehouse export can never disagree about a product.
+  const productCatalog = await loadProductCatalog(db)
+  const summary = summarizeOrderRows(rows, { storeId, period, employeeId, productCatalog, ownOrdersOnly: user.role === 'employee', ...filters })
   return jsonResponse(apiPayload(context, { storeId, period, ...summary }))
 }
 
@@ -5919,6 +6029,19 @@ const warehouseStatisticsFilters = (url, period) => {
   return filters
 }
 
+// A stable fingerprint of the product catalog as the warehouse sees it. Renaming,
+// retiring or superseding an option changes it; unrelated edits elsewhere do not.
+const warehouseCatalogVersion = async (options) => {
+  const products = productOptions(options, { includeInactive: true }).map((option) => ({
+    id: String(option.id),
+    code: String(option.code || ''),
+    label: option.label,
+    active: option.active === true,
+    supersededBy: option.supersededBy ? String(option.supersededBy) : null,
+  }))
+  return `products-${(await sha256(JSON.stringify(canonicalize(products)))).slice(0, 22)}`
+}
+
 const getWarehouseOrderStatistics = async (request, env, context, url) => {
   authorizeWarehouseStatisticsRequest(request, env)
   const requestedStoreId = String(url.searchParams.get('storeId') || '').trim()
@@ -5928,8 +6051,9 @@ const getWarehouseOrderStatistics = async (request, env, context, url) => {
   const period = asMonth(url.searchParams.get('period'), 'Kỳ thống kê kho')
   const filters = warehouseStatisticsFilters(url, period)
   const db = getDatabase(env)
-  const storeRow = await loadStateCollections(db, 'global', ['stores'])
+  const storeRow = await loadStateCollections(db, 'global', ['stores', 'orderInformationOptions'])
   const storeState = storeRow ? parseStoredJson(storeRow.value_json, {}) : {}
+  const productCatalog = Array.isArray(storeState.orderInformationOptions) ? storeState.orderInformationOptions : []
   const store = requireActivePhysicalStore(storeState, requestedStoreId)
   const storeId = String(store.id)
   const allowedStores = String(env?.WAREHOUSE_API_STORE_IDS || '').split(',').map((id) => id.trim()).filter(Boolean)
@@ -5937,13 +6061,16 @@ const getWarehouseOrderStatistics = async (request, env, context, url) => {
     throw new ApiError(403, 'WAREHOUSE_STORE_FORBIDDEN', 'Khóa tích hợp không được xem cửa hàng này.')
   }
   const rows = await readOrderSummaryRows(db, storeId, '', period)
-  const summary = summarizeOrderRows(rows, { storeId, period, ...filters })
+  const summary = summarizeOrderRows(rows, { storeId, period, productCatalog, ...filters })
   return jsonResponse(apiPayload(context, {
     apiVersion: 1,
     currency: 'VND',
     timezone: 'Asia/Ho_Chi_Minh',
     generatedAt: context.now,
     revenueBasis: 'ACTIVE_ORDER_AMOUNT',
+    // Consumers group on canonicalProductId. The version changes whenever the
+    // catalog does, so a stale snapshot is detectable instead of silently mixed.
+    catalogVersion: await warehouseCatalogVersion(productCatalog),
     storeId,
     store: { id: storeId, name: String(store.name || store.short || storeId) },
     filters: {
@@ -6027,6 +6154,7 @@ export const revenueBonusPeriodSnapshot = ({
     supportTransfers: Array.isArray(state?.supportTransfers) ? state.supportTransfers : [],
     overrides: Array.isArray(state?.revenueBonusOverrides) ? state.revenueBonusOverrides : [],
     violations: Array.isArray(state?.violations) ? state.violations : [],
+    revenueBonusConfigs: state?.revenueBonusConfigs,
     nowMs,
   })
   const daysByDate = new Map(calculated.days.map((day) => [day.businessDate, day]))
@@ -6072,6 +6200,11 @@ export const revenueBonusPeriodSnapshot = ({
       finalizedAt: day.finalizedAt || null,
       status: day.status,
       revenueVnd: day.revenueVnd,
+      tierId: day.tierId || null,
+      rateBasisPoints: Number(day.rateBasisPoints || 0),
+      revenueBonusConfigSource: day.revenueBonusConfig?.source || null,
+      revenueBonusConfigId: day.revenueBonusConfig?.configId || null,
+      revenueBonusConfigVersion: day.revenueBonusConfig?.version ?? null,
       totalPoolVnd: day.totalPoolVnd,
       automaticAllocatedVnd: day.automaticAllocatedVnd,
       allocatedVnd: day.allocatedVnd,
@@ -6092,6 +6225,8 @@ const AUTOMATIC_REVENUE_BONUS_SYSTEM_ACTOR = Object.freeze({
   name: 'Hệ thống IDOSI',
   role: 'system',
 })
+
+const AUTOMATIC_REVENUE_CANDIDATE_COLLECTIONS = Object.freeze(['stores', 'attendance', 'revenueBonusDaily', 'payrollPeriods'])
 
 const automaticRevenueCandidateScopes = (state, {
   now,
@@ -6199,6 +6334,13 @@ const baselineAutomaticRevenueRecords = ({ snapshot, finalizedAt, trigger }) => 
   return { daily, allocations, jobRun }
 }
 
+// Conflict reporting only needs the version head; hydrating the whole state
+// here would reintroduce the full-state read this path is meant to avoid.
+const globalStateVersion = async (db) => Number((await first(
+  db,
+  "SELECT version FROM app_state WHERE scope_key = 'global' LIMIT 1",
+))?.version || 0)
+
 const commitAutomaticRevenueBonusState = async (db, current, nextState, {
   daily,
   finalizedAt,
@@ -6248,21 +6390,57 @@ const commitAutomaticRevenueBonusState = async (db, current, nextState, {
       ),
     ])
   } catch (error) {
-    const latest = await loadState(db, 'global')
-    if (Number(latest?.version || 0) !== currentVersion) {
+    const latestVersion = await globalStateVersion(db)
+    if (latestVersion !== currentVersion) {
       throw new ApiError(409, 'VERSION_CONFLICT', 'Dữ liệu đã thay đổi trên máy chủ.', {
-        currentVersion: Number(latest?.version || 0),
+        currentVersion: latestVersion,
       })
     }
     throw error
   }
   if (changes(results?.[0]) !== 1) {
-    const latest = await loadState(db, 'global')
     throw new ApiError(409, 'VERSION_CONFLICT', 'Dữ liệu đã thay đổi trên máy chủ.', {
-      currentVersion: Number(latest?.version || 0),
+      currentVersion: await globalStateVersion(db),
     })
   }
   return nextVersion
+}
+
+// The finalizer used to hydrate the complete global state for every
+// (store, day) scope. node:sqlite is synchronous, so a nightly run over a few
+// hundred scopes blocked every API request for minutes. Read the same
+// store/day projection that /api/revenue-bonus/live already uses instead.
+const loadAutomaticRevenueBonusScopeState = async (db, scope) => {
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const current = await loadRevenueBonusReadState(db, scope.storeId, scope.businessDate)
+    if (!current) return null
+    if (typeof db?.readRevenueBonusStateSnapshot === 'function') {
+      // Only this store/day's orders, attendance and daily rows are loaded, so
+      // persistence must delete individual unmatched keys and never treat a
+      // projected collection as the complete global collection.
+      Object.defineProperty(current, '_storeEntityProjection', { value: true, enumerable: false })
+    }
+    const payrollRow = await loadStateCollections(db, 'global', ['payrollPeriods'])
+    if (Number(payrollRow?.version || 0) !== Number(current.version || 0)) continue
+    const payrollState = payrollRow ? parseStoredJson(payrollRow.value_json, {}) : {}
+    return {
+      current,
+      state: normalizeSharedStateForStorage(parseStoredJson(current.value_json, {})),
+      payrollPeriods: Array.isArray(payrollState.payrollPeriods) ? payrollState.payrollPeriods : [],
+    }
+  }
+  throw new ApiError(409, 'VERSION_CONFLICT', 'Dữ liệu đã thay đổi trên máy chủ.')
+}
+
+const automaticRevenueScopeIsSettled = (state, scope) => {
+  if (materializedRevenueDailyMatches(state, scope.storeId, scope.businessDate).length === 1) return 'ALREADY_FINALIZED'
+  try {
+    assertPayrollNotPaidOrLocked(state, scope.storeId, scope.businessDate.slice(0, 7))
+  } catch (error) {
+    if (error instanceof ApiError) return 'PAYROLL_LOCKED'
+    throw error
+  }
+  return ''
 }
 
 const finalizeAutomaticRevenueBonusScope = async (db, scope, {
@@ -6271,9 +6449,9 @@ const finalizeAutomaticRevenueBonusScope = async (db, scope, {
   maxAttempts,
 }) => {
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
-    const current = await loadState(db, 'global')
-    if (!current) return { status: 'UNINITIALIZED', ...scope }
-    const state = normalizeSharedStateForStorage(parseStoredJson(current.value_json, {}))
+    const loaded = await loadAutomaticRevenueBonusScopeState(db, scope)
+    if (!loaded) return { status: 'UNINITIALIZED', ...scope }
+    const { current, state, payrollPeriods } = loaded
     const existing = materializedRevenueDailyMatches(state, scope.storeId, scope.businessDate)
     if (existing.length > 1) {
       return {
@@ -6285,7 +6463,9 @@ const finalizeAutomaticRevenueBonusScope = async (db, scope, {
     if (existing.length === 1) return { status: 'ALREADY_FINALIZED', ...scope, dailyId: existing[0].id }
     const store = requireActivePhysicalStore(state, scope.storeId)
     try {
-      assertPayrollNotPaidOrLocked(state, store.id, scope.businessDate.slice(0, 7))
+      // Payroll periods are read for the lock check only. They are never part
+      // of nextState, so the scoped commit cannot rewrite payroll rows.
+      assertPayrollNotPaidOrLocked({ ...state, payrollPeriods }, store.id, scope.businessDate.slice(0, 7))
     } catch (error) {
       if (error instanceof ApiError) return { status: 'PAYROLL_LOCKED', ...scope, code: error.code }
       throw error
@@ -6335,34 +6515,55 @@ export const finalizeAutomaticRevenueBonuses = async (env, {
   period = '',
   maxAttempts = 4,
   maxScopes = 500,
+  yieldControl = null,
 } = {}) => {
   const parsedNow = new Date(now)
   if (Number.isNaN(parsedNow.getTime())) throw new TypeError('now must be a valid timestamp.')
   const normalizedNow = parsedNow.toISOString()
   const db = getDatabase(env)
-  const current = await loadState(db, 'global')
+  const requestedStoreId = String(storeId || '').trim()
+  const requestedBusinessDate = String(businessDate || '').trim()
+  const current = await loadStateCollections(db, 'global', AUTOMATIC_REVENUE_CANDIDATE_COLLECTIONS)
   const state = normalizeSharedStateForStorage(parseStoredJson(current?.value_json || '{}', {}))
-  const scopes = automaticRevenueCandidateScopes(state, {
+  const allScopes = automaticRevenueCandidateScopes(state, {
     now: normalizedNow,
-    storeId: String(storeId || '').trim(),
-    businessDate: String(businessDate || '').trim(),
+    storeId: requestedStoreId,
+    businessDate: requestedBusinessDate,
     period: String(period || '').trim(),
-  }).slice(0, Math.max(1, Math.min(Number(maxScopes) || 500, 2_000)))
+  })
+  // A sweep must spend its budget on days that can still change. Without this
+  // filter the oldest, already-finalized days filled the whole budget once the
+  // history grew past maxScopes, so newer days were never finalized. An
+  // explicit single store/day request still reports its status per scope.
+  const explicitScope = Boolean(requestedStoreId && requestedBusinessDate)
+  let settledFinalized = 0
+  let settledPayrollLocked = 0
+  const pendingScopes = explicitScope ? allScopes : allScopes.filter((scope) => {
+    const settled = automaticRevenueScopeIsSettled(state, scope)
+    if (settled === 'ALREADY_FINALIZED') settledFinalized += 1
+    if (settled === 'PAYROLL_LOCKED') settledPayrollLocked += 1
+    return !settled
+  })
+  const scopes = pendingScopes.slice(0, Math.max(1, Math.min(Number(maxScopes) || 500, 2_000)))
   const summary = {
     trigger,
     startedAt: normalizedNow,
     candidateCount: scopes.length,
+    pendingCount: pendingScopes.length,
+    settledSkipped: settledFinalized + settledPayrollLocked,
     finalized: 0,
-    alreadyFinalized: 0,
+    alreadyFinalized: settledFinalized,
     waitingCutoff: 0,
     waitingShiftClose: 0,
     noAttendance: 0,
-    payrollLocked: 0,
+    payrollLocked: settledPayrollLocked,
     duplicates: 0,
     failed: 0,
     results: [],
   }
-  for (const scope of scopes) {
+  for (const [index, scope] of scopes.entries()) {
+    // Let queued API requests run between scopes on the single VPS event loop.
+    if (index > 0 && typeof yieldControl === 'function') await yieldControl()
     try {
       const result = await finalizeAutomaticRevenueBonusScope(db, scope, {
         now: normalizedNow,
@@ -6382,7 +6583,9 @@ export const finalizeAutomaticRevenueBonuses = async (env, {
       summary.results.push({
         status: 'FAILED',
         ...scope,
-        code: error instanceof ApiError ? error.code : 'AUTOMATIC_REVENUE_BONUS_FAILED',
+        code: error instanceof ApiError || error?.code === REVENUE_BONUS_CONFIG_INVALID
+          ? error.code
+          : 'AUTOMATIC_REVENUE_BONUS_FAILED',
         message: String(error?.message || 'Không thể tự động chốt thưởng doanh thu.'),
       })
     }
@@ -6490,6 +6693,8 @@ const DOMAIN_PROTECTED_STATE_COLLECTIONS = new Set([
   'salaryAdvances',
   'payrollPeriods',
   'payrollPayments',
+  // Admin-only daily revenue bonus tables: never writable through state patches.
+  'revenueBonusConfigs',
   ...COMPENSATION_STATE_COLLECTIONS,
 ])
 
@@ -7101,6 +7306,26 @@ const policyNumber = async (db, key, fallback) => {
   return Number.isFinite(value) ? value : fallback
 }
 
+// Version head only: conflict reporting must not hydrate the whole state.
+const globalStateHeadVersion = async (db) => Number((await first(
+  db,
+  "SELECT version FROM app_state WHERE scope_key = 'global' LIMIT 1",
+))?.version || 0)
+
+// receiptStatements({ enforceSuccess: true }) deliberately inserts NULL into
+// command_receipts.request_hash when the guarded writes did not apply, so the
+// whole batch rolls back. That failure is a lost compare-and-swap.
+const isReceiptSuccessGuardFailure = (error) => /NOT NULL constraint failed: command_receipts\.request_hash/iu
+  .test(String(error?.message || error?.cause?.message || ''))
+
+const logStateCommitFailure = (action, commandContext, error) => {
+  console.error('IDOSI state commit failed', {
+    action: String(action || ''),
+    requestId: commandContext?.requestId || null,
+    error: String(error?.message || error),
+  })
+}
+
 const commitGlobalStateDomainCommand = async (db, actor, current, nextState, options, commandContext) => {
   const currentVersion = Number(current.version)
   const nextVersion = currentVersion + 1
@@ -7178,10 +7403,18 @@ const commitGlobalStateDomainCommand = async (db, actor, current, nextState, opt
         successBindings: ['global', nextVersion, commandContext.requestId],
       }),
     ])
-  } catch {
-    const latest = await loadState(db, 'global')
+  } catch (error) {
+    const latestVersion = await globalStateHeadVersion(db)
+    if (latestVersion === currentVersion) {
+      // Every statement in this batch is guarded by EXISTS clauses, so a lost
+      // compare-and-swap never throws. A thrown error with an unchanged version
+      // is a real failure (disk full, constraint, bug); reporting it as
+      // "data changed" hid it and made clients reload and retry forever.
+      logStateCommitFailure(options.action, commandContext, error)
+      throw error
+    }
     throw new ApiError(409, 'VERSION_CONFLICT', 'Dữ liệu đã thay đổi trên máy chủ.', {
-      currentVersion: Number(latest?.version || 0),
+      currentVersion: latestVersion,
     })
   }
   if (changes(results?.[0]) !== 1) {
@@ -7308,10 +7541,14 @@ const commitGlobalStateCounterDomainCommand = async (
         enforceSuccess: true,
       }),
     ])
-  } catch {
-    const latest = await loadState(db, 'global')
+  } catch (error) {
+    const latestVersion = await globalStateHeadVersion(db)
+    if (latestVersion === currentVersion && !isReceiptSuccessGuardFailure(error)) {
+      logStateCommitFailure(options.action, commandContext, error)
+      throw error
+    }
     throw new ApiError(409, 'VERSION_CONFLICT', 'Dữ liệu hoặc bộ đếm đã thay đổi trên máy chủ.', {
-      currentVersion: Number(latest?.version || 0),
+      currentVersion: latestVersion,
     })
   }
   const aliasesChanged = counterAliases.every((_, index) => changes(results?.[2 + index]) === 1)
@@ -7488,6 +7725,10 @@ export const commandStateProjection = (body) => {
     recordId: String(recordId || '').trim(),
     employeeId: String(employeeId || '').trim(),
     scoped,
+    // Check-in/out always act on the caller's own attendance, so the caller's
+    // store is the command scope. Without it a Business Support check-in has
+    // no store hint and hydrates every store's tasks, history and orders.
+    selfServiceAttendance: type === 'attendance.check_in' || type === 'attendance.check_out',
   })
   if (type.startsWith('order.')) {
     return projection(
@@ -7542,6 +7783,9 @@ export const commandStateProjection = (body) => {
       payload.adjustmentId || payload.id,
       payload.employeeId,
     )
+  }
+  if (type.startsWith('revenue_bonus_config.')) {
+    return projection('command-revenue-bonus-config', ['revenueBonusConfigs'], '', '', '', false)
   }
   if (type.startsWith('store_salary_config.')) {
     return projection(
@@ -7663,7 +7907,7 @@ export const commandStateProjection = (body) => {
   if (type.startsWith('task.')) {
     return projection(
       'command-task-progress',
-      ['attendance', 'tasks', 'taskAssignmentHistory', 'notifications', 'workCatalogItems'],
+      ['attendance', 'tasks', 'taskAssignmentHistory', 'notifications', 'workCatalogItems', 'shiftDefinitions', 'stores', 'employees'],
       'taskAssignmentHistory',
       payload.assignmentId || payload.id,
       payload.employeeId,
@@ -7739,6 +7983,7 @@ export const commandStateProjection = (body) => {
 const commandProjectionStoreId = async (db, projection, actor) => {
   if (!projection.scoped) return ''
   const actorStoreId = ['store_manager', 'employee'].includes(String(actor?.role || ''))
+    || (projection.selfServiceAttendance && String(actor?.role || '') === 'business_support')
     ? String(actor?.store_id || '').trim()
     : ''
   if (actorStoreId) return actorStoreId
@@ -7760,8 +8005,30 @@ const commandProjectionStoreId = async (db, projection, actor) => {
     || await lookup('employees', projection.employeeId)
 }
 
+// These commands re-validate every rule against the state the server loads
+// (open shift, store scope, counters, payroll locks). The client's version is
+// therefore not a statement about data it edited, and requiring it to match
+// the single global version made one store's order reject another store's
+// check-in or order. They commit against the version they read (still an
+// atomic compare-and-swap) and retry on a concurrent writer.
+export const STALE_VERSION_REBASE_COMMANDS = new Set([
+  'order.create',
+  'attendance.check_in',
+  'attendance.check_out',
+  'shift_expense.create',
+  'task.done',
+  'task.set_done',
+  'task.shift.select',
+  'notification.mark_read',
+  'notification.mark_all_read',
+  // Concurrency is enforced by the per-store-group configuration version.
+  'revenue_bonus_config.save',
+])
+const MAX_REBASE_COMMAND_ATTEMPTS = 3
+
 const loadGlobalCommandState = async (db, body, actor = null) => {
   const expectedVersion = commandExpectedVersion(body)
+  const rebaseAllowed = STALE_VERSION_REBASE_COMMANDS.has(String(body?.type || ''))
   const projection = commandStateProjection(body)
   const projectionStoreId = projection
     ? await commandProjectionStoreId(db, projection, actor)
@@ -7780,7 +8047,8 @@ const loadGlobalCommandState = async (db, body, actor = null) => {
         ? await loadStateCollections(db, 'global', projection.collections)
         : await loadState(db, 'global'))
   const currentVersion = Number(current?.version || 0)
-  if (!current || currentVersion !== expectedVersion) {
+  const staleButRebasable = rebaseAllowed && expectedVersion <= currentVersion
+  if (!current || (currentVersion !== expectedVersion && !staleButRebasable)) {
     throw new ApiError(409, 'VERSION_CONFLICT', 'Dữ liệu đã thay đổi trên máy chủ.', { currentVersion })
   }
   return {
@@ -8494,10 +8762,19 @@ const employeeStatusValues = (value) => {
   if (['locked', 'tam ngung', 'tam nghi'].includes(normalized)) {
     return { profile: 'Tạm ngưng', account: 'locked' }
   }
-  if (['inactive', 'da nghi viec'].includes(normalized)) {
+  if (['inactive', 'da nghi viec', 'da nghi lam'].includes(normalized)) {
     return { profile: 'Đã nghỉ việc', account: 'inactive' }
   }
   throw new ApiError(400, 'STATUS_INVALID', 'Trạng thái nhân viên không hợp lệ.')
+}
+
+// HTKD may mark a store employee in its operational scope as departed (store
+// access is asserted by the caller). Other units, store managers and
+// reactivation stay Admin-only.
+const assertEmployeeStatusChangeAllowed = (actor, unit, requestedStatus) => {
+  if (actor.role === 'admin' || requestedStatus.account !== 'inactive') return
+  if (actor.role === 'business_support' && unit === 'store') return
+  throw new ApiError(403, 'EMPLOYEE_DELETE_FORBIDDEN', 'Chỉ Admin hoặc Hỗ trợ KD (với nhân viên cửa hàng) được cho nhân viên nghỉ làm.')
 }
 
 const legacyPrimaryManagerSupportsSourceProfile = (state, authTarget, sourceProfile) => {
@@ -9683,7 +9960,9 @@ const employeeProfileCommand = async (db, actor, body, commandContext, env) => {
   if (!['create', 'update', 'delete'].includes(operation)) {
     throw new ApiError(400, 'COMMAND_UNKNOWN', 'Lệnh hồ sơ nhân viên không được hỗ trợ.')
   }
-  if (operation === 'delete') assertAdmin(actor, 'Chỉ Admin được xóa nhân viên khỏi hệ thống.')
+  if (operation === 'delete' && !['admin', 'business_support'].includes(actor.role)) {
+    throw new ApiError(403, 'EMPLOYEE_DELETE_FORBIDDEN', 'Chỉ Admin hoặc Hỗ trợ KD được xóa nhân viên cửa hàng và Quản lý cửa hàng.')
+  }
   const payload = isPlainRecord(body.payload) ? body.payload : {}
   const profilePayload = isPlainRecord(payload.employee) ? payload.employee : payload
   const { current, state } = await loadGlobalCommandState(db, body, actor)
@@ -9748,9 +10027,11 @@ const employeeProfileCommand = async (db, actor, body, commandContext, env) => {
   }
   const supportOperationAllowed = (
     ['store', 'office', 'store_manager'].includes(unit) && ['create', 'update'].includes(operation)
+  ) || (
+    ['store', 'store_manager'].includes(unit) && operation === 'delete'
   )
   if (actor.role === 'business_support' && !supportOperationAllowed) {
-    throw new ApiError(403, 'BUSINESS_SUPPORT_READ_ONLY', 'Nhân viên hỗ trợ KD chỉ được thêm hoặc cập nhật nhân viên cửa hàng, Khối văn phòng và Quản lý cửa hàng.')
+    throw new ApiError(403, 'BUSINESS_SUPPORT_READ_ONLY', 'Hỗ trợ KD được thêm/sửa nhân viên cửa hàng, Khối văn phòng và Quản lý cửa hàng; chỉ được xóa nhân viên cửa hàng và Quản lý cửa hàng.')
   }
   const requestedIdentityImages = identityImageInputs(profilePayload)
   const hasIdentityImagePayload = Object.values(requestedIdentityImages).some((input) => input.provided)
@@ -9776,6 +10057,11 @@ const employeeProfileCommand = async (db, actor, body, commandContext, env) => {
   if (previous && unit === 'store') assertOperationalStoreAccess(actor, String(previous.storeId || ''))
   if (actor.role !== 'admin' && previous && ['da nghi viec', 'inactive'].includes(normalizeTextKey(previous.status))) {
     throw new ApiError(403, 'EMPLOYEE_REACTIVATE_FORBIDDEN', 'Chỉ Admin được khôi phục nhân viên đã nghỉ việc.')
+  }
+  // Authorize a departure before any profile validation so a denied actor gets
+  // the permission error, not a data-validation error about another field.
+  if (operation === 'update' && profilePayload.status !== undefined) {
+    assertEmployeeStatusChangeAllowed(actor, unit, employeeStatusValues(profilePayload.status))
   }
   if (previous && profilePayload.storeId !== undefined
     && !sameIdentifier(profilePayload.storeId, previous.storeId)) {
@@ -9959,11 +10245,11 @@ const employeeProfileCommand = async (db, actor, body, commandContext, env) => {
   let requestedStatus = null
   if (operation === 'update' && profilePayload.status !== undefined) {
     requestedStatus = employeeStatusValues(profilePayload.status)
-    if (actor.role !== 'admin' && requestedStatus.account === 'inactive') {
-      throw new ApiError(403, 'EMPLOYEE_DELETE_FORBIDDEN', 'Chỉ Admin được cho nhân viên nghỉ việc hoặc xóa khỏi hệ thống.')
-    }
+    assertEmployeeStatusChangeAllowed(actor, unit, requestedStatus)
     profile.status = requestedStatus.profile
   }
+  const departingNow = operation === 'update' && requestedStatus?.account === 'inactive'
+    && !['da nghi viec', 'inactive'].includes(normalizeTextKey(previous?.status))
   const previousWasActiveManager = previous
     ? resolveExactlyOneActiveStoreManager({ storeId, managers: [previous] }).ok
     : false
@@ -10198,6 +10484,11 @@ const employeeProfileCommand = async (db, actor, body, commandContext, env) => {
       if (actor.role !== 'admin' && authTarget.status === 'inactive') {
         throw new ApiError(403, 'EMPLOYEE_REACTIVATE_FORBIDDEN', 'Chỉ Admin được khôi phục tài khoản nhân viên đã nghỉ việc.')
       }
+      if (actor.role !== 'admin' && departingNow && authTarget.role !== 'employee') {
+        // A legacy promotion moved this login to another role (for example
+        // Quản lý CH). Disabling it would also lock a role HTKD cannot manage.
+        throw new ApiError(409, 'EMPLOYEE_SHARED_ACCOUNT_ADMIN_REQUIRED', 'Tài khoản đăng nhập của nhân viên này đang dùng cho vai trò khác; cần Admin xử lý việc nghỉ làm.')
+      }
       const username = requestedUsername || authTarget.username
       const normalizedUsername = normalizeUsername(username)
       if (!/^[A-Za-z0-9._-]{3,80}$/u.test(username)) {
@@ -10343,6 +10634,32 @@ const employeeProfileCommand = async (db, actor, body, commandContext, env) => {
       }
     }
   }
+  if (departingNow && previous?.linkedEmployeeId) {
+    // A linked store-employee role shares another profile's login. Departure
+    // removes only this role (role options ignore departed profiles) and ends
+    // the sessions currently acting as it; the shared login and its other
+    // roles stay active.
+    const sharedLogin = await uniqueUserByEmployeeIdentifier(db, String(previous.linkedEmployeeId))
+    if (sharedLogin) {
+      additionalStatements.push(db.prepare(`
+        UPDATE sessions
+        SET revoked_at = ?, last_seen_at = ?
+        WHERE user_id = ? AND revoked_at IS NULL
+          AND active_role = 'employee' AND LOWER(COALESCE(active_employee_id, '')) = LOWER(?)
+          AND EXISTS (
+            SELECT 1 FROM app_state
+            WHERE scope_key = 'global' AND version = ? AND last_request_id = ?
+          )
+      `).bind(
+        commandContext.now,
+        commandContext.now,
+        sharedLogin.id,
+        saved.id,
+        nextStateVersion,
+        commandContext.requestId,
+      ))
+    }
+  }
   const linkedAuthMetadata = operation === 'update' && !previous?.linkedEmployeeId && responseUser
     ? {
         username: responseUser.username,
@@ -10428,7 +10745,18 @@ const employeeProfileCommand = async (db, actor, body, commandContext, env) => {
       entityId: saved.id,
       before: previous,
       after: saved,
-      metadata: { payrollTargets },
+      metadata: {
+        payrollTargets,
+        ...(requestedStatus && previous && String(previous.status || '') !== String(saved.status || '') ? {
+          statusChange: {
+            from: previous.status || null,
+            to: saved.status,
+            storeId,
+            unit,
+            loginScope: previous.linkedEmployeeId ? 'linked-store-role' : 'account',
+          },
+        } : {}),
+      },
       response: { command: body.type, employee: saved, ...(responseUser ? { user: responseUser } : {}) },
       additionalStatements,
       stateGuard,
@@ -10634,20 +10962,48 @@ const scheduleCommand = async (db, actor, body, commandContext) => {
     if (!employeeId) {
       throw new ApiError(400, 'EMPLOYEE_STORE_MISMATCH', `Nhân viên ${requestedEmployeeId || index + 1} không thuộc cửa hàng.`)
     }
-    if (!requestedShiftIds.length || requestedShiftIds.some((shiftId) => !shifts.has(normalizeIdentifierKey(shiftId)))) {
-      throw new ApiError(400, 'SHIFT_INVALID', `Ca làm việc của nhân viên ${employeeId} không hợp lệ.`)
-    }
-    const shiftIds = requestedShiftIds.map((shiftId) => String(shifts.get(normalizeIdentifierKey(shiftId)).id || shiftId))
-    const mismatchedShift = shiftIds.map((shiftId) => shifts.get(normalizeIdentifierKey(shiftId)))
-      .find((shift) => shift.date && String(shift.date) !== date)
-    if (mismatchedShift) {
-      throw new ApiError(400, 'SHIFT_DATE_MISMATCH', `Ca ${mismatchedShift.name || mismatchedShift.id} chỉ áp dụng ngày ${mismatchedShift.date}.`)
-    }
     const previousAssignment = schedule.find((entry) => (
       sameIdentifier(entry.storeId, storeId)
       && String(entry.date || entry.workDate || '') === date
       && sameIdentifier(employeeReference(entry), employeeId)
     ))
+    // Assign is additive; only replace_day may remove an existing shift. Keep
+    // historical IDs/snapshots even when their reusable definition is retired.
+    const previousShiftIds = previousAssignment?.shiftIds?.length
+      ? previousAssignment.shiftIds : [previousAssignment?.shiftId]
+    // replace_day resends the whole day, so an employee's already-scheduled shift
+    // stays valid after its definition is retired; only new additions need an
+    // active definition.
+    const retainedShiftIds = new Map(body.type === 'schedule.replace_day'
+      ? previousShiftIds.map((shiftId) => String(shiftId || '').trim()).filter(Boolean)
+        .map((shiftId) => [normalizeIdentifierKey(shiftId), shiftId])
+      : [])
+    if (!requestedShiftIds.length) {
+      throw new ApiError(400, 'SHIFT_INVALID', `Ca làm việc của nhân viên ${employeeId} không hợp lệ.`)
+    }
+    const unavailableShiftId = requestedShiftIds.find((shiftId) => (
+      !shifts.has(normalizeIdentifierKey(shiftId)) && !retainedShiftIds.has(normalizeIdentifierKey(shiftId))
+    ))
+    if (unavailableShiftId) {
+      const retiredShift = (state.shiftDefinitions || []).find((definition) => sameIdentifier(definition.id, unavailableShiftId)
+        && sameIdentifier(definition.storeId, storeId))
+      throw new ApiError(400, 'SHIFT_INVALID', retiredShift
+        ? `${retiredShift.name || 'Ca làm việc'} đã ngừng sử dụng; không thể phân thêm nhân viên ${employeeId} vào ca này.`
+        : `Ca làm việc của nhân viên ${employeeId} không hợp lệ.`)
+    }
+    const selectedShiftIds = requestedShiftIds.map((shiftId) => String(
+      shifts.get(normalizeIdentifierKey(shiftId))?.id || retainedShiftIds.get(normalizeIdentifierKey(shiftId)) || shiftId,
+    ))
+    const mismatchedShift = selectedShiftIds.map((shiftId) => shifts.get(normalizeIdentifierKey(shiftId)))
+      .find((shift) => shift?.date && String(shift.date) !== date)
+    if (mismatchedShift) {
+      throw new ApiError(400, 'SHIFT_DATE_MISMATCH', `Ca ${mismatchedShift.name || mismatchedShift.id} chỉ áp dụng ngày ${mismatchedShift.date}.`)
+    }
+    const shiftIds = [...new Map([
+      ...(body.type === 'schedule.assign' ? previousShiftIds : []),
+      ...selectedShiftIds,
+    ].map((shiftId) => String(shiftId || '').trim()).filter(Boolean)
+      .map((shiftId) => [normalizeIdentifierKey(shiftId), shiftId])).values()]
     const previousSnapshots = new Map((Array.isArray(previousAssignment?.shiftSnapshots) ? previousAssignment.shiftSnapshots : [])
       .filter(isPlainRecord)
       .map((snapshot) => [normalizeIdentifierKey(snapshot.id), snapshot]))
@@ -10655,6 +11011,10 @@ const scheduleCommand = async (db, actor, body, commandContext) => {
       const previousSnapshot = previousSnapshots.get(normalizeIdentifierKey(shiftId))
       if (previousSnapshot) return previousSnapshot
       const shift = shifts.get(normalizeIdentifierKey(shiftId))
+        || (state.shiftDefinitions || []).find((definition) => sameIdentifier(definition.id, shiftId)
+          && sameIdentifier(definition.storeId, storeId))
+      // Fail closed through scheduleConflict if legacy timing cannot be resolved.
+      if (!shift) return { id: shiftId }
       return {
         id: shift.id,
         name: shift.name,
@@ -10682,7 +11042,7 @@ const scheduleCommand = async (db, actor, body, commandContext) => {
       shiftId: shiftIds[0],
       shiftSnapshots,
       ...(previousAssignment?.cancelledShifts ? { cancelledShifts: previousAssignment.cancelledShifts } : {}),
-      note: String(assignment.note || '').trim().slice(0, 500),
+      note: String(assignment.note || (body.type === 'schedule.assign' ? previousAssignment?.note : '') || '').trim().slice(0, 500),
       createdAt: previousAssignment?.createdAt || commandContext.now,
       createdBy: previousAssignment?.createdBy || serverActorSnapshot(actor),
       ...(previousAssignment ? { updatedAt: commandContext.now, updatedBy: serverActorSnapshot(actor) } : {}),
@@ -11631,6 +11991,7 @@ const RESET_ARRAY_COLLECTIONS = Object.freeze([
   'supportWorkSchedules',
   'supportWorkScheduleHistory',
   'policyHistory',
+  'revenueBonusConfigs',
   ...COMPENSATION_STATE_COLLECTIONS,
 ])
 
@@ -13509,6 +13870,7 @@ const automaticRevenueBonusPeriodFor = (state, storeId, period) => {
     supportTransfers: Array.isArray(state.supportTransfers) ? state.supportTransfers : [],
     overrides: Array.isArray(state.revenueBonusOverrides) ? state.revenueBonusOverrides : [],
     violations: Array.isArray(state.violations) ? state.violations : [],
+    revenueBonusConfigs: state.revenueBonusConfigs,
     nowMs: Date.now(),
   })
   cache.set(key, result)
@@ -13724,7 +14086,8 @@ const employeeHasHomePayrollAttendance = (state, employee, storeId, period) => (
   ))
 )
 
-const calculatePayrollSnapshot = async (db, state, requestedStoreId, period) => {
+const calculatePayrollSnapshot = async (db, commandState, requestedStoreId, period) => {
+  const state = await stateWithRevenueBonusConfigs(db, commandState)
   const payrollUnit = requirePayrollUnit(state, requestedStoreId)
   const storeId = String(payrollUnit.id || requestedStoreId).trim()
   const activeEmployees = (Array.isArray(state.employees) ? state.employees : []).filter((employee) => (
@@ -15481,7 +15844,7 @@ function checklistSnapshotForAttendance({
 }
 
 export const openStoreChecklistRepairContext = (record, employees) => {
-  if (!isPlainRecord(record) || record.deletedAt || record.checkOutAt || record.checkOut) return null
+  if (!isPlainRecord(record) || record.deletedAt || record.checkOutAt || record.checkOut || record.taskShiftContexts?.length) return null
   const employeeId = String(record.employeeId || record.employee_id || '').trim()
   const employee = employees.find((candidate) => (
     employeeIdentifierValues(candidate).some((value) => sameIdentifier(value, employeeId))
@@ -16631,7 +16994,7 @@ const attendanceCommand = async (db, actor, body, commandContext, env) => {
     || (checklistSnapshot
       && (checklistSnapshot.source === 'work-catalog' || checklistSnapshot.templateId === 'WORK-CATALOG')
       && Number(checklistSnapshot.storeChecklistRepairVersion || 0) < STORE_ATTENDANCE_CHECKLIST_REPAIR_VERSION)
-  if (storeEmployee && (openRecord.checklistRepairError || workCatalogChecklistPending)) {
+  if (storeEmployee && (openRecord.checklistRepairError || (!openRecord.taskShiftContexts?.length && workCatalogChecklistPending))) {
     throw new ApiError(
       409,
       'CHECKLIST_REPAIR_PENDING',
@@ -16664,6 +17027,12 @@ const attendanceCommand = async (db, actor, body, commandContext, env) => {
         },
       })
     }
+  }
+  // Saved manual scopes are obligations too, including rows whose work shift
+  // differs from attendance. Missing/deleted rows fail closed at checkout.
+  const acceptedTaskIds = (openRecord.taskShiftContexts || []).flatMap((entry) => entry.taskIds || [])
+  if (acceptedTaskIds.some((id) => !(state.tasks || []).some((task) => task.id === id && !task.deletedAt && task.active !== false))) {
+    throw new ApiError(409, 'TASK_CONTEXT_CHANGED', 'Công việc đã lưu bị thiếu hoặc bị khóa; cần quản lý xử lý trước khi kết ca.')
   }
   const checklistTasks = Array.isArray(openRecord.checklistSnapshot?.tasks)
     ? (Array.isArray(state.tasks) ? state.tasks : []).filter((task) => (
@@ -16728,7 +17097,13 @@ const attendanceCommand = async (db, actor, body, commandContext, env) => {
       })
     }
   }
-  const incompleteTasks = storeEmployee
+  // A selected task-shift lock owes exactly the locked shift's checklist; the
+  // historical attendance-shift rule still applies to unlocked/legacy-multi rows.
+  const checkoutTaskShiftLock = storeEmployee ? attendanceTaskShiftLock(openRecord) : null
+  const lockedTaskIds = checkoutTaskShiftLock?.status === TASK_SHIFT_LOCK_STATUS.SELECTED
+    ? taskShiftLockedTaskIds({ state, attendance: openRecord, employeeId })
+    : null
+  const owedTasks = storeEmployee
       ? (Array.isArray(state.tasks) ? state.tasks : []).filter((task) => {
         if (task.deletedAt) return false
         if (!workTaskIsRequired(task)) return false
@@ -16736,15 +17111,21 @@ const attendanceCommand = async (db, actor, body, commandContext, env) => {
         const checklistAttendanceId = String(task.checklistAttendanceId || '').trim()
         if (checklistAttendanceId && !attendanceReferenceMatches(checklistAttendanceId)) return false
         if (String(task.date || task.workDate || '') !== attendanceDate) return false
-        const taskShiftId = String(task.shiftId || task.shift || '')
-        if (taskShiftId && !sameIdentifier(taskShiftId, attendanceShiftId)) return false
-        const completedBy = isPlainRecord(task.completedBy) ? task.completedBy : {}
-        return completedByEmployeeValue(completedBy, employeeId) !== true && task.done !== true
+        return taskIsAttendanceShiftObligation({
+          task,
+          attendance: openRecord,
+          matchesAttendanceShift: (taskShiftId) => sameIdentifier(taskShiftId, attendanceShiftId),
+          lockedTaskIds,
+        })
       })
     : []
+  const incompleteTasks = owedTasks.filter((task) => {
+    const completedBy = isPlainRecord(task.completedBy) ? task.completedBy : {}
+    return completedByEmployeeValue(completedBy, employeeId) !== true && task.done !== true
+  })
   const incompleteTaskIds = incompleteTasks.map((task) => String(task.id || '')).filter(Boolean)
   const savedIncompleteProgress = savedTaskProgressCoversIncompleteTasks({
-    progress: openRecord.taskProgress,
+    progress: lockedTaskIds ? taskProgressForObligations(openRecord.taskProgress, owedTasks.map((task) => task.id)) : openRecord.taskProgress,
     attendanceId: openRecord.id,
     employeeId,
     incompleteTaskIds,
@@ -17512,6 +17893,12 @@ const orderInformationCommand = async (db, actor, body, commandContext) => {
   }, commandContext)
 }
 
+// Order codes keep the historical 5-digit zero padding (STORE-00001) and
+// simply grow to 6-7 digits after 99,999. The old hard stop at 99,999 would
+// have blocked a busy store from creating orders after a few years.
+const MAX_ORDER_CODE_SEQUENCE = 9_999_999
+const ORDER_CODE_SEQUENCE_PATTERN = /-(\d{5,7})$/u
+
 const orderCreateCommand = async (db, actor, body, commandContext) => {
   if (['business_support', 'store_manager'].includes(actor.role)) {
     throw new ApiError(403, 'ORDER_READ_ONLY', 'Tài khoản quản lý vận hành chỉ được xem danh sách đơn hàng.')
@@ -17628,7 +18015,7 @@ const orderCreateCommand = async (db, actor, body, commandContext) => {
   const counterValue = counterRows.reduce((maximum, row) => (
     Math.max(maximum, Number(row.counter_value || 0))
   ), 0)
-  if (!Number.isSafeInteger(counterValue) || counterValue >= 99_999) {
+  if (!Number.isSafeInteger(counterValue) || counterValue >= MAX_ORDER_CODE_SEQUENCE) {
     throw new ApiError(409, 'ORDER_COUNTER_EXHAUSTED', 'Dãy mã đơn hàng của cửa hàng đã hết.')
   }
   const nextCounterValue = counterValue + 1
@@ -18437,6 +18824,12 @@ const supportScheduleCommand = async (db, actor, body, commandContext) => {
     && !record.deletedAt
   ))
   if (targetCollision) throw new ApiError(409, 'SUPPORT_SCHEDULE_EXISTS', 'Nhân viên đã có lịch làm việc trong ngày này.')
+  const workMode = Object.hasOwn(payload, 'workMode')
+    ? supportScheduleWorkMode(payload.workMode)
+    : supportScheduleWorkMode(previous?.workMode)
+  if (Object.hasOwn(payload, 'workMode') && !workMode) {
+    throw new ApiError(400, 'SUPPORT_SCHEDULE_WORK_MODE_INVALID', 'Hình thức làm việc phải là Online hoặc Offline.')
+  }
   const id = previous?.id || `sws_${crypto.randomUUID()}`
   const previousIndex = previous ? schedules.indexOf(previous) : -1
   const version = Number(previous?.version || 0) + 1
@@ -18450,6 +18843,7 @@ const supportScheduleCommand = async (db, actor, body, commandContext) => {
     shiftName: partTime ? shiftName : (shiftName || 'Làm việc Full-Time'),
     start: start.label,
     end: end.label,
+    workMode,
     note: String(payload.note || '').trim().slice(0, 500),
     version,
     createdAt: previous?.createdAt || commandContext.now,
@@ -18538,14 +18932,37 @@ const taskDoneCommand = async (db, actor, body, commandContext) => {
     throw new ApiError(409, 'TASK_DATE_INVALID', 'Chỉ được cập nhật công việc của ngày hiện tại.')
   }
   const taskShiftId = String(previous.shiftId || previous.shift || '')
-  if (taskShiftId) {
-    const openAttendance = (Array.isArray(state.attendance) ? state.attendance : []).find((record) => (
-      belongsToEmployee(record, employeeId)
-      && !record.deletedAt
-      && !record.checkOutAt
-      && !record.checkOut
-    ))
-    if (!openAttendance || !sameIdentifier(openAttendance.shiftId || openAttendance.shift, taskShiftId)) {
+  const doneOpenAttendance = (Array.isArray(state.attendance) ? state.attendance : []).find((record) => (
+    belongsToEmployee(record, employeeId)
+    && !record.deletedAt
+    && !record.checkOutAt
+    && !record.checkOut
+  )) || null
+  const doneEmployee = uniqueEmployeeIdentifierRecordMatch({
+    records: state.employees,
+    identifier: employeeId,
+    predicate: (record) => !record.deletedAt,
+  })?.record || null
+  if (doneEmployee && employeeUnit(doneEmployee) === 'store' && workTaskIsRequired(previous)) {
+    // Mandatory store work follows the attendance's single locked task shift;
+    // this command must not become a second write path around that lock.
+    if (!doneOpenAttendance) {
+      throw new ApiError(409, 'OPEN_ATTENDANCE_REQUIRED', 'Bạn cần điểm danh và đang trong ca để cập nhật công việc.')
+    }
+    const lock = attendanceTaskShiftLock(doneOpenAttendance)
+    if (lock.status === TASK_SHIFT_LOCK_STATUS.NONE) {
+      throw new ApiError(409, 'TASK_SHIFT_SELECTION_REQUIRED', 'Cần chọn ca công việc cho lượt điểm danh này trước khi cập nhật công việc.')
+    }
+    if (!taskIsAttendanceShiftObligation({
+      task: previous,
+      attendance: doneOpenAttendance,
+      matchesAttendanceShift: (reference) => sameIdentifier(reference, doneOpenAttendance.shiftId || doneOpenAttendance.shift),
+      lockedTaskIds: taskShiftLockedTaskIds({ state, attendance: doneOpenAttendance, employeeId }),
+    })) {
+      throw new ApiError(409, 'TASK_SHIFT_LOCKED', 'Công việc không thuộc ca công việc đã chọn của lượt điểm danh này.')
+    }
+  } else if (taskShiftId) {
+    if (!doneOpenAttendance || !sameIdentifier(doneOpenAttendance.shiftId || doneOpenAttendance.shift, taskShiftId)) {
       throw new ApiError(409, 'TASK_SHIFT_INVALID', 'Công việc không thuộc ca đang mở của bạn.')
     }
   }
@@ -18656,12 +19073,108 @@ const taskDoneCommand = async (db, actor, body, commandContext) => {
   }, commandContext)
 }
 
+// New command `task.shift.select`: records the single work-task shift of the
+// actor's own open store attendance. It re-validates against the state it
+// loads (rebase-safe), binds that shift's checklist once and never marks work
+// done, creates rewards or changes the attendance/payroll shift.
+const taskShiftSelectCommand = async (db, actor, body, commandContext) => {
+  if (actor.role !== 'employee') {
+    throw new ApiError(403, 'ROLE_FORBIDDEN', 'Chỉ nhân viên cửa hàng được chọn ca công việc.')
+  }
+  const payload = isPlainRecord(body.payload) ? body.payload : {}
+  const { current, state } = await loadGlobalCommandState(db, body, actor)
+  const employeeId = String(actor.employee_id || '').trim()
+  const employee = uniqueEmployeeIdentifierRecordMatch({
+    records: state.employees,
+    identifier: employeeId,
+    predicate: (record) => !record.deletedAt,
+  })?.record || null
+  if (!employee || employeeUnit(employee) !== 'store') {
+    throw new ApiError(403, 'EMPLOYEE_PROFILE_REQUIRED', 'Chức năng chọn ca công việc chỉ dành cho nhân viên cửa hàng.')
+  }
+  if ((payload.employeeId && !employeeIdentifierValues(employee).some((id) => sameIdentifier(id, payload.employeeId)))) {
+    throw new ApiError(403, 'TASK_SCOPE_FORBIDDEN', 'Thông tin nhân viên không thuộc lượt làm việc.')
+  }
+  const attendanceId = String(payload.attendanceId || '').trim()
+  if (!attendanceId) throw new ApiError(400, 'ATTENDANCE_ID_REQUIRED', 'Cần chỉ rõ lượt điểm danh.')
+  const attendance = Array.isArray(state.attendance) ? state.attendance : []
+  const ownAttendance = attendance.filter((record) => belongsToEmployee(record, employeeId) && !record.deletedAt)
+  const targetAttendance = uniqueIdentifierRecordMatch({
+    records: ownAttendance,
+    identifier: attendanceId,
+    collisionCode: 'ATTENDANCE_IDENTIFIER_COLLISION',
+    collisionMessage: 'Mã chấm công đang trùng với nhiều bản ghi; không thể chọn ca an toàn.',
+  })?.record || null
+  if (!targetAttendance || targetAttendance.checkOutAt || targetAttendance.checkOut) {
+    throw new ApiError(409, 'OPEN_ATTENDANCE_REQUIRED', 'Bạn cần điểm danh và đang trong ca để chọn ca công việc.')
+  }
+  if (payload.storeId && !sameIdentifier(payload.storeId, targetAttendance.storeId)) {
+    throw new ApiError(403, 'TASK_SCOPE_FORBIDDEN', 'Lượt điểm danh không thuộc cửa hàng của tài khoản.')
+  }
+  assertNoCaseCollidingOperationalIdentifiers(state)
+  assertNoCaseCollidingActiveWorkCatalogIdentifiers(state)
+  const selection = selectAttendanceTaskShift({
+    state,
+    attendance: targetAttendance,
+    employeeId,
+    selectedTaskShiftId: String(payload.selectedTaskShiftId || payload.shiftId || '').trim(),
+    now: commandContext.now,
+    actor: serverActorSnapshot(actor),
+  })
+  if (selection.error) {
+    throw new ApiError(selection.status || 409, selection.code, selection.error, selection.details || undefined)
+  }
+  const responseFor = (record, tasks) => ({
+    command: body.type,
+    attendanceId: record.id,
+    taskShiftSelection: record.taskShiftSelection,
+    attendance: record,
+    tasks,
+  })
+  if (selection.existing) {
+    return recordNoopCommand(db, actor, {
+      ...responseFor(targetAttendance, selection.context.tasks),
+      version: Number(current.version),
+      existing: true,
+    }, 200, commandContext)
+  }
+  const newAssignmentIds = [...new Set(selection.newTasks.map((task) => task.assignmentId))]
+  const nextTasks = [...(Array.isArray(state.tasks) ? state.tasks : []), ...selection.newTasks]
+  const boundIds = new Set(selection.context.tasks.map((task) => task.id))
+  const nextState = {
+    ...state,
+    attendance: attendance.map((record) => record === targetAttendance ? selection.attendance : record),
+    tasks: nextTasks,
+    taskAssignmentHistory: [...(Array.isArray(state.taskAssignmentHistory) ? state.taskAssignmentHistory : []), ...newAssignmentIds.map((id) => ({
+      id, assignmentId: id, employeeIds: [employeeId], storeId: targetAttendance.storeId, date: selection.date,
+      shiftId: selection.shift.id, shiftName: selection.shift.name,
+      tasks: selection.newTasks.filter((task) => task.assignmentId === id), assignedAt: commandContext.now,
+    }))],
+    stateVersion: Math.max(1, Number(state.stateVersion) || 1) + 1,
+  }
+  return commitGlobalStateDomainCommand(db, actor, current, nextState, {
+    action: body.type,
+    entityType: 'attendance-task-shift',
+    entityId: `${targetAttendance.id}:${employeeId}`,
+    before: { taskShiftSelection: targetAttendance.taskShiftSelection || null, taskShiftContexts: targetAttendance.taskShiftContexts || [] },
+    after: { taskShiftSelection: selection.attendance.taskShiftSelection },
+    metadata: {
+      attendanceId: targetAttendance.id, storeId: targetAttendance.storeId, date: selection.date,
+      shiftId: selection.shift.id, slot: selection.slot.key, legacyContext: Boolean(selection.attendance.taskShiftSelection.legacyContext),
+      createdTaskIds: selection.newTasks.map((task) => task.id),
+    },
+    response: responseFor(selection.attendance, nextTasks.filter((task) => boundIds.has(task.id))),
+  }, commandContext)
+}
+
 const taskProgressCommand = async (db, actor, body, commandContext) => {
   if (!['employee', 'business_support'].includes(actor.role)) {
     throw new ApiError(403, 'ROLE_FORBIDDEN', 'Chỉ nhân viên được gửi kết quả công việc trong ca.')
   }
   const payload = isPlainRecord(body.payload) ? body.payload : {}
-  const { current, state } = await loadGlobalCommandState(db, body, actor)
+  const loaded = await loadGlobalCommandState(db, body, actor)
+  const current = loaded.current
+  let state = loaded.state
   const employeeId = String(actor.employee_id || actor.user_id || '').trim()
   const employee = uniqueEmployeeIdentifierRecordMatch({
     records: state.employees,
@@ -18703,8 +19216,45 @@ const taskProgressCommand = async (db, actor, body, commandContext) => {
   })
   const storeId = String(openAttendance.storeId || '')
   const date = String(openAttendance.date || openAttendance.workDate || '').slice(0, 10)
-  const shiftId = String(openAttendance.shiftId || openAttendance.shift || '')
+  const selectedTaskShiftId = String(payload.selectedTaskShiftId || '').trim()
+  let manualContext = null
+  if (targetUnit === 'store') {
+    // Store work is saved only for the shift locked on this attendance. An old
+    // client omitting selectedTaskShiftId must not reach the attendance-shift
+    // fallback, and a payload for another shift is rejected before any write.
+    const lock = attendanceTaskShiftLock(openAttendance)
+    if (!Object.hasOwn(payload, 'selectedTaskShiftId') || lock.status === TASK_SHIFT_LOCK_STATUS.NONE) {
+      throw new ApiError(409, 'TASK_SHIFT_SELECTION_REQUIRED', 'Cần chọn ca công việc cho lượt điểm danh này trước khi lưu kết quả. Vui lòng tải lại trang.')
+    }
+    const requestedShift = taskShiftContext({ state, attendance: openAttendance, employeeId, selectedTaskShiftId })
+    if (!requestedShift.error && !taskShiftLockAllows(lock, requestedShift.shift.id)) {
+      throw new ApiError(409, 'TASK_SHIFT_LOCKED', 'Lượt điểm danh này đã khóa ca công việc khác; không thể lưu công việc của ca này.', { shiftIds: lock.shiftIds })
+    }
+  }
+  if (Object.hasOwn(payload, 'selectedTaskShiftId')) {
+    if (targetUnit !== 'store') throw new ApiError(400, 'TASK_SHIFT_INVALID', 'Lựa chọn ca chỉ dành cho nhân viên cửa hàng.')
+    if ((payload.employeeId && !employeeIdentifierValues(employee).includes(String(payload.employeeId)))
+      || (payload.storeId && String(payload.storeId) !== storeId)) throw new ApiError(403, 'TASK_SCOPE_FORBIDDEN', 'Thông tin nhân viên hoặc cửa hàng không thuộc lượt làm việc.')
+    assertNoCaseCollidingOperationalIdentifiers(state)
+    assertNoCaseCollidingActiveWorkCatalogIdentifiers(state)
+    manualContext = taskShiftContext({ state, attendance: openAttendance, employeeId, selectedTaskShiftId })
+    if (manualContext.error) throw new ApiError(409, manualContext.code, manualContext.error)
+    const existingIds = new Set((state.tasks || []).map((task) => task.id))
+    const newTasks = manualContext.tasks.filter((task) => !existingIds.has(task.id)).map((task) => ({ ...task, createdAt: commandContext.now, updatedAt: commandContext.now }))
+    const newAssignmentIds = [...new Set(newTasks.map((task) => task.assignmentId))]
+    state = {
+      ...state,
+      tasks: [...(state.tasks || []), ...newTasks],
+      taskAssignmentHistory: [...(state.taskAssignmentHistory || []), ...newAssignmentIds.map((id) => ({
+        id, assignmentId: id, employeeIds: [employeeId], storeId, date,
+        shiftId: manualContext.shift.id, shiftName: manualContext.shift.name,
+        tasks: newTasks.filter((task) => task.assignmentId === id), assignedAt: commandContext.now,
+      }))],
+    }
+  }
+  const shiftId = manualContext?.shift.id || String(openAttendance.shiftId || openAttendance.shift || '')
   const scopedTasks = (Array.isArray(state.tasks) ? state.tasks : []).filter((task) => {
+    if (manualContext) return manualContext.tasks.some((entry) => entry.id === task.id)
     if (task.deletedAt) return false
     if (!taskAppliesToEmployee(task, employeeId, storeId)) return false
     if (String(task.date || task.workDate || '').slice(0, 10) !== date) return false
@@ -18770,7 +19320,7 @@ const taskProgressCommand = async (db, actor, body, commandContext) => {
       completionRate: totalTasks ? Math.round((completedTasks / totalTasks) * 100) : 0,
     }
   }
-  const submissionFingerprint = JSON.stringify({ attendanceId: openAttendance.id, tasks: normalizedStatuses, incompleteReason })
+  const submissionFingerprint = JSON.stringify({ attendanceId: openAttendance.id, ...(manualContext ? { selectedTaskShiftId: shiftId } : {}), tasks: normalizedStatuses, incompleteReason })
   const histories = Array.isArray(state.taskAssignmentHistory) ? state.taskAssignmentHistory : []
   const assignmentIds = [...new Set(scopedTasks.map((task) => String(task.assignmentId || '')).filter(Boolean))]
   const assignmentIdKeys = new Set(assignmentIds.map(normalizeIdentifierKey))
@@ -18841,14 +19391,17 @@ const taskProgressCommand = async (db, actor, body, commandContext) => {
       submittedAt: existingSubmission.at,
     }
     if (!savedTaskProgressCoversIncompleteTasks({
-      progress: openAttendance.taskProgress,
+      progress: manualContext && openAttendance.taskProgress ? {
+        ...openAttendance.taskProgress,
+        incompleteTaskIds: (openAttendance.taskProgress.incompleteTaskIds || []).filter((id) => scopedById.has(normalizeIdentifierKey(id))),
+      } : openAttendance.taskProgress,
       attendanceId: openAttendance.id,
       employeeId,
       incompleteTaskIds,
     }) && incompleteTaskIds.length) {
       const restoredAttendance = {
         ...openAttendance,
-        taskProgress: restoredProgress,
+        taskProgress: manualContext ? mergeTaskShiftProgress(openAttendance, restoredProgress, scopedTasks.map((task) => task.id)) : restoredProgress,
         updatedAt: commandContext.now,
         updatedBy: serverActorSnapshot(actor),
       }
@@ -19008,8 +19561,8 @@ const taskProgressCommand = async (db, actor, body, commandContext) => {
     submittedAt: commandContext.now,
   })
   const updatedAttendance = {
-    ...openAttendance,
-    taskProgress,
+    ...(manualContext ? bindTaskShiftContext(openAttendance, manualContext) : openAttendance),
+    taskProgress: manualContext ? mergeTaskShiftProgress(openAttendance, taskProgress, scopedTasks.map((task) => task.id)) : taskProgress,
     updatedAt: commandContext.now,
     updatedBy: serverActorSnapshot(actor),
   }
@@ -20587,9 +21140,21 @@ const assertWorkCatalogScopeAccess = (state, actor, item) => {
   }
 }
 
-const assertStoreViolationPointsConfigured = (item) => {
-  if (item.targetGroup === 'store' && item.kind === 'VIOLATION' && item.violationPoints == null) {
-    throw new ApiError(400, 'VIOLATION_POINTS_REQUIRED', 'Vi phạm cửa hàng phải được cài điểm lớn hơn 0 và không quá 10.')
+// Violations in every unit are recorded as points; money deductions are retired.
+const assertViolationPointsConfigured = (item) => {
+  if (item.kind === 'VIOLATION' && item.violationPoints == null) {
+    throw new ApiError(400, 'VIOLATION_POINTS_REQUIRED', 'Vi phạm phải được cài điểm trừ (0; 0,5; 1; 1,5 … tối đa 10 điểm).')
+  }
+}
+
+// New or edited point values must use the 0,5 step. Persisted legacy values are
+// still readable so historical snapshots never become invalid.
+const assertViolationPointInput = (payload) => {
+  if (payload.violationPoints == null || payload.violationPoints === '') return
+  try {
+    normalizeViolationPointInput(payload.violationPoints)
+  } catch (error) {
+    throw new ApiError(400, 'VIOLATION_POINTS_INVALID', error instanceof Error ? error.message : 'Điểm vi phạm không hợp lệ.')
   }
 }
 
@@ -20606,9 +21171,10 @@ const workCatalogCommand = async (db, actor, body, commandContext) => {
 
   if (operation === 'create') {
     assertNoCaseCollidingActiveWorkCatalogIdentifiers(state)
+    assertViolationPointInput(payload)
     const item = normalizeWorkCatalogPayload(payload, null, actorSnapshot, commandContext.now)
     assertWorkCatalogScopeAccess(state, actor, item)
-    assertStoreViolationPointsConfigured(item)
+    assertViolationPointsConfigured(item)
     if (records.some((record) => sameIdentifier(record.id, item.id)
       || (String(record.targetGroup || '') === item.targetGroup
         && String(record.kind || '') === item.kind
@@ -20724,6 +21290,7 @@ const workCatalogCommand = async (db, actor, body, commandContext) => {
     if (previous.deletedAt) {
       throw new ApiError(409, 'WORK_CATALOG_DELETED', 'Mục danh mục đã ngừng sử dụng; hãy khôi phục trước khi sửa.')
     }
+    assertViolationPointInput(payload)
     next = normalizeWorkCatalogPayload({
       name: payload.name ?? previous.name,
       amountVnd: payload.amountVnd ?? previous.amountVnd,
@@ -20739,7 +21306,7 @@ const workCatalogCommand = async (db, actor, body, commandContext) => {
   }
 
   assertWorkCatalogScopeAccess(state, actor, next)
-  if (operation === 'update') assertStoreViolationPointsConfigured(next)
+  if (operation === 'update') assertViolationPointsConfigured(next)
 
   const nextState = {
     ...state,
@@ -22024,8 +22591,8 @@ const violationCommand = async (db, actor, body, commandContext) => {
         } else selected.push(existing)
         continue
       }
-      if (targetUnit === 'store' && catalogItem.violationPoints == null) {
-        throw new ApiError(400, 'VIOLATION_POINTS_REQUIRED', 'Admin/HTKD cần cài điểm cho nội dung vi phạm cửa hàng trước khi ghi nhận.')
+      if (catalogItem.violationPoints == null) {
+        throw new ApiError(400, 'VIOLATION_POINTS_REQUIRED', 'Admin/HTKD cần cài điểm cho nội dung vi phạm trước khi ghi nhận.')
       }
       const catalogSnapshot = {
         id: catalogItem.id,
@@ -22272,8 +22839,8 @@ const violationCommand = async (db, actor, body, commandContext) => {
         existing: true,
       }, 200, commandContext)
     }
-    if (targetUnit === 'store' && catalogItem?.violationPoints == null) {
-      throw new ApiError(400, 'VIOLATION_POINTS_REQUIRED', 'Admin/HTKD cần cài điểm cho nội dung vi phạm cửa hàng trước khi ghi nhận.')
+    if (catalogItem?.violationPoints == null) {
+      throw new ApiError(400, 'VIOLATION_POINTS_REQUIRED', 'Admin/HTKD cần cài điểm cho nội dung vi phạm trước khi ghi nhận.')
     }
     const note = String(payload.note || '').trim()
     if (note.length > 1_000) throw new ApiError(400, 'NOTE_INVALID', 'Ghi chú không được vượt quá 1.000 ký tự.')
@@ -22431,6 +22998,38 @@ const revenueBonusProgramForStore = (store) => {
       }
 }
 
+// Days finalized before configuration existed carry no snapshot; they were
+// calculated with the legacy table of their stored program.
+const legacyRevenueBonusConfigSnapshotFor = (programId) => {
+  try {
+    revenueBonusStorePolicyForProgramId(programId)
+  } catch {
+    return null
+  }
+  return revenueBonusConfigSnapshot(resolveRevenueBonusProgram({
+    programId,
+    businessDate: AUTOMATIC_REVENUE_BONUS_EFFECTIVE_DATE,
+    configs: [],
+  }))
+}
+
+const loadRevenueBonusConfigs = async (db) => {
+  const row = await loadStateCollections(db, 'global', ['revenueBonusConfigs'])
+  const value = row ? parseStoredJson(row.value_json, {})?.revenueBonusConfigs : undefined
+  if (value !== undefined && !Array.isArray(value)) {
+    throw new ApiError(500, REVENUE_BONUS_CONFIG_INVALID, 'Danh sách cấu hình thưởng doanh thu đã lưu bị hỏng.')
+  }
+  return Array.isArray(value) ? value : []
+}
+
+// Projections that did not load the collection read it explicitly, so payroll
+// never falls back to the legacy table because a projection omitted it.
+const stateWithRevenueBonusConfigs = async (db, state) => (
+  Array.isArray(state?.revenueBonusConfigs)
+    ? state
+    : { ...state, revenueBonusConfigs: await loadRevenueBonusConfigs(db) }
+)
+
 const liveAttendanceSeconds = (record, nowMs, projectOpen = true) => {
   const storedSource = record?.approvedSalesSeconds
     ?? record?.workedSeconds
@@ -22575,6 +23174,7 @@ const materializedRevenueBonusDaySnapshot = ({ state, storeId, businessDate, now
   const projectedAt = String(now || new Date().toISOString())
   return applyRevenueSnapshotPointPolicy({
     ...daily,
+    revenueBonusConfig: daily.revenueBonusConfig || legacyRevenueBonusConfigSnapshotFor(daily.programId),
     projectedAt,
     finalizedAt: daily.finalizedAt || daily.calculatedAt || daily.approvedAt || daily.createdAt || projectedAt,
     calculationMode: 'AUTOMATIC',
@@ -22618,6 +23218,7 @@ export const revenueBonusLiveSnapshot = ({ state, store, businessDate, now = new
       supportTransfers: Array.isArray(state?.supportTransfers) ? state.supportTransfers : [],
       overrides: Array.isArray(state?.revenueBonusOverrides) ? state.revenueBonusOverrides : [],
       violations: Array.isArray(state?.violations) ? state.violations : [],
+      revenueBonusConfigs: state?.revenueBonusConfigs,
       nowMs: Date.parse(now),
     }),
     calculationMode: 'AUTOMATIC',
@@ -22637,6 +23238,181 @@ const activeRevenueBonusOverrideRecords = (state, storeId, businessDate, employe
   && dateFromRecord(record) === businessDate
   && sameIdentifier(record.employeeId, employeeId)
 ))
+
+const REVENUE_BONUS_CONFIG_COMMAND = 'revenue_bonus_config.save'
+
+const revenueBonusConfigRecords = (state) => {
+  const records = state?.revenueBonusConfigs
+  if (records === undefined || records === null) return []
+  if (!Array.isArray(records)) {
+    throw new ApiError(500, REVENUE_BONUS_CONFIG_INVALID, 'Danh sách cấu hình thưởng doanh thu đã lưu bị hỏng.')
+  }
+  try {
+    // Validate the whole collection before any write so a corrupt row can
+    // never be carried forward or hidden behind a newer version.
+    for (const storePolicy of REVENUE_BONUS_CONFIG_STORE_POLICIES) revenueBonusConfigsForStorePolicy(records, storePolicy)
+  } catch (error) {
+    if (error?.code === REVENUE_BONUS_CONFIG_INVALID) {
+      throw new ApiError(500, REVENUE_BONUS_CONFIG_INVALID, error.message, error.details)
+    }
+    throw error
+  }
+  return records
+}
+
+const revenueBonusConfigAdminView = (records, now) => {
+  const today = vietnamBusinessDate(Date.parse(now))
+  return {
+    today,
+    minimumEffectiveFrom: minimumRevenueBonusEffectiveFrom(Date.parse(now)),
+    groups: REVENUE_BONUS_CONFIG_STORE_POLICIES.map((storePolicy) => {
+      const overview = revenueBonusConfigOverview({ configs: records, storePolicy, today })
+      return {
+        storePolicy,
+        label: revenueBonusStorePolicyLabel(storePolicy),
+        programId: overview.programId,
+        headVersion: overview.headVersion,
+        legacyThresholds: legacyRevenueBonusThresholds(storePolicy),
+        current: revenueBonusConfigSnapshot(overview.current),
+        currentRecord: overview.currentRecord,
+        pending: overview.pending,
+        history: overview.history,
+      }
+    }),
+  }
+}
+
+const getRevenueBonusConfigs = async (request, env, context) => {
+  const db = getDatabase(env)
+  const user = await requireSession(request, db, context, { stateCollections: SESSION_CONTEXT_STATE_COLLECTIONS })
+  assertAdmin(user, 'Chỉ Admin được xem và cấu hình thưởng doanh thu ngày.')
+  const row = await loadStateCollections(db, 'global', ['revenueBonusConfigs'])
+  const state = row ? parseStoredJson(row.value_json, {}) : {}
+  return jsonResponse(apiPayload(context, {
+    version: Number(row?.version || 0),
+    ...revenueBonusConfigAdminView(revenueBonusConfigRecords(state), context.now),
+  }))
+}
+
+const revenueBonusConfigValidationError = (details) => new ApiError(
+  400,
+  'REVENUE_BONUS_CONFIG_VALIDATION',
+  'Cấu hình thưởng doanh thu chưa hợp lệ; vui lòng kiểm tra các dòng được đánh dấu.',
+  details,
+)
+
+const revenueBonusConfigCommand = async (db, actor, body, commandContext) => {
+  assertAdmin(actor, 'Chỉ Admin được cấu hình thưởng doanh thu ngày.')
+  if (body.type !== REVENUE_BONUS_CONFIG_COMMAND) {
+    throw new ApiError(400, 'COMMAND_UNKNOWN', 'Lệnh cấu hình thưởng doanh thu không được hỗ trợ.')
+  }
+  const payload = isPlainRecord(body.payload) ? body.payload : {}
+  const storePolicy = String(payload.storePolicy ?? '')
+  if (!isRevenueBonusConfigStorePolicy(storePolicy)) {
+    throw new ApiError(400, 'REVENUE_BONUS_CONFIG_STORE_POLICY_INVALID', 'Nhóm cửa hàng chỉ được là Dosii hoặc SM TNV.')
+  }
+  const programId = revenueBonusProgramIdForStorePolicy(storePolicy)
+  if (payload.programId !== undefined && payload.programId !== programId) {
+    throw new ApiError(400, 'REVENUE_BONUS_CONFIG_PROGRAM_MISMATCH', 'Chương trình thưởng không khớp với nhóm cửa hàng.')
+  }
+  const baseVersion = payload.baseVersion
+  if (!Number.isSafeInteger(baseVersion) || baseVersion < 0) {
+    throw new ApiError(400, 'REVENUE_BONUS_CONFIG_BASE_VERSION_REQUIRED', 'Thiếu phiên bản cấu hình đang chỉnh sửa; vui lòng tải lại trang.')
+  }
+  const effectiveFrom = validateRevenueBonusEffectiveFrom(payload.effectiveFrom, { now: Date.parse(commandContext.now) })
+  const tierValidation = validateRevenueBonusTierRows(payload.tiers)
+  if (!effectiveFrom.ok || !tierValidation.valid) {
+    throw revenueBonusConfigValidationError({
+      fieldErrors: effectiveFrom.ok ? {} : { effectiveFrom: effectiveFrom.message },
+      formErrors: tierValidation.formErrors,
+      rowErrors: tierValidation.rowErrors
+        .map((errors, index) => ({ index, ...errors }))
+        .filter((errors) => Object.keys(errors).length > 1),
+    })
+  }
+
+  const { current, state } = await loadGlobalCommandState(db, body, actor)
+  const records = revenueBonusConfigRecords(state)
+  const groupRecords = revenueBonusConfigsForStorePolicy(records, storePolicy)
+  const headVersion = groupRecords.reduce((maximum, record) => Math.max(maximum, record.version), 0)
+  if (baseVersion !== headVersion) {
+    throw new ApiError(
+      409,
+      'REVENUE_BONUS_CONFIG_CONFLICT',
+      `Cấu hình ${revenueBonusStorePolicyLabel(storePolicy)} vừa được người khác cập nhật. Vui lòng tải lại để xem bản mới nhất trước khi lưu.`,
+      { storePolicy, currentVersion: headVersion, baseVersion },
+    )
+  }
+  // Only a configuration that has not started yet can be replaced. Anything
+  // already effective stays untouched so finalized days remain explainable.
+  const today = vietnamBusinessDate(Date.parse(commandContext.now))
+  const supersededIds = new Set(groupRecords
+    .filter((record) => record.status === REVENUE_BONUS_CONFIG_STATUS.ACTIVE && record.effectiveFrom > today)
+    .map((record) => record.id))
+  const actorSnapshot = serverActorSnapshot(actor)
+  const config = {
+    id: `rbc_${crypto.randomUUID()}`,
+    storePolicy,
+    programId,
+    effectiveFrom: effectiveFrom.value,
+    version: headVersion + 1,
+    status: REVENUE_BONUS_CONFIG_STATUS.ACTIVE,
+    tiers: tierValidation.tiers,
+    supersedesConfigIds: [...supersededIds],
+    createdAt: commandContext.now,
+    createdBy: actorSnapshot,
+    updatedAt: commandContext.now,
+    updatedBy: actorSnapshot,
+    requestId: commandContext.requestId,
+  }
+  const supersededConfigs = []
+  const nextRecords = records.map((record) => {
+    if (!isPlainRecord(record) || record.storePolicy !== storePolicy || !supersededIds.has(String(record.id))) return record
+    const superseded = {
+      ...record,
+      status: REVENUE_BONUS_CONFIG_STATUS.SUPERSEDED,
+      supersededAt: commandContext.now,
+      supersededBy: actorSnapshot,
+      supersededByConfigId: config.id,
+      updatedAt: commandContext.now,
+      updatedBy: actorSnapshot,
+    }
+    supersededConfigs.push(superseded)
+    return superseded
+  })
+  const nextState = {
+    ...state,
+    revenueBonusConfigs: [...nextRecords, config],
+    stateVersion: Math.max(1, Number(state.stateVersion) || 1) + 1,
+  }
+  return commitGlobalStateDomainCommand(db, actor, current, nextState, {
+    action: body.type,
+    entityType: 'revenue-bonus-config',
+    entityId: config.id,
+    before: {
+      storePolicy,
+      headVersion,
+      current: revenueBonusConfigSnapshot(resolveRevenueBonusProgram({ programId, businessDate: today, configs: records })),
+      supersededConfigs: groupRecords.filter((record) => supersededIds.has(record.id)),
+    },
+    after: config,
+    metadata: {
+      storePolicy,
+      programId,
+      effectiveFrom: config.effectiveFrom,
+      version: config.version,
+      baseVersion,
+      supersededConfigIds: config.supersedesConfigIds,
+    },
+    response: {
+      command: body.type,
+      revenueBonusConfig: config,
+      supersededConfigs,
+      ...revenueBonusConfigAdminView(nextState.revenueBonusConfigs, commandContext.now),
+    },
+    status: 201,
+  }, commandContext)
+}
 
 const revenueBonusOverrideCommand = async (db, actor, body, commandContext, current, state, payload) => {
   assertAdmin(actor, 'Chỉ Admin được sửa, xóa hoặc khôi phục thưởng doanh thu tự động của nhân viên.')
@@ -23211,7 +23987,12 @@ const revenueBonusCommand = async (db, actor, body, commandContext) => {
   ))
   const revenueVnd = orders.reduce((sum, order) => safeMoneySum(sum, Number(order.amount), 'Doanh thu ngày'), 0)
   const { programId, milestoneProgramId } = revenueBonusProgramForStore(store)
-  const percentage = calculateRevenueBonus({ programId, revenueVnd })
+  const revenueProgram = resolveRevenueBonusProgram({
+    programId,
+    businessDate,
+    configs: (await stateWithRevenueBonusConfigs(db, state)).revenueBonusConfigs,
+  })
+  const percentage = calculateRevenueBonus({ programId, revenueVnd, tiers: revenueProgram.tiers })
   const milestone = calculateTeamMilestoneReward({ programId: milestoneProgramId, achievedUnits: revenueVnd })
   const employeeById = new Map((Array.isArray(state.employees) ? state.employees : []).flatMap((employee) => (
     [employee.id, employee.code, employee.employeeId]
@@ -23324,6 +24105,7 @@ const revenueBonusCommand = async (db, actor, body, commandContext) => {
     tierId: percentage.tierId,
     rateBasisPoints: percentage.rateBasisPoints,
     ratePercent: percentage.ratePercent,
+    revenueBonusConfig: revenueBonusConfigSnapshot(revenueProgram),
     percentagePoolVnd: percentage.bonusVnd,
     milestoneId: milestone.milestoneId,
     milestonePoolVnd: 0,
@@ -25043,7 +25825,10 @@ const executeCommand = async (request, env, context) => {
     }
   }
   const idempotencyKey = validateIdempotencyKey(request, body)
-  const hash = await requestHash({ ...body, idempotencyKey: undefined })
+  // expectedVersion is concurrency metadata, not part of the intent. A client
+  // that lost a response and retried after its known version advanced must get
+  // the original receipt back instead of IDEMPOTENCY_KEY_REUSED.
+  const hash = await requestHash({ ...body, idempotencyKey: undefined, expectedVersion: undefined })
   const existingReceipt = await loadReceipt(db, user.user_id, idempotencyKey)
   const replay = replayReceipt(existingReceipt, hash)
   if (replay) return replay
@@ -25086,135 +25871,160 @@ const executeCommand = async (request, env, context) => {
       })
     }
   }
+  if (STALE_VERSION_REBASE_COMMANDS.has(String(body.type || ''))) {
+    for (let attempt = 1; ; attempt += 1) {
+      try {
+        // A fresh shallow copy drops the non-enumerable preloaded snapshot so a
+        // retry reads the state that the concurrent writer just committed.
+        return await dispatchCommand(db, env, user, attempt === 1 ? body : { ...body }, commandContext)
+      } catch (error) {
+        const racedReceipt = await loadReceipt(db, user.user_id, idempotencyKey)
+        const racedReplay = replayReceipt(racedReceipt, hash)
+        if (racedReplay) return racedReplay
+        if (!(error instanceof ApiError) || error.code !== 'VERSION_CONFLICT'
+          || attempt >= MAX_REBASE_COMMAND_ATTEMPTS) throw error
+      }
+    }
+  }
   try {
-    if (body.type === 'state.replace' || body.type === 'state.merge') {
-      return await stateCommand(db, user, body, commandContext)
-    }
-    if (String(body.type || '').startsWith('store.')) {
-      return await storeCommand(db, user, body, commandContext)
-    }
-    if (body.type === 'tasks.assign' || body.type === 'tasks.replace_scope') {
-      return await taskAssignmentCommand(db, user, body, commandContext)
-    }
-    if (String(body.type || '').startsWith('employee.')) {
-      return await employeeProfileCommand(db, user, body, commandContext, env)
-    }
-    if (String(body.type || '').startsWith('shift_definition.')) {
-      return await shiftDefinitionCommand(db, user, body, commandContext)
-    }
-    if (String(body.type || '').startsWith('schedule.')) {
-      return await scheduleCommand(db, user, body, commandContext)
-    }
-    if (String(body.type || '').startsWith('account_settings.')) {
-      return await accountSettingsCommand(db, user, body, commandContext, env)
-    }
-    if (String(body.type || '').startsWith('notification.')) {
-      return await notificationCommand(db, user, body, commandContext)
-    }
-    if (String(body.type || '').startsWith('support_transfer.')) {
-      return await supportTransferCommand(db, user, body, commandContext)
-    }
-    if (String(body.type || '').startsWith('operational_reset.')) {
-      return await operationalResetCommand(db, user, body, commandContext)
-    }
-    if (body.type === 'operational_identifier.resolve_history_alias') {
-      return await operationalIdentifierHistoryRepairCommand(db, user, body, commandContext)
-    }
-    if (body.type === 'system.reset_all') {
-      return await systemResetAllCommand(db, user, body, commandContext, env)
-    }
-    if (body.type === 'system.reset_demo') {
-      return await systemResetDemoCommand(db, user, body, commandContext, env)
-    }
-    if (body.type === 'policy.set') return await policyCommand(db, user, body, commandContext)
-    if (body.type === 'policies.set') return await policiesCommand(db, user, body, commandContext)
-    if (body.type === 'attendance.update') {
-      return await attendanceUpdateCommand(db, user, body, commandContext)
-    }
-    if (body.type === 'attendance.emergency_close') {
-      return await attendanceEmergencyCloseCommand(db, user, body, commandContext)
-    }
-    if (body.type === 'attendance.check_in' || body.type === 'attendance.check_out') {
-      return await attendanceCommand(db, user, body, commandContext, env)
-    }
-    if (String(body.type || '').startsWith('order_information.')) {
-      return await orderInformationCommand(db, user, body, commandContext)
-    }
-    if (body.type === 'order.create') return await orderCreateCommand(db, user, body, commandContext)
-    if (body.type === 'order.update' || body.type === 'order.delete') {
-      return await orderMutationCommand(db, user, body, commandContext)
-    }
-    if (String(body.type || '').startsWith('support_work.')) {
-      return await supportWorkCommand(db, user, body, commandContext)
-    }
-    if (String(body.type || '').startsWith('support_schedule.')) {
-      return await supportScheduleCommand(db, user, body, commandContext)
-    }
-    if (body.type === 'task.progress.save') {
-      return await taskProgressCommand(db, user, body, commandContext)
-    }
-    if (body.type === 'task.done' || body.type === 'task.set_done') {
-      return await taskDoneCommand(db, user, body, commandContext)
-    }
-    if (body.type === 'shift_expense.create') {
-      return await shiftExpenseCommand(db, user, body, commandContext)
-    }
-    if (String(body.type || '').startsWith('fixed_expense.')
-      || String(body.type || '').startsWith('expense.')) {
-      return await expenseCommand(db, user, body, commandContext)
-    }
-    if (String(body.type || '').startsWith('import.')
-      || String(body.type || '').startsWith('import_voucher.')) {
-      return await importVoucherCommand(db, user, body, commandContext)
-    }
-    if (String(body.type || '').startsWith('salary_advance.')) {
-      return await salaryAdvanceCommand(db, user, body, commandContext)
-    }
-    if (String(body.type || '').startsWith('salary_adjustment.')) {
-      return await salaryAdjustmentCommand(db, user, body, commandContext)
-    }
-    if (String(body.type || '').startsWith('store_salary_config.')) {
-      if (body.type === 'store_salary_config.resolve_collision') {
-        return await storeSalaryConfigCollisionRepairCommand(db, user, body, commandContext)
-      }
-      return await storeSalaryConfigCommand(db, user, body, commandContext)
-    }
-    if (String(body.type || '').startsWith('compensation_entry.')) {
-      return await compensationEntryCommand(db, user, body, commandContext)
-    }
-    if (String(body.type || '').startsWith('work_catalog.')) {
-      return await workCatalogCommand(db, user, body, commandContext)
-    }
-    if (body.type === 'work_reward.set' || body.type === 'work_reward.set_batch') {
-      return await workRewardCommand(db, user, body, commandContext)
-    }
-    if (String(body.type || '').startsWith('violation.')) {
-      return await violationCommand(db, user, body, commandContext)
-    }
-    if (String(body.type || '').startsWith('revenue_bonus.')) {
-      if (body.type === 'revenue_bonus.resolve_daily_collision') {
-        return await revenueBonusDailyCollisionRepairCommand(db, user, body, commandContext)
-      }
-      return await revenueBonusCommand(db, user, body, commandContext)
-    }
-    if (String(body.type || '').startsWith('payroll.')) {
-      if (body.type === 'payroll.resolve_period_collision') {
-        return await payrollPeriodCollisionRepairCommand(db, user, body, commandContext)
-      }
-      return await payrollCommand(db, user, body, commandContext)
-    }
-    if (body.type === 'counter.next') return await counterCommand(db, user, body, commandContext)
-    if (body.type === 'user.change_password') {
-      return await changeOwnPasswordCommand(db, user, body, commandContext)
-    }
-    if (String(body.type || '').startsWith('user.')) return await userCommand(db, user, body, commandContext)
-    throw new ApiError(400, 'COMMAND_UNKNOWN', 'Lệnh không được hỗ trợ.')
+    return await dispatchCommand(db, env, user, body, commandContext)
   } catch (error) {
     const racedReceipt = await loadReceipt(db, user.user_id, idempotencyKey)
     const racedReplay = replayReceipt(racedReceipt, hash)
     if (racedReplay) return racedReplay
     throw error
   }
+}
+
+const dispatchCommand = async (db, env, user, body, commandContext) => {
+  if (body.type === 'state.replace' || body.type === 'state.merge') {
+    return await stateCommand(db, user, body, commandContext)
+  }
+  if (String(body.type || '').startsWith('store.')) {
+    return await storeCommand(db, user, body, commandContext)
+  }
+  if (body.type === 'tasks.assign' || body.type === 'tasks.replace_scope') {
+    return await taskAssignmentCommand(db, user, body, commandContext)
+  }
+  if (String(body.type || '').startsWith('employee.')) {
+    return await employeeProfileCommand(db, user, body, commandContext, env)
+  }
+  if (String(body.type || '').startsWith('shift_definition.')) {
+    return await shiftDefinitionCommand(db, user, body, commandContext)
+  }
+  if (String(body.type || '').startsWith('schedule.')) {
+    return await scheduleCommand(db, user, body, commandContext)
+  }
+  if (String(body.type || '').startsWith('account_settings.')) {
+    return await accountSettingsCommand(db, user, body, commandContext, env)
+  }
+  if (String(body.type || '').startsWith('notification.')) {
+    return await notificationCommand(db, user, body, commandContext)
+  }
+  if (String(body.type || '').startsWith('support_transfer.')) {
+    return await supportTransferCommand(db, user, body, commandContext)
+  }
+  if (String(body.type || '').startsWith('operational_reset.')) {
+    return await operationalResetCommand(db, user, body, commandContext)
+  }
+  if (body.type === 'operational_identifier.resolve_history_alias') {
+    return await operationalIdentifierHistoryRepairCommand(db, user, body, commandContext)
+  }
+  if (body.type === 'system.reset_all') {
+    return await systemResetAllCommand(db, user, body, commandContext, env)
+  }
+  if (body.type === 'system.reset_demo') {
+    return await systemResetDemoCommand(db, user, body, commandContext, env)
+  }
+  if (body.type === 'policy.set') return await policyCommand(db, user, body, commandContext)
+  if (body.type === 'policies.set') return await policiesCommand(db, user, body, commandContext)
+  if (body.type === 'attendance.update') {
+    return await attendanceUpdateCommand(db, user, body, commandContext)
+  }
+  if (body.type === 'attendance.emergency_close') {
+    return await attendanceEmergencyCloseCommand(db, user, body, commandContext)
+  }
+  if (body.type === 'attendance.check_in' || body.type === 'attendance.check_out') {
+    return await attendanceCommand(db, user, body, commandContext, env)
+  }
+  if (String(body.type || '').startsWith('order_information.')) {
+    return await orderInformationCommand(db, user, body, commandContext)
+  }
+  if (body.type === 'order.create') return await orderCreateCommand(db, user, body, commandContext)
+  if (body.type === 'order.update' || body.type === 'order.delete') {
+    return await orderMutationCommand(db, user, body, commandContext)
+  }
+  if (String(body.type || '').startsWith('support_work.')) {
+    return await supportWorkCommand(db, user, body, commandContext)
+  }
+  if (String(body.type || '').startsWith('support_schedule.')) {
+    return await supportScheduleCommand(db, user, body, commandContext)
+  }
+  if (body.type === 'task.progress.save') {
+    return await taskProgressCommand(db, user, body, commandContext)
+  }
+  if (body.type === 'task.shift.select') {
+    return await taskShiftSelectCommand(db, user, body, commandContext)
+  }
+  if (body.type === 'task.done' || body.type === 'task.set_done') {
+    return await taskDoneCommand(db, user, body, commandContext)
+  }
+  if (body.type === 'shift_expense.create') {
+    return await shiftExpenseCommand(db, user, body, commandContext)
+  }
+  if (String(body.type || '').startsWith('fixed_expense.')
+    || String(body.type || '').startsWith('expense.')) {
+    return await expenseCommand(db, user, body, commandContext)
+  }
+  if (String(body.type || '').startsWith('import.')
+    || String(body.type || '').startsWith('import_voucher.')) {
+    return await importVoucherCommand(db, user, body, commandContext)
+  }
+  if (String(body.type || '').startsWith('salary_advance.')) {
+    return await salaryAdvanceCommand(db, user, body, commandContext)
+  }
+  if (String(body.type || '').startsWith('salary_adjustment.')) {
+    return await salaryAdjustmentCommand(db, user, body, commandContext)
+  }
+  if (String(body.type || '').startsWith('store_salary_config.')) {
+    if (body.type === 'store_salary_config.resolve_collision') {
+      return await storeSalaryConfigCollisionRepairCommand(db, user, body, commandContext)
+    }
+    return await storeSalaryConfigCommand(db, user, body, commandContext)
+  }
+  if (String(body.type || '').startsWith('compensation_entry.')) {
+    return await compensationEntryCommand(db, user, body, commandContext)
+  }
+  if (String(body.type || '').startsWith('work_catalog.')) {
+    return await workCatalogCommand(db, user, body, commandContext)
+  }
+  if (body.type === 'work_reward.set' || body.type === 'work_reward.set_batch') {
+    return await workRewardCommand(db, user, body, commandContext)
+  }
+  if (String(body.type || '').startsWith('violation.')) {
+    return await violationCommand(db, user, body, commandContext)
+  }
+  if (String(body.type || '').startsWith('revenue_bonus_config.')) {
+    return await revenueBonusConfigCommand(db, user, body, commandContext)
+  }
+  if (String(body.type || '').startsWith('revenue_bonus.')) {
+    if (body.type === 'revenue_bonus.resolve_daily_collision') {
+      return await revenueBonusDailyCollisionRepairCommand(db, user, body, commandContext)
+    }
+    return await revenueBonusCommand(db, user, body, commandContext)
+  }
+  if (String(body.type || '').startsWith('payroll.')) {
+    if (body.type === 'payroll.resolve_period_collision') {
+      return await payrollPeriodCollisionRepairCommand(db, user, body, commandContext)
+    }
+    return await payrollCommand(db, user, body, commandContext)
+  }
+  if (body.type === 'counter.next') return await counterCommand(db, user, body, commandContext)
+  if (body.type === 'user.change_password') {
+    return await changeOwnPasswordCommand(db, user, body, commandContext)
+  }
+  if (String(body.type || '').startsWith('user.')) return await userCommand(db, user, body, commandContext)
+  throw new ApiError(400, 'COMMAND_UNKNOWN', 'Lệnh không được hỗ trợ.')
 }
 
 const logout = async (request, env, context) => {
@@ -25256,6 +26066,62 @@ const visibleUserRowsForActor = async (db, actor) => ['admin', 'business_support
         WHERE role = 'employee' AND LOWER(store_id) = LOWER(?)
         ORDER BY display_name, username
       `, String(actor.store_id || ''))
+
+// Sessions and idempotency receipts are only needed while a session can be
+// used or a client can still retry a request. Without pruning both tables grew
+// forever and inflated every backup. audit_log is business history and is
+// never pruned here.
+const DEFAULT_OPERATIONAL_RETENTION_DAYS = 30
+const OPERATIONAL_PRUNE_BATCH_SIZE = 500
+
+export const pruneOperationalRecords = async (env, {
+  now = new Date().toISOString(),
+  retentionDays = DEFAULT_OPERATIONAL_RETENTION_DAYS,
+  batchSize = OPERATIONAL_PRUNE_BATCH_SIZE,
+  maxBatches = 200,
+  yieldControl = null,
+} = {}) => {
+  const db = getDatabase(env)
+  const nowMs = Date.parse(now)
+  if (!Number.isFinite(nowMs)) throw new TypeError('now must be a valid timestamp.')
+  const days = Math.max(7, Math.trunc(Number(retentionDays) || DEFAULT_OPERATIONAL_RETENTION_DAYS))
+  const limit = Math.max(1, Math.min(5_000, Math.trunc(Number(batchSize) || OPERATIONAL_PRUNE_BATCH_SIZE)))
+  const cutoff = new Date(nowMs - days * 24 * 60 * 60 * 1_000).toISOString()
+  const summary = { cutoff, sessions: 0, receipts: 0, receiptsSkipped: false, complete: true }
+  const pruneInBatches = async (key, statement) => {
+    for (let batch = 0; batch < maxBatches; batch += 1) {
+      if (batch > 0 && typeof yieldControl === 'function') await yieldControl()
+      const removed = changes(await statement())
+      summary[key] += removed
+      if (removed < limit) return
+    }
+    summary.complete = false
+  }
+  await pruneInBatches('sessions', () => run(db, `
+    DELETE FROM sessions
+    WHERE id IN (
+      SELECT id FROM sessions
+      WHERE expires_at < ? OR (revoked_at IS NOT NULL AND revoked_at < ?)
+      LIMIT ?
+    )
+  `, cutoff, cutoff, limit))
+  // A pending Reset-all finalizer proves completion through its receipt, so
+  // receipts are left untouched until that marker is cleared.
+  if (await loadPendingSystemResetAll(db)) {
+    summary.receiptsSkipped = true
+    return summary
+  }
+  // command_receipt_chunks cascade from command_receipts (foreign key).
+  await pruneInBatches('receipts', () => run(db, `
+    DELETE FROM command_receipts
+    WHERE (actor_id, idempotency_key) IN (
+      SELECT actor_id, idempotency_key FROM command_receipts
+      WHERE created_at < ?
+      LIMIT ?
+    )
+  `, cutoff, limit))
+  return summary
+}
 
 const listUsers = async (request, env, context) => {
   const db = getDatabase(env)
@@ -25840,6 +26706,10 @@ const handleApi = async (request, env, context, url) => {
     if (request.method !== 'GET') return methodNotAllowed(['GET'])
     return getRevenueBonusPeriod(request, env, context, url)
   }
+  if (path === '/api/revenue-bonus/configs') {
+    if (request.method !== 'GET') return methodNotAllowed(['GET'])
+    return getRevenueBonusConfigs(request, env, context)
+  }
   if (path === '/api/command') {
     if (request.method !== 'POST') return methodNotAllowed(['POST'])
     return executeCommand(request, env, context)
@@ -25924,6 +26794,32 @@ const worker = {
           serverTime: context.now,
           requestId: context.requestId,
         }, error.status, extraHeaders)
+      }
+      if (error?.code === ORDER_DATA_INVALID) {
+        console.error('IDOSI order data invalid', error.details)
+        return jsonResponse({
+          ok: false,
+          error: {
+            code: ORDER_DATA_INVALID,
+            message: `${error.message}. Cần sửa đơn này để báo cáo/thống kê chạy được.`,
+            details: error.details,
+          },
+          serverTime: context.now,
+          requestId: context.requestId,
+        }, 422, extraHeaders)
+      }
+      if (error?.code === REVENUE_BONUS_CONFIG_INVALID) {
+        console.error('IDOSI revenue bonus configuration invalid', error.details)
+        return jsonResponse({
+          ok: false,
+          error: {
+            code: REVENUE_BONUS_CONFIG_INVALID,
+            message: `${error.message} Hệ thống dừng tính thưởng doanh thu để tránh sai tiền; cần Admin kiểm tra cấu hình.`,
+            ...(error.details ? { details: error.details } : {}),
+          },
+          serverTime: context.now,
+          requestId: context.requestId,
+        }, 500, extraHeaders)
       }
       console.error('Unhandled IDOSI worker error', error)
       return jsonResponse({

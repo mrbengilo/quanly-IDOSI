@@ -188,6 +188,64 @@ for pattern in error tls handshake timeout refused reset unreachable certificate
   printf 'caddy_log_%s_count=%s\n' "$pattern" "$(grep -Eic "$pattern" <<<"$caddy_logs" || true)"
 done
 
+section 'app_request_log'
+app_logs="$(compose logs --no-color --since=180m --tail=20000 app 2>&1 || true)"
+printf 'app_log_lines=%s\n' "$(grep -c . <<<"$app_logs" || true)"
+printf 'app_log_slow_count=%s\n' "$(grep -c '"slow":true' <<<"$app_logs" || true)"
+printf 'app_log_aborted_count=%s\n' "$(grep -c '"aborted":true' <<<"$app_logs" || true)"
+printf 'app_log_command_count=%s\n' "$(grep -c '"path":"/api/command"' <<<"$app_logs" || true)"
+printf 'app_log_error_lines=%s\n' "$(grep -Eic 'error|unhandled|SQLITE_BUSY|database is locked' <<<"$app_logs" || true)"
+printf -- '--- last_command_requests ---\n'
+grep '"path":"/api/command"' <<<"$app_logs" | tail -n 15 \
+  | sed -E 's/.*"timestamp":"([^"]+)".*"status":([0-9]+).*"durationMs":([0-9.]+),"aborted":(true|false).*"handler":([0-9.]+).*"database":\{([^}]*)\}.*/ts=\1 status=\2 ms=\3 aborted=\4 handler=\5 db={\6}/' || true
+printf -- '--- slowest_recent_requests ---\n'
+grep '"slow":true' <<<"$app_logs" | tail -n 15 \
+  | sed -E 's/.*"timestamp":"([^"]+)".*"method":"([A-Z]+)","path":"([^"]+)","status":([0-9]+).*"durationMs":([0-9.]+).*/ts=\1 \2 \3 status=\4 ms=\5/' || true
+printf -- '--- slowest_statement_labels ---\n'
+grep '"slow":true' <<<"$app_logs" \
+  | grep -o '"maxMs":[0-9.]*,"maxStatement":"[^"]*"' \
+  | sed -E 's/"maxMs":([0-9.]+),"maxStatement":"([^"]*)"/max_ms=\1 statement=\2/' \
+  | sort -t= -k2 -rn | head -n 15 || true
+printf -- '--- recent_error_lines ---\n'
+grep -Ei 'error|unhandled|SQLITE_BUSY|database is locked' <<<"$app_logs" | grep -v '"event":"idosi.api.request"' | tail -n 20 | cut -c1-400 || true
+printf -- '--- context_before_oom ---\n'
+grep -n -B8 'heap out of memory' <<<"$app_logs" | grep -v 'node::\|v8::\|^\-\-$' | cut -c1-220 | tail -n 16 || true
+printf -- '--- heap_limit ---\n'
+compose exec -T app node -e "const v8=require('node:v8');const h=v8.getHeapStatistics();console.log('heap_size_limit_mb='+Math.round(h.heap_size_limit/1048576)+' node_options='+(process.env.NODE_OPTIONS||''))" </dev/null || true
+printf -- '--- command_preflight_state ---\n'
+compose exec -T app node --input-type=module <<'NODE' || true
+import { DatabaseSync } from 'node:sqlite'
+const db = new DatabaseSync(process.env.IDOSI_DB_PATH || '/app/data/idosi.sqlite', { readOnly: true })
+const sizes = db.prepare(`SELECT collection_key, COUNT(*) AS n, SUM(length(value_json)) AS bytes
+  FROM state_entities WHERE scope_key = 'global' GROUP BY collection_key ORDER BY bytes DESC LIMIT 12`).all()
+console.log('entity_sizes=' + JSON.stringify(sizes.map((r) => [r.collection_key, Number(r.n), Math.round(Number(r.bytes) / 1048576)])))
+const app = db.prepare(`SELECT scope_key, version, length(value_json) AS bytes FROM app_state ORDER BY bytes DESC LIMIT 5`).all()
+console.log('app_state_sizes=' + JSON.stringify(app.map((r) => [r.scope_key, Number(r.version), Math.round(Number(r.bytes) / 1048576)])))
+const pending = db.prepare(`
+  SELECT open_flag, value_json FROM state_entities
+  WHERE scope_key = 'global' AND collection_key = 'attendance'
+    AND (open_flag = 1 OR (open_flag IS NULL
+      AND json_extract(value_json, '$.deletedAt') IS NULL
+      AND trim(COALESCE(CAST(json_extract(value_json, '$.checkOut') AS TEXT), '')) = ''
+      AND trim(COALESCE(CAST(json_extract(value_json, '$.checkOutAt') AS TEXT), '')) = ''))
+    AND (COALESCE(CAST(json_extract(value_json, '$.checklistSnapshot.storeChecklistRepairVersion') AS INTEGER), 0) < 1
+      OR json_extract(value_json, '$.checklistRepairError') IS NOT NULL)`).all()
+console.log('checklist_repair_pending_rows=' + pending.length)
+for (const row of pending.slice(0, 15)) {
+  const r = JSON.parse(row.value_json)
+  console.log('pending=' + JSON.stringify({
+    open_flag: row.open_flag, id: r.id, employeeId: r.employeeId, storeId: r.storeId, unit: r.unit,
+    date: r.date || r.workDate, shiftId: r.shiftId || r.shift, checkIn: r.checkIn || r.checkInTime,
+    snapshotSource: r.checklistSnapshot?.source || null, repairVersion: r.checklistSnapshot?.storeChecklistRepairVersion ?? null,
+    taskShiftContexts: Array.isArray(r.taskShiftContexts) ? r.taskShiftContexts.length : null,
+    repairError: r.checklistRepairError ? String(r.checklistRepairError.code || r.checklistRepairError.message || r.checklistRepairError).slice(0, 120) : null,
+  }))
+}
+db.close()
+NODE
+printf -- '--- data_size ---\n'
+compose exec -T app sh -c 'ls -la /app/data 2>/dev/null | head -20' </dev/null || true
+
 section 'payroll_collision_summary'
 compose exec -T app node <<'NODE'
 import { DatabaseSync } from 'node:sqlite'

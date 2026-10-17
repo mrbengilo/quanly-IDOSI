@@ -4,6 +4,7 @@ import { Buffer } from 'node:buffer'
 import { spawnSync } from 'node:child_process'
 import { mkdtemp, mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises'
 import { request as nodeHttpRequest } from 'node:http'
+import { createConnection } from 'node:net'
 import { tmpdir } from 'node:os'
 import { resolve } from 'node:path'
 import process from 'node:process'
@@ -134,6 +135,20 @@ describe('IDOSI VPS runtime', () => {
     expect(caddyfile).toContain('handle /.idosi-release-sha')
   })
 
+  it('sends a Content-Security-Policy that only allows first-party scripts and API calls', async () => {
+    const caddyfile = await readFile(resolve('deploy', 'vps', 'Caddyfile'), 'utf8')
+    const policy = caddyfile.match(/Content-Security-Policy "([^"]+)"/u)?.[1] || ''
+    const directives = Object.fromEntries(policy.split(';').map((entry) => entry.trim()).filter(Boolean)
+      .map((entry) => [entry.split(/\s+/u)[0], entry.split(/\s+/u).slice(1)]))
+    expect(directives['default-src']).toEqual(["'self'"])
+    expect(directives['script-src']).toEqual(["'self'"])
+    expect(directives['connect-src']).toEqual(["'self'"])
+    expect(directives['object-src']).toEqual(["'none'"])
+    expect(directives['frame-ancestors']).toEqual(["'none'"])
+    expect(directives['font-src']).toContain('https://fonts.gstatic.com')
+    expect(directives['style-src']).toContain('https://fonts.googleapis.com')
+  })
+
   it('keeps Node upstream sockets alive longer than the Caddy proxy pool', async () => {
     const directory = await temporaryDirectory()
     const { server, runtime } = createIdosiServer({
@@ -222,6 +237,7 @@ describe('IDOSI VPS runtime', () => {
         && database.totalMs >= 0
         && database.maxMs >= 0
       ))).toBe(true)
+      expect(loginEntry.database.maxStatement).toMatch(/^SELECT /u)
       expect(JSON.stringify(entries)).not.toMatch(
         /private_token|private-observability-user|private-employee-id|must-not-be-logged/u,
       )
@@ -269,6 +285,50 @@ describe('IDOSI VPS runtime', () => {
       })
       expect(entries).toHaveLength(1)
       expect(JSON.stringify(entry)).not.toContain('private-aborted-body')
+    } finally {
+      await new Promise((resolveClose) => server.close(resolveClose))
+    }
+  })
+
+  it('skips the handler for a request whose client left while it was queued', async () => {
+    const directory = await temporaryDirectory()
+    const entries = []
+    let resolveLog
+    const logged = new Promise((resolveEntry) => { resolveLog = resolveEntry })
+    const { server } = createIdosiServer({
+      databasePath: resolve(directory, 'idosi.sqlite'),
+      imagesDirectory: resolve(directory, 'images'),
+      requestLogger: (entry) => {
+        entries.push(entry)
+        resolveLog(entry)
+      },
+    })
+    await new Promise((resolveListen) => server.listen(0, '127.0.0.1', resolveListen))
+    const address = server.address()
+    try {
+      const body = JSON.stringify({ username: 'queued-user', password: 'queued-password' })
+      const socket = createConnection({ host: '127.0.0.1', port: address.port })
+      socket.on('error', () => {})
+      await new Promise((resolveConnect) => socket.once('connect', resolveConnect))
+      socket.end([
+        'POST /api/login HTTP/1.1',
+        'Host: 127.0.0.1',
+        'Content-Type: application/json',
+        `Content-Length: ${Buffer.byteLength(body)}`,
+        '',
+        body,
+      ].join('\r\n'))
+      socket.destroy()
+      // Hold the event loop like a saturated runtime so the request and the
+      // client close are both pending when the server finally reads them.
+      const busyUntil = Date.now() + 100
+      while (Date.now() < busyUntil) { /* simulate a busy event loop */ }
+
+      const entry = await logged
+      expect(entry).toMatchObject({ method: 'POST', path: '/api/login', aborted: true })
+      expect(entry.database).toMatchObject({ statements: 0, reads: 0, writes: 0 })
+      expect(entry.timingMs.handler).toBe(0)
+      expect(entries).toHaveLength(1)
     } finally {
       await new Promise((resolveClose) => server.close(resolveClose))
     }

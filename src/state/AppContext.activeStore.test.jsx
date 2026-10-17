@@ -1,7 +1,13 @@
 import { act, cleanup, render, screen } from '@testing-library/react'
 import { createRef, forwardRef, useImperativeHandle } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { AppProvider, createInitialState, SYSTEM_RESET_IDEMPOTENCY_STORAGE_KEY, useApp } from './AppContext'
+import {
+  AppProvider,
+  createInitialState,
+  REMOTE_POLL_INTERVAL_MS,
+  SYSTEM_RESET_IDEMPOTENCY_STORAGE_KEY,
+  useApp,
+} from './AppContext'
 
 const api = vi.hoisted(() => ({
   apiBootstrapState: vi.fn(),
@@ -101,6 +107,37 @@ const AppProbe = forwardRef(function AppProbe(_props, ref) {
 const renderProvider = () => render(<AppProvider><AppProbe ref={appRef} /></AppProvider>)
 
 describe('remote command active-store preservation', () => {
+  it.each(['select', 'save'])('refreshes incomplete task %s deltas instead of caching missing history as current', async (operation) => {
+    vi.useFakeTimers()
+    window.history.replaceState({}, '', '/employee/tasks')
+    const attendance = { id: 'ATT-TASK', employeeId: 'E01', storeId: 'STORE-A', date: '2026-10-01', shiftId: 'ca1', checkIn: '08:00' }
+    const locked = { ...attendance, taskShiftSelection: { attendanceId: attendance.id, shiftId: 'ca1', slot: 'morning' }, taskShiftContexts: [{ shiftId: 'ca1', taskIds: ['TASK-1'] }] }
+    const task = { id: 'TASK-1', assignmentId: 'ASSIGN-1', storeId: 'STORE-A', date: attendance.date, employeeIds: ['E01'], shiftId: 'ca1', required: true, completedBy: {} }
+    const initial = { ...makeRemoteState(), employees: [{ id: 'E01', code: 'E01', name: 'Fixture', unit: 'store', storeId: 'STORE-A' }],
+      attendance: [operation === 'save' ? locked : attendance], tasks: [task], taskAssignmentHistory: [], workCatalogItems: [],
+      shiftDefinitions: [{ id: 'ca1', name: 'Ca sáng', storeId: 'STORE-A' }] }
+    const history = { id: 'ASSIGN-1', employeeIds: ['E01'], progressHistory: [{ employeeId: 'E01', attendanceId: attendance.id, completionRate: 100 }] }
+    const projection = (state, version) => ({ user: employeeHomeUser, state, version, projection: 'global', screen: 'employee-tasks', policies: [] })
+    api.apiLogin.mockResolvedValue({ user: employeeHomeUser })
+    api.apiBootstrapState.mockResolvedValue(projection(initial, 1))
+    api.apiGetSystemScreenState.mockResolvedValue(projection(initial, 1))
+    renderProvider()
+    await act(async () => { await appRef.current.login('employee-one', 'password') })
+    await act(async () => { await appRef.current.ensureSystemWorkspaceData({ screen: 'employee-tasks' }) })
+    api.apiGetSystemScreenState.mockClear()
+    api.apiGetSystemScreenState.mockResolvedValue(projection({ ...initial, attendance: [locked], taskAssignmentHistory: [history] }, 2))
+    api.apiCommand.mockResolvedValueOnce({ version: 2, attendance: locked, tasks: [task], completionRate: 100 })
+    await act(async () => {
+      const payload = { attendanceId: attendance.id, selectedTaskShiftId: 'ca1', tasks: [{ id: task.id, completed: true }] }
+      const result = operation === 'select' ? await appRef.current.selectTaskShift(payload) : await appRef.current.saveStoreTaskProgress(payload)
+      expect(result.ok).toBe(true)
+    })
+    // Simulate returning to the same screen before its deferred refresh. The
+    // delta lacks assignment history and cannot satisfy the new server version.
+    await act(async () => { await appRef.current.ensureSystemWorkspaceData({ screen: 'employee-tasks' }) })
+    expect(api.apiGetSystemScreenState).toHaveBeenCalledTimes(1)
+    expect(appRef.current.taskAssignmentHistory).toEqual([history])
+  })
   beforeEach(() => {
     appRef = createRef()
     window.history.replaceState({}, '', '/')
@@ -130,6 +167,58 @@ describe('remote command active-store preservation', () => {
     vi.restoreAllMocks()
     vi.clearAllMocks()
     window.history.replaceState({}, '', '/')
+  })
+
+  it.each(['store', 'store_manager'])('waits for HTKD %s deletion, then applies the confirmed delta and keeps history', async (unit) => {
+    vi.useFakeTimers()
+    const employee = { id: 'TARGET', unit, storeId: 'STORE-B', name: 'Hồ sơ thử', status: 'Đang làm việc' }
+    const initial = {
+      ...makeRemoteState(), employees: [...makeRemoteState().employees, employee],
+      schedule: [{ id: 'SCHEDULE', employeeId: 'TARGET' }],
+      attendance: [{ id: 'HISTORY', employeeId: 'TARGET', hours: 8 }],
+    }
+    api.apiBootstrapState.mockResolvedValue({ user: supportUser, state: initial, policies: [], version: 1 })
+    renderProvider()
+    await act(async () => { await appRef.current.login('support-one', 'password') })
+    let complete
+    api.apiCommand.mockImplementationOnce(() => new Promise((resolve) => { complete = resolve }))
+    let pending
+    await act(async () => {
+      pending = appRef.current.deleteEmployee('TARGET')
+      await vi.waitFor(() => expect(complete).toBeTypeOf('function'))
+    })
+    expect(appRef.current.employees.some(({ id }) => id === 'TARGET')).toBe(true)
+    expect(api.apiCommand).toHaveBeenCalledWith('employee.delete', { employeeId: 'TARGET' }, expect.objectContaining({ expectedVersion: 1 }))
+    await act(async () => {
+      complete({ version: 2, employee: { ...employee, deletedAt: '2026-09-01T00:00:00Z' } })
+      expect(await pending).toMatchObject({ ok: true, employee: { id: 'TARGET' } })
+    })
+    expect(appRef.current.employees.some(({ id }) => id === 'TARGET')).toBe(false)
+    expect(appRef.current.deletedEmployees.some(({ id }) => id === 'TARGET')).toBe(true)
+    expect(appRef.current.schedule.some(({ employeeId }) => employeeId === 'TARGET')).toBe(false)
+    expect(appRef.current.attendance.some(({ id }) => id === 'HISTORY')).toBe(true)
+  })
+
+  it('keeps personnel intact on API failure and rejects office/support deletion before sending a command', async () => {
+    vi.useFakeTimers()
+    const employees = [
+      ...makeRemoteState().employees,
+      { id: 'TARGET', unit: 'store', storeId: 'STORE-A', status: 'Đang làm việc' },
+      { id: 'OFFICE', unit: 'office', storeId: 'OFFICE', status: 'Đang làm việc' },
+    ]
+    api.apiBootstrapState.mockResolvedValue({ user: supportUser, state: { ...makeRemoteState(), employees }, policies: [], version: 1 })
+    renderProvider()
+    await act(async () => { await appRef.current.login('support-one', 'password') })
+    for (const id of ['OFFICE', 'HTKD-001', 'MISSING']) {
+      await act(async () => { expect(await appRef.current.deleteEmployee(id)).toMatchObject({ ok: false }) })
+    }
+    expect(api.apiCommand).not.toHaveBeenCalled()
+    api.apiCommand.mockRejectedValueOnce(new Error('Máy chủ từ chối'))
+    await act(async () => {
+      expect(await appRef.current.deleteEmployee('TARGET')).toEqual({ ok: false, message: 'Máy chủ từ chối' })
+    })
+    expect(appRef.current.employees.some(({ id }) => id === 'TARGET')).toBe(true)
+    expect(appRef.current.deletedEmployees.some(({ id }) => id === 'TARGET')).toBe(false)
   })
 
   it('keeps store B selected after a successful command refresh returns global store A', async () => {
@@ -917,6 +1006,47 @@ describe('remote command active-store preservation', () => {
     const allResetCalls = api.apiCommand.mock.calls.filter(([type]) => type === 'system.reset_all')
     expect(allResetCalls.at(-1)[2].idempotencyKey).toBe(persistedKey)
     expect(sessionStorage.getItem(SYSTEM_RESET_IDEMPOTENCY_STORAGE_KEY)).toBeNull()
+  })
+
+  it('polls the busy employee home screen every 30 seconds, not every 5 seconds', async () => {
+    vi.useFakeTimers()
+    window.location.hash = '#/login'
+    const employeeState = {
+      ...makeRemoteState('STORE-A'),
+      employees: [{ id: 'E01', name: 'Nhân viên 01', unit: 'store', storeId: 'STORE-A' }],
+    }
+    api.apiLogin.mockResolvedValue({
+      user: employeeHomeUser,
+      bootstrap: {
+        user: employeeHomeUser,
+        state: { stores: employeeState.stores.slice(0, 1), employees: employeeState.employees },
+        policies: [],
+        version: 1,
+        partial: true,
+      },
+    })
+    api.apiGetSystemScreenState.mockResolvedValue({
+      user: employeeHomeUser,
+      projection: 'global',
+      screen: 'employee-home',
+      state: employeeState,
+      policies: [],
+      version: 1,
+    })
+    renderProvider()
+    await act(async () => {
+      expect((await appRef.current.login('employee-one', 'password')).ok).toBe(true)
+      await Promise.resolve()
+    })
+    expect(appRef.current.remoteProjection.screen).toBe('employee-home')
+    api.apiGetStateMetadata.mockClear()
+
+    await act(async () => { await vi.advanceTimersByTimeAsync(REMOTE_POLL_INTERVAL_MS - 1_000) })
+    expect(api.apiGetStateMetadata).not.toHaveBeenCalled()
+
+    await act(async () => { await vi.advanceTimersByTimeAsync(1_000) })
+    expect(api.apiGetStateMetadata).toHaveBeenCalledTimes(1)
+    expect(REMOTE_POLL_INTERVAL_MS).toBe(30_000)
   })
 })
 

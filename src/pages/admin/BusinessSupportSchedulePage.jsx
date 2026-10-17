@@ -8,6 +8,7 @@ import {
   validateSupportSchedulePresets,
   supportScheduleEmploymentMode,
   supportScheduleRange,
+  supportScheduleWorkMode,
   supportSchedulesForView,
 } from '../../domain/supportWorkSchedule'
 import { useApp } from '../../state/AppContext'
@@ -126,7 +127,7 @@ function SchedulePresetButtons({ onSelect, selectedName = '', selectedStart = ''
   </div>
 }
 
-const emptyScheduleForm = () => ({ targetUnit: 'business_support', date: today(), employeeId: '', shiftName: '', start: '08:30', end: '17:30', note: '', scheduleId: '' })
+const emptyScheduleForm = () => ({ targetUnit: 'business_support', date: today(), employeeId: '', shiftName: '', start: '08:30', end: '17:30', workMode: '', note: '', scheduleId: '' })
 
 const configuredEmployeeShifts = (employee = {}) => {
   const candidates = employee.workShifts || employee.workingTime?.shifts || []
@@ -150,6 +151,7 @@ const emptyPersonalScheduleForm = (employee = {}, shifts = []) => {
     shiftName: firstShift?.name || '',
     start: firstShift?.start || String(employee.workStart || '08:30').slice(0, 5),
     end: firstShift?.end || String(employee.workEnd || '17:30').slice(0, 5),
+    workMode: '',
     note: '',
   }
 }
@@ -221,6 +223,7 @@ export function BusinessSupportSchedulePage() {
     shiftName: record.shiftName || '',
     start: record.start || '08:30',
     end: record.end || '17:30',
+    workMode: supportScheduleWorkMode(record.workMode),
     note: record.note || '',
   })
   const deleteSchedule = async (record) => {
@@ -241,6 +244,7 @@ export function BusinessSupportSchedulePage() {
         <SchedulePresetButtons onSelect={selectPreset} selectedName={form.shiftName} selectedStart={form.start} selectedEnd={form.end} />
         <Field label="Giờ bắt đầu" required><Input type="time" value={form.start} onChange={set('start')} /></Field>
         <Field label="Giờ kết thúc" required><Input type="time" value={form.end} onChange={set('end')} /></Field>
+        <Field label="Hình thức làm việc" required><Select required value={form.workMode} onChange={set('workMode')}><option value="">Chọn hình thức làm việc</option><option value="Online">Online</option><option value="Offline">Offline</option></Select></Field>
         <Field label="Ghi chú"><Input value={form.note} onChange={set('note')} placeholder="Thông tin bổ sung" /></Field>
         <div className="card-actions">{form.scheduleId && <Button type="button" variant="outline" onClick={() => setForm(emptyScheduleForm())}>HỦY SỬA</Button>}<Button type="submit" icon={Save} loading={saving}>LƯU</Button></div>
       </form>
@@ -273,13 +277,13 @@ export function BusinessSupportSchedulePage() {
         </Select>
       </div>}
     >
-      <TableWrap><thead><tr><th>Nhóm</th><th>Nhân viên</th><th>Ngày</th><th>Ca / Thời gian</th><th>Ghi chú</th><th>Thao tác</th></tr></thead><tbody>
+      <TableWrap><thead><tr><th>Nhóm</th><th>Nhân viên</th><th>Ngày</th><th>Ca / Thời gian</th><th>Hình thức làm việc</th><th>Ghi chú</th><th>Thao tác</th></tr></thead><tbody>
         {pagedSchedules.map((record) => {
           const employee = scheduleDirectory.get(String(record.employeeId || '').trim().toLocaleLowerCase('vi-VN'))
           const targetUnit = employeeUnit(record) || employeeUnit(employee)
-          return <tr key={record.id}><td>{scheduleGroupLabel(targetUnit)}</td><td><strong>{record.employeeName}</strong><small className="table-sub">{record.employeeId}</small></td><td>{shortDate(record.date)}</td><td><strong>{record.shiftName}</strong><small className="table-sub">{record.start}–{record.end}</small></td><td>{record.note || '—'}</td><td><div className="row-actions"><button type="button" onClick={() => editSchedule(record)} aria-label={`Sửa lịch của ${record.employeeName}`}><Edit3 /></button>{canDelete && <button type="button" className="danger" onClick={() => deleteSchedule(record)} aria-label={`Xóa lịch của ${record.employeeName}`}><Trash2 /></button>}</div></td></tr>
+          return <tr key={record.id}><td>{scheduleGroupLabel(targetUnit)}</td><td><strong>{record.employeeName}</strong><small className="table-sub">{record.employeeId}</small></td><td>{shortDate(record.date)}</td><td><strong>{record.shiftName}</strong><small className="table-sub">{record.start}–{record.end}</small></td><td>{supportScheduleWorkMode(record.workMode) || 'Chưa xác định'}</td><td>{record.note || '—'}</td><td><div className="row-actions"><button type="button" onClick={() => editSchedule(record)} aria-label={`Sửa lịch của ${record.employeeName}`}><Edit3 /></button>{canDelete && <button type="button" className="danger" onClick={() => deleteSchedule(record)} aria-label={`Xóa lịch của ${record.employeeName}`}><Trash2 /></button>}</div></td></tr>
         })}
-        {!filteredSchedules.length && <tr><td colSpan="6">Không có lịch làm việc phù hợp bộ lọc.</td></tr>}
+        {!filteredSchedules.length && <tr><td colSpan="7">Không có lịch làm việc phù hợp bộ lọc.</td></tr>}
       </tbody></TableWrap>
       {filteredSchedules.length > ASSIGNED_SCHEDULE_PAGE_SIZE && <div className="table-pagination support-schedule-assigned-pagination">
         <Button
@@ -376,6 +380,7 @@ export function MyBusinessSupportSchedulePage() {
       shiftName: form.shiftName || (shiftMode ? '' : 'Làm việc Full-Time'),
       start: form.start,
       end: form.end,
+      workMode: form.workMode,
       note: form.note,
     })
     setSaving(false)
@@ -396,6 +401,7 @@ export function MyBusinessSupportSchedulePage() {
       shiftName: record.shiftName || '',
       start: record.start || '08:30',
       end: record.end || '17:30',
+      workMode: supportScheduleWorkMode(record.workMode),
       note: record.note || '',
     })
     setEditorOpen(true)
@@ -417,6 +423,7 @@ export function MyBusinessSupportSchedulePage() {
         <SchedulePresetButtons onSelect={selectPreset} selectedName={form.shiftName} selectedStart={form.start} selectedEnd={form.end} />
         <Field label="Giờ bắt đầu" required><Input type="time" value={form.start} onChange={set('start')} /></Field>
         <Field label="Giờ kết thúc" required><Input type="time" value={form.end} onChange={set('end')} /></Field>
+        <Field label="Hình thức làm việc" required><Select required value={form.workMode} onChange={set('workMode')}><option value="">Chọn hình thức làm việc</option><option value="Online">Online</option><option value="Offline">Offline</option></Select></Field>
         <Field label="Ghi chú"><Input value={form.note} onChange={set('note')} placeholder="Thông tin bổ sung" /></Field>
         <div className="card-actions personal-schedule-form__actions"><Button type="button" variant="outline" onClick={closeEditor}>HỦY</Button><Button type="submit" icon={Save} loading={saving}>LƯU</Button></div>
       </form>
@@ -428,7 +435,7 @@ export function MyBusinessSupportSchedulePage() {
           <thead><tr><th className="my-work-schedule-grid__employee">Nhân viên</th>{days.map((date) => <th key={date}>{calendarDayLabel(date)}</th>)}</tr></thead>
           <tbody><tr><th scope="row" className="my-work-schedule-grid__employee"><span className="my-work-schedule-employee"><Avatar name={employee.name} src={employee.avatar || app.settings?.avatar} employeeId={employee.id || employee.code || app.session?.employeeId} size={44} /><span><strong>{employee.name || app.session?.name || 'Nhân viên'}</strong><small>{employee.id || employee.code || app.session?.employeeId || ''}</small><Badge tone={supportScheduleEmploymentMode(employee) === 'shift' ? 'orange' : 'blue'}>{employee.employmentType || employee.workTimeType || 'Full-Time'}</Badge></span></span></th>{days.map((date) => {
             const record = recordsByDate.get(date)
-            return <td key={date}>{record ? <div className="my-work-schedule-shift"><strong>{record.shiftName}</strong><small>{record.start}–{record.end}</small>{record.note && <em>{record.note}</em>}{canManageOwnSchedule && <span className="my-work-schedule-shift__actions"><button type="button" onClick={() => editSchedule(record)} aria-label={`Sửa lịch ngày ${shortDate(record.date)}`}><Edit3 size={16} /></button><button type="button" className="danger" onClick={() => deleteSchedule(record)} aria-label={`Xóa lịch ngày ${shortDate(record.date)}`}><Trash2 size={16} /></button></span>}</div> : <span className="my-work-schedule-empty">Không có lịch</span>}</td>
+            return <td key={date}>{record ? <div className="my-work-schedule-shift"><strong>{record.shiftName}</strong><small>{record.start}–{record.end}</small>{supportScheduleWorkMode(record.workMode) && <Badge tone={record.workMode === 'Online' ? 'blue' : 'orange'}>{record.workMode}</Badge>}{record.note && <em>{record.note}</em>}{canManageOwnSchedule && <span className="my-work-schedule-shift__actions"><button type="button" onClick={() => editSchedule(record)} aria-label={`Sửa lịch ngày ${shortDate(record.date)}`}><Edit3 size={16} /></button><button type="button" className="danger" onClick={() => deleteSchedule(record)} aria-label={`Xóa lịch ngày ${shortDate(record.date)}`}><Trash2 size={16} /></button></span>}</div> : <span className="my-work-schedule-empty">Không có lịch</span>}</td>
           })}</tr></tbody>
         </table>
       </div>

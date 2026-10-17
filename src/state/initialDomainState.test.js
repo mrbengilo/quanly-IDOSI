@@ -69,7 +69,7 @@ describe('domain state migration', () => {
     expect(migrated.workCatalogItems).toEqual(expect.arrayContaining([
       expect.objectContaining({ code: 'htkd.reward.on_time', amountVnd: 3_000 }),
       expect.objectContaining({ code: 'office.reward.clip_over_100k_views_team', amountVnd: 350_000 }),
-      expect.objectContaining({ code: 'office.violation.forgot_attendance', amountVnd: 3_000 }),
+      expect.objectContaining({ code: 'office.violation.forgot_attendance', amountVnd: 0, violationPoints: 0.5 }),
     ]))
   })
 

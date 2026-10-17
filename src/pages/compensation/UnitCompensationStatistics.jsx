@@ -90,6 +90,7 @@ export function UnitCompensationStatistics({ targetUnit, storeId = '', employees
         employees={scopedEmployees}
         showEmployee
         filterable={targetUnit === 'store'}
+        filterFields={targetUnit === 'office' ? ['month', 'employee'] : undefined}
         supportTagContextForRow={supportTagContextForRewardRow}
       />
     </Card>}

@@ -1,6 +1,7 @@
 import { formatViolationPoints, violationPointsOf, violationPointPeriod } from '../../domain/violationPoints'
 import { ViolationPointAssessment } from './ViolationPointAssessment'
 import { useMemo, useState } from 'react'
+import { HistoryMonthFilter } from './HistoryMonthFilter'
 import { Save, ShieldAlert, UserRoundCheck, XCircle } from 'lucide-react'
 import { useApp } from '../../state/AppContext'
 import {
@@ -18,7 +19,6 @@ import { money } from '../../utils'
 import { SupportEmployeeTag } from '../../components/SupportEmployeeTag'
 import {
   resolveSupportEmployeeTagContext,
-  resolveSupportEmployeeTagContextFromRecords,
 } from '../../domain/supportEmployeeTag'
 import { activeWorkCatalogItems, WORK_CATALOG_KIND } from '../../domain/workCatalog'
 import { resolveAttendanceWorkingTime } from '../../domain/attendanceWorkingTime'
@@ -48,8 +48,6 @@ import {
   useCompensationAction,
   vietnamToday,
 } from './compensationUi'
-import { violationStatistics } from './compensationStatistics'
-import { CompensationStatisticsGrid } from './CompensationStatisticsTables'
 import './compensation-page.css'
 
 const UNIT_LABELS = {
@@ -193,6 +191,7 @@ export function ViolationManagementPage({ targetUnit: requestedTargetUnit, store
   const [note, setNote] = useState('')
   const [validation, setValidation] = useState('')
   const [historyDateFilter, setHistoryDateFilter] = useState('')
+  const [historyMonthFilter, setHistoryMonthFilter] = useState(() => vietnamToday().slice(0, 7))
   const [historyEmployeeFilter, setHistoryEmployeeFilter] = useState('all')
   const [assessmentPeriod, setAssessmentPeriod] = useState(() => vietnamToday().slice(0, 7))
   const { busyKey, error, run } = useCompensationAction(app)
@@ -233,14 +232,13 @@ export function ViolationManagementPage({ targetUnit: requestedTargetUnit, store
   const selectedPolicyIdSet = new Set(selectedPolicyIds)
   const selectedPolicies = policies.filter((policy) => selectedPolicyIdSet.has(policy.id))
   const selectedTotalPoints = selectedPolicies.reduce((sum, policy) => sum + Math.round(Number(policy.violationPoints || 0) * 10), 0) / 10
-  const selectedTotalVnd = selectedPolicies.reduce((sum, policy) => sum + Math.abs(Number(policy.amountVnd || 0)), 0)
   const rows = useMemo(() => (Array.isArray(app.violations) ? app.violations : [])
     .filter((entry) => targetUnitOfViolation(entry) === targetUnit)
     .filter((entry) => targetUnit !== 'store' || entryStoreId(entry) === selectedStoreId)
     .toSorted((left, right) => String(right.createdAt || right.occurredOn || '').localeCompare(String(left.createdAt || left.occurredOn || ''))), [app.violations, targetUnit, selectedStoreId])
   const assessmentEmployees = [...new Map([...employees, ...(app.employees || []).filter((employee) => (
-    employeeUnit(employee) === 'store'
-    && ([employee.storeId, employee.supportStoreId].some((id) => sameOperationalIdentifier(id, selectedStoreId))
+    employeeUnit(employee) === targetUnit
+    && (targetUnit !== 'store' || [employee.storeId, employee.supportStoreId].some((id) => sameOperationalIdentifier(id, selectedStoreId))
       || rows.some((entry) => [employee.id, employee.code].some((id) => sameOperationalIdentifier(id, entryEmployeeId(entry)))))
     && employeePointAssessment(app, entityId(employee), assessmentPeriod).count > 0
   ))].map((employee) => [entityId(employee), employee])).values()]
@@ -252,25 +250,23 @@ export function ViolationManagementPage({ targetUnit: requestedTargetUnit, store
     return options
   }, new Map())].map(([value, label]) => ({ value, label })), [rows, employees])
   const historyFilterable = ['store', 'business_support'].includes(targetUnit)
+  const historyEmployeeFilterable = historyFilterable || targetUnit === 'office'
   const filteredRows = useMemo(() => rows.filter((entry) => (
-    (targetUnit !== 'store' || violationPointPeriod(entry) === assessmentPeriod)
-    && (!historyFilterable || !historyDateFilter || entryDate(entry) === historyDateFilter)
-    && (!historyFilterable || historyEmployeeFilter === 'all' || entryEmployeeId(entry) === historyEmployeeFilter)
-  )), [rows, historyFilterable, historyDateFilter, historyEmployeeFilter, targetUnit, assessmentPeriod])
-  const filteredViolationTotal = useMemo(() => filteredRows
+    // Office history has its own month selection; other units retain the assessment/date filters.
+    (targetUnit === 'office'
+      ? !historyMonthFilter || violationPointPeriod(entry) === historyMonthFilter
+      : historyFilterable && historyDateFilter ? entryDate(entry) === historyDateFilter : violationPointPeriod(entry) === assessmentPeriod)
+    && (!historyEmployeeFilterable || historyEmployeeFilter === 'all' || entryEmployeeId(entry) === historyEmployeeFilter)
+  )), [rows, targetUnit, historyMonthFilter, historyFilterable, historyEmployeeFilterable, historyDateFilter, historyEmployeeFilter, assessmentPeriod])
+  const filteredViolationPoints = useMemo(() => filteredRows
     .filter((entry) => !isVoided(entry))
-    .reduce((total, entry) => total + Math.abs(entryAmount(entry)), 0), [filteredRows])
-  const statistics = useMemo(() => violationStatistics(rows), [rows])
-  const supportTagContextForSummary = (row) => targetUnit === 'store'
-    ? resolveSupportEmployeeTagContextFromRecords({
-        records: rows,
-        employeeId: row.key,
-        storeId: selectedStoreId,
-        employees: app.employees,
-        stores: app.stores,
-        supportTransfers: app.supportTransfers,
-      })
-    : null
+    .reduce((total, entry) => total + Math.round(Number(violationPointsOf(entry) || 0) * 10), 0) / 10, [filteredRows])
+  const historyEmployeeControl = <Field label="Nhân viên vi phạm">
+    <Select aria-label="Nhân viên vi phạm" value={historyEmployeeFilter} onChange={(event) => setHistoryEmployeeFilter(event.target.value)}>
+      <option value="all">Tất cả nhân viên</option>
+      {historyEmployeeOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+    </Select>
+  </Field>
 
   if (!permittedUnit || !canManage) {
     const subtitle = role === 'store_manager'
@@ -294,7 +290,7 @@ export function ViolationManagementPage({ targetUnit: requestedTargetUnit, store
       setValidation('Vui lòng chọn nhân viên, ngày, ca làm và ít nhất một nội dung vi phạm.')
       return
     }
-    if (targetUnit === 'store' && selectedPolicies.some((policy) => policy.violationPoints == null)) {
+    if (selectedPolicies.some((policy) => policy.violationPoints == null)) {
       setValidation('Admin/HTKD cần cài điểm cho nội dung vi phạm trước khi ghi nhận.')
       return
     }
@@ -353,7 +349,7 @@ export function ViolationManagementPage({ targetUnit: requestedTargetUnit, store
         subtitle={targetUnit === 'store' ? 'Admin và Nhân viên hỗ trợ KD quản lý vi phạm tại mọi cửa hàng vận hành.' : `Quản lý vi phạm của ${UNIT_LABELS[targetUnit].toLowerCase()} theo đúng phạm vi quyền.`}
         icon={ShieldAlert}
       />}
-      {targetUnit === 'store' && <Card title="Điểm vi phạm và đánh giá nhân viên" action={<Input className="violation-point-period" type="month" aria-label="Kỳ đánh giá vi phạm" value={assessmentPeriod} onChange={(event) => setAssessmentPeriod(event.target.value || vietnamToday().slice(0, 7))} />}>
+      <Card title="Điểm vi phạm và đánh giá nhân viên" action={<Input className="violation-point-period" type="month" aria-label="Kỳ đánh giá vi phạm" value={assessmentPeriod} onChange={(event) => setAssessmentPeriod(event.target.value || vietnamToday().slice(0, 7))} />}>
         <ViolationPointAssessment period={assessmentPeriod} />
         <TableWrap className="compensation-table" paginationKey={assessmentPeriod} tableLabel="Đánh giá điểm vi phạm từng nhân viên">
           <thead><tr><th>Nhân viên</th><th>Số vi phạm</th><th>Tổng điểm</th><th>Đánh giá</th><th>Thưởng trong kỳ</th></tr></thead>
@@ -362,7 +358,7 @@ export function ViolationManagementPage({ targetUnit: requestedTargetUnit, store
             return <tr key={entityId(employee)}><td><strong>{employee.name}</strong><small className="compensation-subline">{entityId(employee)}</small></td><td>{assessment.count}</td><td><strong>{formatViolationPoints(assessment.points)}</strong></td><td><Badge tone={assessment.tone}>{assessment.label}</Badge></td><td>{assessment.workBonusBlocked ? 'Thưởng doanh thu: 0 đ · Thưởng công việc: 0 đ' : 'Theo kết quả doanh thu và công việc'}</td></tr>
           })}{!assessmentEmployees.length && <tr><td colSpan="5">Chưa có nhân viên trong phạm vi này.</td></tr>}</tbody>
         </TableWrap>
-      </Card>}
+      </Card>
       <Card title="Ghi nhận vi phạm">
         <div className="compensation-form-grid">
           {targetUnit === 'store' && <Field label="Cửa hàng" required>
@@ -390,14 +386,14 @@ export function ViolationManagementPage({ targetUnit: requestedTargetUnit, store
           <Field label="Nội dung vi phạm" required className="compensation-form-full">
             <div className="compensation-catalog-checklist" role="group" aria-label="Nội dung vi phạm">
               {policies.map((policy) => <label key={policy.id} className={selectedPolicyIdSet.has(policy.id) ? 'selected' : ''}>
-                <input type="checkbox" disabled={targetUnit === 'store' && policy.violationPoints == null} checked={selectedPolicyIdSet.has(policy.id)} onChange={() => togglePolicy(policy.id)} />
-                <span><strong>{policy.name}</strong><small>{targetUnit === 'store' ? (policy.violationPoints == null ? 'Chưa cài điểm — Admin/HTKD cần cấu hình' : formatViolationPoints(policy.violationPoints)) : `−${money(policy.amountVnd)}`}</small></span>
+                <input type="checkbox" disabled={policy.violationPoints == null} checked={selectedPolicyIdSet.has(policy.id)} onChange={() => togglePolicy(policy.id)} />
+                <span><strong>{policy.name}</strong><small>{policy.violationPoints == null ? 'Chưa cài điểm — Admin/HTKD cần cấu hình' : `−${formatViolationPoints(policy.violationPoints)}`}</small></span>
               </label>)}
               {!policies.length && <InfoNote tone="orange">Chưa có vi phạm đang hoạt động cho phạm vi và ngày đã chọn. Hãy thêm tại “Danh mục công việc & vi phạm”.</InfoNote>}
             </div>
           </Field>
-          <Field label={targetUnit === 'store' ? 'Tổng điểm đã chọn' : 'Tổng số tiền bị trừ'}>
-            <Input aria-label={targetUnit === 'store' ? 'Tổng điểm đã chọn' : 'Tổng số tiền bị trừ'} value={targetUnit === 'store' ? formatViolationPoints(selectedTotalPoints) : `−${money(selectedTotalVnd)}`} readOnly />
+          <Field label="Tổng điểm bị trừ">
+            <Input aria-label="Tổng điểm đã chọn" value={formatViolationPoints(selectedTotalPoints)} readOnly />
           </Field>
           <Field label="Ghi chú" className="compensation-form-span">
             <Input aria-label="Ghi chú" value={note} onChange={(event) => setNote(event.target.value)} placeholder="Thông tin đối soát bổ sung (nếu có)" />
@@ -405,29 +401,26 @@ export function ViolationManagementPage({ targetUnit: requestedTargetUnit, store
         </div>
         {!employees.length && <InfoNote tone="orange">Không có nhân viên đang hoạt động trong phạm vi đã chọn.</InfoNote>}
         {employees.length > 0 && !shiftOptions.length && <InfoNote tone="orange">Không tìm thấy ca đã chấm công hoặc ca đã phân cho nhân viên trong ngày này. Hãy kiểm tra lịch làm việc trước khi ghi nhận vi phạm.</InfoNote>}
-        <InfoNote>{targetUnit === 'store' ? 'Điểm được chốt theo cấu hình tại thời điểm ghi nhận. Từ 5 điểm trong kỳ, cả thưởng doanh thu và thưởng công việc đều bằng 0.' : 'Vi phạm luôn là khoản phải thu dương. Khi quyết toán, hệ thống áp dụng theo thứ tự thưởng → phụ cấp → lương và không làm thực nhận âm.'}</InfoNote>
+        <InfoNote>Vi phạm được ghi nhận bằng điểm, không trừ tiền. Điểm được chốt theo cấu hình tại thời điểm ghi nhận. Từ 5 điểm trong kỳ, cả thưởng doanh thu và thưởng công việc đều bằng 0.</InfoNote>
         {validation && <InfoNote tone="red">{validation}</InfoNote>}
         <ActionError message={error} />
         <div className="compensation-actions"><Button icon={Save} loading={busyKey === 'create'} disabled={!employees.length || !selectedShift || !selectedPolicies.length || Boolean(busyKey)} onClick={createViolation}>LƯU VI PHẠM</Button></div>
       </Card>
       <Card title="Lịch sử vi phạm" action={<Badge tone="red">{filteredRows.filter((entry) => !isVoided(entry)).length} đang hiệu lực</Badge>}>
+        {targetUnit === 'office' && <HistoryMonthFilter label="Tháng vi phạm" groupLabel="Bộ lọc lịch sử vi phạm" value={historyMonthFilter} onChange={setHistoryMonthFilter}>{historyEmployeeControl}</HistoryMonthFilter>}
         {historyFilterable && <div className="form-grid compensation-history-filters" role="group" aria-label="Bộ lọc lịch sử vi phạm">
           <Field label="Ngày">
             <Input type="date" aria-label="Ngày vi phạm" value={historyDateFilter} onChange={(event) => setHistoryDateFilter(event.target.value)} />
           </Field>
-          <Field label="Nhân viên vi phạm">
-            <Select aria-label="Nhân viên vi phạm" value={historyEmployeeFilter} onChange={(event) => setHistoryEmployeeFilter(event.target.value)}>
-              <option value="all">Tất cả nhân viên</option>
-              {historyEmployeeOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
-            </Select>
-          </Field>
+          {historyEmployeeControl}
         </div>}
         <TableWrap
+          key={targetUnit === 'office' ? JSON.stringify([historyMonthFilter, historyEmployeeFilter]) : undefined}
           className="compensation-table"
           firstPageDates={targetUnit === 'store' ? [vietnamToday()] : []}
-          paginationKey={`${historyDateFilter}:${historyEmployeeFilter}`}
+          paginationKey={`${targetUnit === 'office' ? historyMonthFilter : assessmentPeriod}:${historyDateFilter}:${historyEmployeeFilter}`}
         >
-          <thead><tr><th>Ngày</th><th>Ca làm</th><th>Nhân viên</th>{targetUnit === 'store' && <th>Cửa hàng</th>}<th>Nội dung</th><th>{targetUnit === 'store' ? 'Điểm / Tiền lịch sử' : 'Số tiền bị trừ'}{targetUnit !== 'store' && historyFilterable && <small className="compensation-subline">Tổng: <strong className="compensation-debit">−{money(filteredViolationTotal)}</strong></small>}</th><th>Ghi chú</th><th>Trạng thái</th><th>Thao tác</th></tr></thead>
+          <thead><tr><th>Ngày</th><th>Ca làm</th><th>Nhân viên</th>{targetUnit === 'store' && <th>Cửa hàng</th>}<th>Nội dung</th><th>Điểm vi phạm{historyFilterable && <small className="compensation-subline">Tổng: <strong className="compensation-debit">{formatViolationPoints(filteredViolationPoints)}</strong></small>}</th><th>Ghi chú</th><th>Trạng thái</th><th>Thao tác</th></tr></thead>
           <tbody>
             {filteredRows.map((entry) => <tr key={entry.id} data-page-date={entryDate(entry)}>
               <td>{displayDate(entryDate(entry))}</td>
@@ -444,39 +437,36 @@ export function ViolationManagementPage({ targetUnit: requestedTargetUnit, store
           </tbody>
         </TableWrap>
       </Card>
-      {targetUnit !== 'store' && <Card title="Thống kê số lần và đánh giá mức độ vi phạm"><CompensationStatisticsGrid statistics={statistics} employees={employees} showEmployee mode="violation" supportTagContextForRow={supportTagContextForSummary} /></Card>}
     </div>
   )
 }
 function ViolationValue({ entry }) {
   const points = violationPointsOf(entry)
-  return <strong className="compensation-debit">{points == null ? <>−{money(Math.abs(entryAmount(entry)))}{targetUnitOfViolation(entry) === 'store' && <small className="compensation-subline">Tiền vi phạm lịch sử</small>}</> : formatViolationPoints(points)}</strong>
+  return <strong className="compensation-debit">{points == null ? <>−{money(Math.abs(entryAmount(entry)))}<small className="compensation-subline">Tiền vi phạm lịch sử</small></> : `−${formatViolationPoints(points)}`}</strong>
 }
 
 export function MyViolationsPage() {
   const app = useApp()
   const employeeId = entityId(app.currentEmployee) || String(app.session?.employeeId || '')
   const [period, setPeriod] = useState(() => vietnamToday().slice(0, 7))
-  const pointMode = employeeUnit(app.currentEmployee || {}) === 'store'
   const assessment = employeePointAssessment(app, employeeId, period)
   const rows = (app.violations || [])
     .filter((entry) => [employeeId, app.currentEmployee?.code].filter(Boolean).some((id) => sameOperationalIdentifier(entryEmployeeId(entry), id)))
-    .filter((entry) => !pointMode || violationPointPeriod(entry) === period)
+    .filter((entry) => violationPointPeriod(entry) === period)
     .sort((left, right) => String(right.createdAt || right.occurredOn || '').localeCompare(String(left.createdAt || left.occurredOn || '')))
   const outstandingVnd = rows.filter((entry) => !isVoided(entry)).reduce((sum, entry) => sum + Math.abs(entryAmount(entry)), 0)
 
   return (
     <div className="page compensation-page my-violations-page">
       <PageHeader title="VI PHẠM CỦA TÔI" subtitle="Chỉ hiển thị dữ liệu gắn với tài khoản nhân viên đang đăng nhập." icon={UserRoundCheck} />
-      {pointMode && <Card title="Điểm vi phạm trong kỳ" action={<Input className="violation-point-period" type="month" aria-label="Kỳ đánh giá vi phạm" value={period} onChange={(event) => setPeriod(event.target.value || vietnamToday().slice(0, 7))} />}><ViolationPointAssessment assessment={assessment} period={period} /></Card>}
-      {(!pointMode || outstandingVnd > 0) && <div className="compensation-summary-strip"><span>{pointMode ? 'Tiền vi phạm lịch sử đang hiệu lực' : 'Tổng số tiền bị trừ đang hiệu lực'}</span><strong>−{money(outstandingVnd)}</strong></div>}
+      <Card title="Điểm vi phạm trong kỳ" action={<Input className="violation-point-period" type="month" aria-label="Kỳ đánh giá vi phạm" value={period} onChange={(event) => setPeriod(event.target.value || vietnamToday().slice(0, 7))} />}><ViolationPointAssessment assessment={assessment} period={period} /></Card>
+      {outstandingVnd > 0 && <div className="compensation-summary-strip"><span>Tiền vi phạm lịch sử đang hiệu lực</span><strong>−{money(outstandingVnd)}</strong></div>}
       <Card title="Chi tiết và trạng thái đối soát">
         <TableWrap className="compensation-table">
-          <thead><tr><th>Ngày</th><th>Ca làm</th><th>Đơn vị</th><th>Nội dung</th><th>{pointMode ? 'Điểm / Tiền lịch sử' : 'Số tiền bị trừ'}</th><th>Ghi chú</th><th>Trạng thái</th></tr></thead>
+          <thead><tr><th>Ngày</th><th>Ca làm</th><th>Đơn vị</th><th>Nội dung</th><th>Điểm vi phạm</th><th>Ghi chú</th><th>Trạng thái</th></tr></thead>
           <tbody>{rows.map((entry) => <tr key={entry.id}><td>{displayDate(entryDate(entry))}</td><td><strong>{violationShiftLabel(entry)}</strong>{shiftTime(entry) && <small className="compensation-subline">{shiftTime(entry)}</small>}</td><td>{UNIT_LABELS[targetUnitOfViolation(entry)]}</td><td>{entry.title || entry.label || entry.reason || entry.policyCode || '—'}</td><td><ViolationValue entry={entry} /></td><td>{entry.note || '—'}</td><td><Badge tone={statusTone(entry)}>{statusLabel(entry)}</Badge></td></tr>)}{!rows.length && <tr><td colSpan="7" className="compensation-empty">Bạn chưa có bản ghi vi phạm.</td></tr>}</tbody>
         </TableWrap>
       </Card>
-      {!pointMode && <Card title="Lịch sử vi phạm theo ngày, theo tháng"><CompensationStatisticsGrid statistics={violationStatistics(rows)} mode="violation" /></Card>}
     </div>
   )
 }

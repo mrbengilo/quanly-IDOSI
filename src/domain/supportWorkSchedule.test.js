@@ -8,11 +8,18 @@ import {
   shiftSupportScheduleAnchor,
   supportScheduleEmploymentMode,
   supportScheduleRange,
+  supportScheduleWorkMode,
   supportSchedulesForView,
   validateSupportSchedulePresets,
 } from './supportWorkSchedule'
 
 describe('support work schedule', () => {
+  it('recognizes only recorded Online and Offline modes', () => {
+    expect(supportScheduleWorkMode('Online')).toBe('Online')
+    expect(supportScheduleWorkMode('Offline')).toBe('Offline')
+    expect(supportScheduleWorkMode(undefined)).toBe('')
+    expect(supportScheduleWorkMode('Hybrid')).toBe('')
+  })
   it('provides the configured default quick-select work periods without removing custom schedules', () => {
     expect(SUPPORT_SCHEDULE_PRESETS).toEqual([
       { id: 'morning', name: 'Ca sáng', start: '08:30', end: '12:00' },

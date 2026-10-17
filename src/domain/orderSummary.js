@@ -1,6 +1,7 @@
-import { emptyRevenueByType, orderRevenueByType, revenueQuantityUnits, revenueTypeOf, revenueUnitOf } from './orderRevenue.js'
+import { emptyRevenueByType, orderRevenueByType, revenueQuantityUnits, revenueTypeOf, revenueUnitOf, unclassifiedNormalRevenue } from './orderRevenue.js'
 import { normalizeOrderItems } from './orderItems.js'
 import { normalizeOrderCustomFields, orderCustomFieldDisplayValue } from './orderCustomFields.js'
+import { productIdentityResolver } from './orderInformationSettings.js'
 import { addItemWeight, addOrderWeight, createWeightAccumulator, finishWeight } from './orderWeight.js'
 
 const VIETNAM_OFFSET_MS = 7 * 60 * 60 * 1_000
@@ -62,7 +63,7 @@ export const orderMatchesFilters = (order, { date = '', shiftId = '', paymentMet
   const haystack = [order.code, order.customerName, order.customerPhone, order.employeeName, productNames, customValues].join(' ').toLocaleLowerCase('vi-VN')
   return !query || haystack.includes(query.trim().toLocaleLowerCase('vi-VN'))
 }
-const emptyTotals = () => ({ orders: 0, cash: 0, transfer: 0, revenue: 0, cashOrders: 0, transferOrders: 0, revenueByType: emptyRevenueByType() })
+const emptyTotals = () => ({ orders: 0, cash: 0, transfer: 0, revenue: 0, cashOrders: 0, transferOrders: 0, revenueByType: emptyRevenueByType(), unclassifiedRevenue: 0, unclassifiedOrders: 0 })
 const checkedAmount = (order) => {
   const rawAmount = order?.amount
   const amount = typeof rawAmount === 'number' || (typeof rawAmount === 'string' && rawAmount.trim()) ? Number(rawAmount) : Number.NaN
@@ -75,6 +76,10 @@ const addOrder = (target, order, amount) => {
   target.orders += 1
   target.revenue = revenue
   const byType = orderRevenueByType(order)
+  const unclassified = unclassifiedNormalRevenue(order, byType.NORMAL)
+  target.unclassifiedRevenue += unclassified
+  if (!Number.isSafeInteger(target.unclassifiedRevenue)) throw new RangeError('Unclassified revenue summary exceeds the safe integer range.')
+  if (!Array.isArray(order.items) || !order.items.length || order.items.some((item) => item?.revenueType === undefined)) target.unclassifiedOrders += 1
   for (const type of Object.keys(byType)) {
     target.revenueByType[type] += byType[type]
     if (!Number.isSafeInteger(target.revenueByType[type])) throw new RangeError('Revenue type summary exceeds the safe integer range.')
@@ -95,20 +100,28 @@ const shiftMetadata = (order) => {
   return { shiftKey: shiftGroupKey(order), ...(shiftId ? { shiftId } : {}), ...(shiftName ? { shiftName } : {}), ...(shiftStart ? { shiftStart } : {}), ...(shiftEnd ? { shiftEnd } : {}) }
 }
 const renamedProductNames = new Set(['quần áo nam', 'áo nữ'])
-const productKey = (item) => {
+// With a catalog, the resolver decides identity from catalog data alone. Without
+// one, fall back to the two approved aliases crossing stable option IDs; every
+// other item keeps ID-first grouping so an inconsistent legacy label cannot split
+// a known product or accidentally merge two unrelated custom products.
+const productKey = (item, resolveIdentity = null) => {
+  const identity = resolveIdentity?.(item)
+  if (identity) return `id:${identity.id.toLocaleLowerCase('vi-VN')}`
   const name = String(item.productName || '').trim().toLocaleLowerCase('vi-VN')
-  // Only the two approved aliases cross stable option IDs. Every other item
-  // keeps ID-first grouping so an inconsistent legacy label cannot split a
-  // known product or accidentally merge two unrelated custom products.
   if (renamedProductNames.has(name)) return `name:${name}`
   return `id:${String(item.productId || item.productCode || item.productName).trim().toLocaleLowerCase('vi-VN')}`
 }
-const emptyProductSummary = () => ({ totalQuantity: 0, totalWeightKg: 0, productTypes: 0, ordersWithItems: 0, unclassifiedOrders: 0, items: [] })
+const emptyProductSummary = () => ({ totalQuantity: 0, salePieceQuantity: 0, totalWeightKg: 0, productTypes: 0, ordersWithItems: 0, unclassifiedOrders: 0, items: [] })
 const weightAccumulatorFor = (weights, target) => {
   if (!weights.has(target)) weights.set(target, createWeightAccumulator())
   return weights.get(target)
 }
-const addOrderProducts = (summary, itemMap, order, weights, combinedProducts) => {
+// `canonicalProduct*` is the entry the catalog uses today and is the only safe key
+// to aggregate on across systems. `product*` stays the snapshot as sold, for audit.
+const canonicalFields = (resolved) => (resolved
+  ? { canonicalProductId: resolved.id, canonicalProductCode: resolved.code }
+  : {})
+const addOrderProducts = (summary, itemMap, order, weights, combinedProducts, resolveIdentity = null) => {
   const items = normalizeOrderItems(order.items)
   if (!items.length) { summary.unclassifiedOrders += 1; return }
   summary.ordersWithItems += 1
@@ -116,12 +129,16 @@ const addOrderProducts = (summary, itemMap, order, weights, combinedProducts) =>
   const countedProducts = new Set()
   items.forEach((item) => {
     const type = revenueTypeOf(item)
-    const identity = productKey(item)
-    const key = `${identity}:${type}`
+    const resolved = resolveIdentity?.(item) || null
+    const identity = productKey(item, resolveIdentity)
+    const classification = item.revenueType === undefined ? 'UNCLASSIFIED' : type
+    const key = `${identity}:${classification}`
     if (!identity) return
     const existing = itemMap.get(key) || {
-      productId: item.productId, productCode: item.productCode, productName: item.productName || item.productCode || 'Mặt hàng',
-      quantity: 0, unit: revenueUnitOf(type), revenueType: type, orders: 0,
+      productId: item.productId, productCode: item.productCode,
+      productName: resolved?.label || item.productName || item.productCode || 'Mặt hàng',
+      ...canonicalFields(resolved),
+      quantity: 0, unit: revenueUnitOf(type), revenueType: type, classification, orders: 0,
     }
     const units = revenueQuantityUnits(item.quantity, type)
     const scale = type === 'SALE_KG' ? 1000 : 1
@@ -135,7 +152,9 @@ const addOrderProducts = (summary, itemMap, order, weights, combinedProducts) =>
 
     // A product appears once across all three revenue types; an order is counted once per product.
     const combined = combinedProducts.get(identity) || {
-      productId: item.productId, productCode: item.productCode, productName: existing.productName, orders: 0, totalQuantity: 0,
+      productId: item.productId, productCode: item.productCode, productName: existing.productName,
+      ...canonicalFields(resolved),
+      orders: 0, totalQuantity: 0,
     }
     // Count original pieces from NORMAL + SALE_PIECE only. Actual kg is already in weight.actualKg.
     if (type !== 'SALE_KG') {
@@ -154,11 +173,35 @@ const addOrderProducts = (summary, itemMap, order, weights, combinedProducts) =>
     } else {
       summary.totalQuantity += units
       if (!Number.isSafeInteger(summary.totalQuantity)) throw new RangeError('Order item summary exceeds the safe integer range.')
+      if (type === 'SALE_PIECE') {
+        summary.salePieceQuantity += units
+        if (!Number.isSafeInteger(summary.salePieceQuantity)) throw new RangeError('Sale piece summary exceeds the safe integer range.')
+      }
     }
   })
 }
 
-export const summarizeOrders = (orders = [], { storeId = '', period = '', employeeId = '', ...filters } = {}) => {
+// Money must never be silently miscounted, so one malformed order still stops
+// the whole summary. Name the order so an Admin can fix it instead of seeing a
+// generic server error on the report and on the warehouse API.
+export const ORDER_DATA_INVALID = 'ORDER_DATA_INVALID'
+const invalidOrderDataError = (order, cause) => Object.assign(
+  new TypeError(`Đơn hàng ${String(order?.code || order?.id || 'không rõ mã')} có dữ liệu không hợp lệ: ${String(cause?.message || cause)}`),
+  {
+    code: ORDER_DATA_INVALID,
+    details: {
+      orderId: String(order?.id || ''),
+      orderCode: String(order?.code || ''),
+      storeId: String(order?.storeId || ''),
+      reason: String(cause?.code || cause?.name || 'INVALID'),
+    },
+  },
+)
+
+export const summarizeOrders = (orders = [], { storeId = '', period = '', employeeId = '', productCatalog = null, ...filters } = {}) => {
+  // Passing the catalog makes product identity data-driven; leaving it out keeps
+  // the previous behaviour for callers that have no catalog at hand.
+  const resolveIdentity = productCatalog ? productIdentityResolver(productCatalog) : null
   const totals = emptyTotals()
   const groups = { shift: new Map(), day: new Map(), month: new Map(), employee: new Map() }
   const products = emptyProductSummary()
@@ -174,16 +217,21 @@ export const summarizeOrders = (orders = [], { storeId = '', period = '', employ
     if (storeKey && identifierKey(order.storeId) !== storeKey) continue
     if (employeeKey && identifierKey(order.employeeId) !== employeeKey) continue
     if (period && orderBusinessDate(order).slice(0, 7) !== period) continue
-    const amount = checkedAmount(order)
-    addOrder(totals, order, amount)
-    addOrderWeight(weightAccumulatorFor(weights, totals), order)
-    addOrderProducts(products, productItems, order, weights, combinedProducts)
-    for (const view of Object.keys(groups)) {
-      const key = String(orderGroupKey(order, view))
-      const groupTotals = groups[view].get(key) || { ...emptyTotals(), ...(view === 'shift' ? shiftMetadata(order) : {}) }
-      addOrder(groupTotals, order, amount)
-      addOrderWeight(weightAccumulatorFor(weights, groupTotals), order)
-      groups[view].set(key, groupTotals)
+    try {
+      const amount = checkedAmount(order)
+      addOrder(totals, order, amount)
+      addOrderWeight(weightAccumulatorFor(weights, totals), order)
+      addOrderProducts(products, productItems, order, weights, combinedProducts, resolveIdentity)
+      for (const view of Object.keys(groups)) {
+        const key = String(orderGroupKey(order, view))
+        const groupTotals = groups[view].get(key) || { ...emptyTotals(), ...(view === 'shift' ? shiftMetadata(order) : {}) }
+        addOrder(groupTotals, order, amount)
+        addOrderWeight(weightAccumulatorFor(weights, groupTotals), order)
+        groups[view].set(key, groupTotals)
+      }
+    } catch (error) {
+      if (error instanceof RangeError) throw error
+      throw invalidOrderDataError(order, error)
     }
   }
   // Serialize only after aggregation; BigInt fractions never enter the API payload.
@@ -191,6 +239,6 @@ export const summarizeOrders = (orders = [], { storeId = '', period = '', employ
   products.weight = totals.weight
   products.weightByProduct = [...combinedProducts.values()].sort((a, b) => a.productName.localeCompare(b.productName, 'vi-VN'))
   products.items = [...productItems.values()].sort((left, right) => right.quantity - left.quantity || left.productName.localeCompare(right.productName, 'vi-VN'))
-  products.productTypes = new Set(products.items.map(productKey)).size
+  products.productTypes = new Set(products.items.map((item) => productKey(item, resolveIdentity))).size
   return { totals, products, groups: { shift: sortedGroups(groups.shift), day: sortedGroups(groups.day), month: sortedGroups(groups.month), employee: sortedGroups(groups.employee) } }
 }

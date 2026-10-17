@@ -36,8 +36,8 @@ def bounds(page, label):
     verify(page.evaluate('document.documentElement.scrollWidth <= innerWidth + 1'), label + ': no page overflow')
 
 
-def cards(page, selector, label):
-    expect(page.locator(selector)).to_have_count(4)
+def cards(page, selector, label, expected_count=4):
+    expect(page.locator(selector).first).to_be_visible()
     data = page.locator(selector).evaluate_all('''elements => elements.map(el => {
         const b = el.getBoundingClientRect();
         const label = el.querySelector('.metric__label');
@@ -47,7 +47,8 @@ def cards(page, selector, label):
             valueSize:value && parseFloat(getComputedStyle(value).fontSize),
             fits:el.scrollWidth <= el.clientWidth + 1};
     })''')
-    verify(len(data) == 4, label + ': all four revenue cards remain', data)
+    allowed_counts = expected_count if isinstance(expected_count, tuple) else (expected_count,)
+    verify(len(data) in allowed_counts, label + ': all revenue cards remain', data)
     verify(all(x['height'] <= 112 and x['labelSize'] <= 13 and x['valueSize'] <= 19 for x in data), label + ': compact cards', data)
     verify(all(x['align'] in ('left', 'start') and x['fits'] for x in data), label + ': left-aligned cards without clipping', data)
 
@@ -125,7 +126,7 @@ with sync_playwright() as playwright:
         expect(page.locator('.order-table tbody tr').first).to_be_visible()
         for width in WIDTHS:
             page.set_viewport_size({'width': width, 'height': 844})
-            cards(page, '.store-orders-page > .order-revenue-summary > .metric', f'{width}: store')
+            cards(page, '.store-orders-page > .order-revenue-summary > .metric', f'{width}: store', 5)
             bounds(page, f'{width}: store')
             cells = page.locator('.order-table tbody tr').first.locator('td[data-label]').evaluate_all('''els => els.map(el => ({
                 align:getComputedStyle(el).textAlign, font:parseFloat(getComputedStyle(el).fontSize),
@@ -140,7 +141,7 @@ with sync_playwright() as playwright:
             expect(page.locator('.store-statistics-page .order-revenue-summary')).to_be_visible()
             for width in (320, 390):
                 page.set_viewport_size({'width': width, 'height': 844})
-                cards(page, '.store-statistics-page .order-revenue-summary > .metric', f'{width}: statistics {mode}')
+                cards(page, '.store-statistics-page .order-revenue-summary > .metric', f'{width}: statistics {mode}', (4, 5))
                 bounds(page, f'{width}: statistics {mode}')
             page.screenshot(path=str(OUT / f'mobile-statistics-{mode}.png'), full_page=True, animations='disabled')
         if failures:

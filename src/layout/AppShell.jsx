@@ -19,6 +19,7 @@ import {
   LogOut,
   Menu,
   PackagePlus,
+  Percent,
   ReceiptText,
   Repeat2,
   RotateCcw,
@@ -85,6 +86,7 @@ const businessSupportScheduleOperation = { label: 'Phân lịch làm việc', pa
 const customerSurveyOperation = { label: 'Khảo sát thông tin KH', path: '/admin/customer-survey', icon: ClipboardList }
 const orderInformationSettingsOperation = { label: 'Cài đặt thông tin đơn hàng', path: '/admin/order-information-settings', icon: Settings }
 const workCatalogSettingsOperation = { label: 'Danh mục công việc & vi phạm', path: '/admin/work-catalog', icon: ClipboardList }
+const revenueBonusSettingsOperation = { label: 'Cấu hình thưởng doanh thu ngày', path: '/admin/revenue-bonus-settings', icon: Percent }
 const workRegistrationScheduleOperation = { label: 'Lịch đăng ký làm việc của HTKD và KVP', path: '/admin/work-registration-schedules', icon: CalendarCheck }
 const adminAssignmentOperation = { label: 'Giao việc', path: '/admin/assignments', icon: ClipboardCheck }
 
@@ -142,6 +144,7 @@ const systemMenus = {
     ...systemOperations.slice(2, 4),
     orderInformationSettingsOperation,
     workCatalogSettingsOperation,
+    revenueBonusSettingsOperation,
     { label: 'Cài đặt chính sách', path: '/admin/policies', icon: Settings },
     systemOperations[4],
     { label: 'Khôi phục dữ liệu', path: '/admin/data-restore', icon: RotateCcw },

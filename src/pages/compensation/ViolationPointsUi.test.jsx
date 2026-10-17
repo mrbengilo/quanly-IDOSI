@@ -53,7 +53,7 @@ describe('violation point user flows', () => {
     expect(awardNotes).toHaveLength(2)
     for (const note of awardNotes) expect(within(note.closest('td')).getByText('0 đ')).toBeTruthy()
   })
-  it('saves decimal comma points with zero money and accessible icon-only actions', async () => {
+  it('saves 0,5-step points with zero money and accessible icon-only actions', async () => {
     const updateWorkCatalogItem = vi.fn().mockResolvedValue({ ok: true })
     mocked.app = { ...mocked.app, session: { role: 'admin' }, updateWorkCatalogItem, workCatalogItems: [{ id: 'CAT', code: 'store.violation.late', targetGroup: 'store', kind: 'VIOLATION', name: 'Đi trễ', amountVnd: 0, violationPoints: 1, version: 1 }] }
     render(<WorkCatalogSettingsPage />)
@@ -61,11 +61,13 @@ describe('violation point user flows', () => {
     expect(edit.textContent).toBe('')
     expect(screen.getByRole('button', { name: 'Ngừng sử dụng Đi trễ' }).textContent).toBe('')
     fireEvent.click(edit)
-    fireEvent.change(screen.getByLabelText('Điểm vi phạm'), { target: { value: '10,5' } })
+    expect([...screen.getByLabelText('Điểm vi phạm').options].map((option) => option.value).slice(0, 5)).toEqual(['', '0', '0.5', '1', '1.5'])
+    expect(screen.getByLabelText('Điểm vi phạm').options).toHaveLength(22)
+    fireEvent.change(screen.getByLabelText('Điểm vi phạm'), { target: { value: '' } })
     fireEvent.click(screen.getByRole('button', { name: 'LƯU', exact: true }))
     expect(updateWorkCatalogItem).not.toHaveBeenCalled()
     await waitFor(() => expect(screen.getByRole('button', { name: 'LƯU', exact: true }).disabled).toBe(false))
-    fireEvent.change(screen.getByLabelText('Điểm vi phạm'), { target: { value: '0,5' } })
+    fireEvent.change(screen.getByLabelText('Điểm vi phạm'), { target: { value: '0.5' } })
     fireEvent.click(screen.getByRole('button', { name: 'LƯU', exact: true }))
     await waitFor(() => expect(updateWorkCatalogItem).toHaveBeenCalledWith(expect.objectContaining({ id: 'CAT', violationPoints: 0.5, amountVnd: 0, expectedVersion: 1 })))
   })

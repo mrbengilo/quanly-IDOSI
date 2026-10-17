@@ -4,6 +4,7 @@ import {
   calculateRevenueBonus,
   calculateTeamMilestoneReward,
 } from './compensationPolicies.js'
+import { resolveRevenueBonusProgram, revenueBonusConfigSnapshot } from './revenueBonusConfig.js'
 import { supportTransferBounds } from './supportTransferTime.js'
 
 export const AUTOMATIC_REVENUE_BONUS_EFFECTIVE_DATE = '2026-09-01'
@@ -315,6 +316,8 @@ export function calculateAutomaticRevenueBonusDay({
   supportTransfers = [],
   overrides = [],
   violations = [],
+  // Effective-dated admin configurations; absent means the legacy table.
+  revenueBonusConfigs = [],
   nowMs = Date.now(),
 } = {}) {
   const normalizedStoreId = String(storeId || '').trim()
@@ -324,6 +327,9 @@ export function calculateAutomaticRevenueBonusDay({
   }
   if (!Number.isFinite(normalizedNowMs)) throw new TypeError('nowMs must be a valid timestamp.')
   const finalizedOnly = businessDate >= AUTOMATIC_REVENUE_BONUS_EFFECTIVE_DATE
+  // Resolve by the calculated business date, never by the caller's clock.
+  const revenueProgram = resolveRevenueBonusProgram({ programId, businessDate, configs: revenueBonusConfigs })
+  const revenueBonusConfig = revenueBonusConfigSnapshot(revenueProgram)
 
   const scopedOrders = (Array.isArray(orders) ? orders : []).filter((order) => (
     sameIdentifier(order?.storeId, normalizedStoreId)
@@ -393,6 +399,7 @@ export function calculateAutomaticRevenueBonusDay({
     tierId: null,
     rateBasisPoints: 0,
     ratePercent: 0,
+    revenueBonusConfig,
     milestoneProgramId,
     milestoneId: null,
     percentagePoolVnd: 0,
@@ -454,7 +461,7 @@ export function calculateAutomaticRevenueBonusDay({
     if (seconds > 0) weights.set(employeeId, (weights.get(employeeId) || 0) + seconds)
   }
   const participants = [...weights].map(([id, weightUnits]) => ({ id, weightUnits }))
-  const percentage = calculateRevenueBonus({ programId, revenueVnd })
+  const percentage = calculateRevenueBonus({ programId, revenueVnd, tiers: revenueProgram.tiers })
   const milestone = calculateTeamMilestoneReward({
     programId: milestoneProgramId,
     achievedUnits: revenueVnd,
@@ -578,6 +585,7 @@ export function calculateAutomaticRevenueBonusDay({
     tierId: percentage.tierId,
     rateBasisPoints: percentage.rateBasisPoints,
     ratePercent: percentage.ratePercent,
+    revenueBonusConfig,
     milestoneProgramId,
     milestoneId: milestone.milestoneId,
     percentagePoolVnd: percentage.bonusVnd,
@@ -641,6 +649,7 @@ export function calculateAutomaticRevenueBonusPeriod({
   supportTransfers = [],
   overrides = [],
   violations = [],
+  revenueBonusConfigs = [],
   nowMs = Date.now(),
 } = {}) {
   if (!/^\d{4}-\d{2}$/u.test(String(period || ''))) throw new TypeError('period must use YYYY-MM.')
@@ -656,6 +665,7 @@ export function calculateAutomaticRevenueBonusPeriod({
       supportTransfers,
       overrides,
       violations,
+      revenueBonusConfigs,
       nowMs,
     })
   ))

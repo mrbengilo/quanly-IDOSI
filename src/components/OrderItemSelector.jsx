@@ -11,7 +11,7 @@ import './orderItems.css'
 
 const MAX_QUANTITY = 1000000
 
-export function OrderItemSelector({ options = [], value = [], onChange, error = '', disabled = false, revenueType = 'NORMAL' }) {
+export function OrderItemSelector({ options = [], value = [], onChange, error = '', disabled = false, canClassify = false, revenueType = 'NORMAL' }) {
   const labelId = useId()
   const isSale = revenueType !== 'NORMAL'
   const isKg = revenueType === 'SALE_KG'
@@ -58,7 +58,7 @@ export function OrderItemSelector({ options = [], value = [], onChange, error = 
     } else if (selectedById.has(productId)) {
       changeValue(productId, 'quantity', quantity)
     } else if (quantity !== '') {
-      onChange?.([...selectedItems, { productId, quantity, ...(isSale ? { revenueType, unit: isKg ? 'KG' : 'PIECE', unitPrice: '' } : {}) }])
+      onChange?.([...selectedItems, { productId, quantity, revenueType, ...(isSale ? { unit: isKg ? 'KG' : 'PIECE', unitPrice: '' } : {}) }])
     }
   }
   const stepQuantity = (option, direction) => {
@@ -115,6 +115,10 @@ export function OrderItemSelector({ options = [], value = [], onChange, error = 
               {isKg && <em>kg</em>}
             </div>
             {selected && <OrderItemWeight item={{ ...selected, productName: selected.productName || option.label }} />}
+            {selected && !isSale && selected.revenueType === undefined && <div className="order-item-selector__classification">
+              <small>Chưa phân loại trong dữ liệu đã lưu</small>
+              {canClassify && <button type="button" disabled={disabled} onClick={() => onChange?.(selectedItems.map((item) => item.productId === productId ? { ...item, revenueType: 'NORMAL', unit: 'PIECE' } : item))}>Xác nhận Bán thường</button>}
+            </div>}
             {selected && isSale && <>
               <label className="order-item-selector__price"><span>Đơn giá/{isKg ? 'kg' : 'cái'}</span>
                 <MoneyInput aria-label={`Đơn giá ${option.label}`} value={selected.unitPrice} disabled={disabled}
@@ -137,7 +141,7 @@ export function OrderItemsSummary({ items = [] }) {
     <ul className="order-items-summary" aria-label={orderItemsLabel(normalized)}>
       {normalized.map((item, index) => <li key={`${item.productId || item.productCode || item.productName}-${index}`}>
         <span>{item.productName || item.productCode || 'Mặt hàng'}
-          {revenueTypeOf(item) !== 'NORMAL' && <small className="table-note">{ORDER_REVENUE_LABELS[revenueTypeOf(item)]}</small>}
+          {item.revenueType === undefined ? <small className="table-note">Chưa phân loại</small> : revenueTypeOf(item) !== 'NORMAL' && <small className="table-note">{ORDER_REVENUE_LABELS[revenueTypeOf(item)]}</small>}
           <OrderItemWeight item={item} />
         </span><strong>{item.quantity} {item.unit === 'KG' ? 'kg' : 'cái'}</strong>
       </li>)}

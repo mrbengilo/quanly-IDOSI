@@ -18,7 +18,7 @@ beforeEach(async () => {
   directory = await mkdtemp(resolve(tmpdir(), 'idosi-order-revenue-'))
   ;({ server, runtime } = createIdosiServer({
     databasePath: resolve(directory, 'state.sqlite'), imagesDirectory: resolve(directory, 'images'),
-    bootstrapToken: 'revenue-fixture', warehouseApiKey: secret, warehouseApiStoreIds: 'S1',
+    bootstrapToken: 'revenue-fixture', warehouseApiKey: secret, warehouseApiStoreIds: 'S1,S2',
   }))
   await new Promise((done) => server.listen(0, '127.0.0.1', done))
   base = `http://127.0.0.1:${server.address().port}`
@@ -33,7 +33,7 @@ beforeEach(async () => {
   const date = orderBusinessDate({ createdAt: new Date().toISOString() })
   const boot = await request('/api/bootstrap', { headers: { 'x-idosi-bootstrap-token': 'revenue-fixture' }, body: {
     username: 'revenue.admin', password: 'synthetic-revenue-password', initialState: {
-      stores: [{ id: 'S1', name: 'Fixture One' }, { id: 'S2', name: 'Fixture Two' }],
+      stores: [{ id: 'S1', name: 'Fixture One' }, { id: 'S2', name: 'Fixture Two' }, { id: 'S3', name: 'Blocked Store' }],
       employees: ['E1', 'E2'].map((id) => ({ id, storeId: 'S1', unit: 'store', name: id })),
       attendance: ['E1', 'E2'].map((id) => ({ id: `A${id}`, employeeId: id, storeId: 'S1', date, workDate: date,
         shiftId: 'AM', shiftName: 'Ca sáng', checkIn: '08:00', checkInAt: `${date}T01:00:00Z` })),
@@ -66,6 +66,25 @@ const create = (data, role = 'E1', key) => command('order.create', {
 }, role, key)
 
 describe('real SQLite order commands and warehouse statistics', () => {
+  it('returns distinct sale and unclassified measures for each requested store', async () => {
+    const first = await create(mixed)
+    expect(first.status, JSON.stringify(first.body)).toBe(201)
+    const second = await create({ storeId: 'S2', amount: 40_000, normalAmount: 10_000, items: [{ ...normal, revenueType: 'NORMAL' }, piece] }, 'admin')
+    expect(second.status, JSON.stringify(second.body)).toBe(201)
+    const period = orderBusinessDate(first.body.order).slice(0, 7)
+    const warehouse = (storeId) => request(`/api/integrations/warehouse/v1/order-statistics?storeId=${storeId}&period=${period}`, { token: secret })
+    const s1 = await warehouse('S1')
+    const s2 = await warehouse('S2')
+    expect(s1.status).toBe(200)
+    expect(s2.status).toBe(200)
+    expect(s1.body).toMatchObject({ storeId: 'S1', store: { id: 'S1' }, totals: { revenue: 180_000, unclassifiedRevenue: 100_000, unclassifiedOrders: 1, revenueByType: { SALE_KG: 50_000, SALE_PIECE: 30_000 } }, products: { salePieceQuantity: 3, totalWeightKg: 2.5 } })
+    expect(s2.body).toMatchObject({ storeId: 'S2', store: { id: 'S2' }, totals: { revenue: 40_000, unclassifiedRevenue: 0, unclassifiedOrders: 0, revenueByType: { NORMAL: 10_000, SALE_KG: 0, SALE_PIECE: 30_000 } }, products: { salePieceQuantity: 3, totalWeightKg: 0 } })
+    expect(s1.body.totals.weight.byRevenueType.SALE_KG.actualKg).toBe(2.5)
+    expect(s1.body.totals.weight.byRevenueType.SALE_PIECE.estimatedKg).toBe(1)
+    expect(s2.body.totals.weight.byRevenueType.SALE_KG.actualKg).toBe(0)
+    expect(s2.body.totals.weight.byRevenueType.SALE_PIECE.estimatedKg).toBe(1)
+    expect((await warehouse('S3')).status).toBe(403)
+  })
   it('persists mixed revenue, replays without duplication and agrees across all report scopes', async () => {
     const first = await create(mixed, 'E1', 'same-revenue-command')
     expect(first.status, JSON.stringify(first.body)).toBe(201)
@@ -121,7 +140,7 @@ describe('real SQLite order commands and warehouse statistics', () => {
     const path = '/api/integrations/warehouse/v1/order-statistics?storeId=S1&period=2026-09'
     expect((await request(path)).status).toBe(401)
     expect((await request(path, { token: tokens.E1 })).status).toBe(401)
-    expect((await request(path.replace('S1', 'S2'), { token: secret })).status).toBe(403)
+    expect((await request(path.replace('S1', 'S3'), { token: secret })).status).toBe(403)
     expect((await request(`${path}&employeeId=E1`, { token: secret })).status).toBe(400)
   })
   it('recomputes all categories after audited admin edits and soft deletion, preserving normal legacy orders', async () => {
@@ -130,6 +149,10 @@ describe('real SQLite order commands and warehouse statistics', () => {
     const updated = await command('order.update', { orderId, amount: 190000, normalAmount: 100000, items: [normal, { ...kg, quantity: 3 }, piece], reason: 'Synthetic correction' })
     expect(updated.status, JSON.stringify(updated.body)).toBe(200)
     expect((await read()).body.totals).toMatchObject({ revenue: 190000, revenueByType: { NORMAL: 100000, SALE_KG: 60000, SALE_PIECE: 30000 } })
+    expect((await read()).body.totals.unclassifiedRevenue).toBe(100000)
+    const classified = await command('order.update', { orderId, items: [{ ...normal, revenueType: 'NORMAL' }, { ...kg, quantity: 3 }, piece], reason: 'Confirmed ordinary sale from source record' })
+    expect(classified.status, JSON.stringify(classified.body)).toBe(200)
+    expect((await read()).body.totals).toMatchObject({ unclassifiedRevenue: 0, unclassifiedOrders: 0, revenue: 190000 })
     expect((await command('order.update', { orderId, amount: 1, reason: 'Forbidden edit' }, 'E2')).status).toBe(403)
     expect((await command('order.delete', { orderId, reason: 'Synthetic removal' })).status).toBe(200)
     expect((await read()).body.totals.revenue).toBe(0)

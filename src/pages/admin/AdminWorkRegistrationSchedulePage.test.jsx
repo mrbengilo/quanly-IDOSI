@@ -19,8 +19,8 @@ describe('Admin work registration schedule', () => {
         { id: 'STORE-01', name: 'Cửa hàng', unit: 'store', employmentType: 'Full-Time' },
       ],
       supportWorkSchedules: [
-        { id: 'S-HTKD', employeeId: 'HTKD-01', employeeName: 'An HTKD', targetUnit: 'business_support', date: '2026-08-21', shiftName: 'Giờ hành chính', start: '08:00', end: '17:30', status: 'Đã duyệt', registeredAt: '2026-08-20T07:30:00.000Z' },
-        { id: 'S-KVP', employeeId: 'VP-01', employeeName: 'Bình KVP', targetUnit: 'office', date: '2026-08-22', shiftName: 'Ca sáng', start: '08:00', end: '12:00', note: 'Họp KVP' },
+        { id: 'S-HTKD', employeeId: 'HTKD-01', employeeName: 'An HTKD', targetUnit: 'business_support', date: '2026-08-21', shiftName: 'Giờ hành chính', start: '08:00', end: '17:30', workMode: 'Online', status: 'Đã duyệt', registeredAt: '2026-08-20T07:30:00.000Z' },
+        { id: 'S-KVP', employeeId: 'VP-01', employeeName: 'Bình KVP', targetUnit: 'office', date: '2026-08-22', shiftName: 'Ca sáng', start: '08:00', end: '12:00', workMode: 'Offline', note: 'Họp KVP' },
         { id: 'S-DELETED', employeeId: 'VP-01', targetUnit: 'office', date: '2026-08-23', shiftName: 'Ca xóa', start: '08:00', end: '12:00', deletedAt: '2026-08-20T00:00:00Z' },
         { id: 'S-ORPHAN', employeeId: 'HTKD-OLD', employeeName: 'HTKD cũ', targetUnit: 'business_support', date: '2026-08-24', shiftName: 'Ca legacy', start: '13:00', end: '17:00' },
       ],
@@ -47,11 +47,13 @@ describe('Admin work registration schedule', () => {
     expect(within(support).getByText('An HTKD')).toBeTruthy()
     expect(within(support).getByText('HTKD cũ')).toBeTruthy()
     expect(within(support).getByText('Giờ hành chính')).toBeTruthy()
+    expect(within(support).getByText('Online')).toBeTruthy()
     expect(within(support).getByText('Đã duyệt')).toBeTruthy()
     expect(within(support).getByText('Đăng ký: 20/08/26 14:30:00')).toBeTruthy()
     expect(within(support).queryByText('Bình KVP')).toBeNull()
     expect(within(office).getByText('Bình KVP')).toBeTruthy()
     expect(within(office).getByText('Ca sáng')).toBeTruthy()
+    expect(within(office).getByText('Offline')).toBeTruthy()
     expect(within(office).queryByText('Ca xóa')).toBeNull()
     expect(within(office).queryByText('An HTKD')).toBeNull()
     expect(document.querySelectorAll('.my-work-schedule-grid thead tr')[0].children).toHaveLength(8)

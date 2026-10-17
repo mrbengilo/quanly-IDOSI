@@ -313,3 +313,9 @@ describe('store checklist task lifecycle', () => {
     expect(() => deactivateStoreChecklistTask({ id: 'TASK-1', active: true }, { at: 'not-a-date' })).toThrow(TypeError)
   })
 })
+
+
+it.each(['11:59', '12:00', '16:48', '16:59', '17:00'])('explicit task shift wins over check-in %s and stale labels', (checkInTime) => {
+  expect(resolveStoreChecklistTemplate({ selectedTaskShiftId: 'ca3', id: 'ca2', name: 'Ca Chiều', checkInTime })?.key).toBe('night')
+  expect(resolveStoreChecklistTemplate({ selectedTaskShiftId: '', checkInTime })).toBeNull()
+})

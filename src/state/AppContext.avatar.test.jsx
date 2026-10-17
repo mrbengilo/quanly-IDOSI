@@ -9,6 +9,7 @@ const api = vi.hoisted(() => ({
   apiCommand: vi.fn(),
   apiGetAccountAvatar: vi.fn(),
   apiGetState: vi.fn(),
+  apiGetStateMetadata: vi.fn(),
   apiGetStoreWorkspaceState: vi.fn(),
   apiGetSystemScreenState: vi.fn(),
   apiLogin: vi.fn(),
@@ -22,6 +23,7 @@ vi.mock('../services/idosiApi', () => ({
   apiCommand: api.apiCommand,
   apiGetAccountAvatar: api.apiGetAccountAvatar,
   apiGetState: api.apiGetState,
+  apiGetStateMetadata: api.apiGetStateMetadata,
   apiGetStoreWorkspaceState: api.apiGetStoreWorkspaceState,
   apiGetSystemScreenState: api.apiGetSystemScreenState,
   apiLogin: api.apiLogin,
@@ -185,12 +187,7 @@ describe('AppContext private account-avatar lifecycle', () => {
     await waitFor(() => expect(appRef.current.settings.avatar).toBe('blob:account-avatar-v1'))
 
     const conflict = Object.assign(new Error('stale admin state'), { code: 'VERSION_CONFLICT' })
-    api.apiGetState.mockResolvedValueOnce({
-      user: { ...admin, version: 7 },
-      state: remoteState(1),
-      policies: [],
-      version: 7,
-    })
+    api.apiGetStateMetadata.mockResolvedValueOnce({ scope: 'global', version: 7, policyVersions: {} })
     api.apiCommand
       .mockRejectedValueOnce(conflict)
       .mockResolvedValueOnce({
@@ -207,7 +204,9 @@ describe('AppContext private account-avatar lifecycle', () => {
     })
 
     expect(result.ok).toBe(true)
-    expect(api.apiGetState).toHaveBeenCalledTimes(1)
+    // The retry needs only the current version, never the full global state.
+    expect(api.apiGetStateMetadata).toHaveBeenCalledTimes(1)
+    expect(api.apiGetState).not.toHaveBeenCalled()
     expect(api.apiCommand).toHaveBeenCalledTimes(2)
     expect(api.apiCommand.mock.calls[0][2].expectedVersion).toBe(1)
     expect(api.apiCommand.mock.calls[1][2].expectedVersion).toBe(7)
@@ -225,12 +224,7 @@ describe('AppContext private account-avatar lifecycle', () => {
     await waitFor(() => expect(appRef.current.settings.avatar).toBe('blob:account-avatar-v1'))
 
     const conflict = () => Object.assign(new Error('stale admin state'), { code: 'VERSION_CONFLICT' })
-    api.apiGetState.mockResolvedValueOnce({
-      user: { ...admin, version: 7 },
-      state: remoteState(1),
-      policies: [],
-      version: 7,
-    })
+    api.apiGetStateMetadata.mockResolvedValueOnce({ scope: 'global', version: 7, policyVersions: {} })
     api.apiCommand.mockRejectedValueOnce(conflict()).mockRejectedValueOnce(conflict())
     const png = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]).toString('base64')
 

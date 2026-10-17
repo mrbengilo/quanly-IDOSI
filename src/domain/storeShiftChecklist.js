@@ -210,6 +210,15 @@ const activeTemplates = (templates) => latestRecords(
 
 export const resolveStoreChecklistTemplate = (shift, templates = STORE_CHECKLIST_TEMPLATES) => {
   const available = activeTemplates(templates)
+  // Explicit task selection outranks attendance time. The old time mapping is
+  // retained only for legacy attendance/reward callers without this contract.
+  if (shift && typeof shift === 'object' && Object.hasOwn(shift, 'selectedTaskShiftId')) {
+    const selectedId = String(shift.selectedTaskShiftId || '').trim()
+    if (!selectedId) return null
+    const byId = resolveStoreChecklistTemplate({ id: selectedId }, templates)
+    if (byId) return byId
+    return resolveStoreChecklistTemplate({ id: selectedId, name: shift.name, start: shift.start, end: shift.end }, templates)
+  }
   const attendanceKey = templateKeyFromAttendanceTime(shift)
   if (attendanceKey) {
     return available.find((template) => template.key === attendanceKey) || null

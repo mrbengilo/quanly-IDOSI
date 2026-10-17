@@ -1,3 +1,4 @@
+import { setImmediate as nextEventLoopTurn } from 'node:timers/promises'
 import { AUTOMATIC_REVENUE_BONUS_CUTOFF_HOUR } from '../../src/domain/automaticRevenueBonus.js'
 
 const VIETNAM_UTC_OFFSET_MS = 7 * 60 * 60 * 1_000
@@ -14,6 +15,10 @@ export const resolveAutomaticRevenueBonusEnabled = (value, defaultEnabled = true
 const defaultLogger = process.env.NODE_ENV === 'test'
   ? null
   : (entry) => console.info(JSON.stringify(entry))
+
+// Lets HTTP requests queued on the single Node event loop run between the
+// finalizer's store/day scopes instead of waiting for the whole sweep.
+const yieldControl = () => nextEventLoopTurn()
 
 const vietnamCutoffFor = (nowMs) => {
   const vietnamDate = new Date(nowMs + VIETNAM_UTC_OFFSET_MS)
@@ -52,7 +57,7 @@ export const createAutomaticRevenueBonusRunner = ({
     if (inFlight) return inFlight
     const startedAt = new Date().toISOString()
     inFlight = Promise.resolve()
-      .then(() => finalize(env, { now: startedAt, trigger: reason }))
+      .then(() => finalize(env, { now: startedAt, trigger: reason, yieldControl }))
       .then((summary) => {
         writeLog({ event: 'idosi.revenue_bonus.finalizer', status: 'completed', reason, ...summary })
         return summary

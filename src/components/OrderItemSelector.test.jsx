@@ -10,7 +10,7 @@ describe('OrderItemSelector', () => {
     const onChange = vi.fn()
     const { rerender } = render(<OrderItemSelector options={DEFAULT_ORDER_INFORMATION_OPTIONS} value={[]} onChange={onChange} />)
     fireEvent.click(screen.getByRole('checkbox', { name: /Quần áo nam/u }))
-    expect(onChange).toHaveBeenLastCalledWith([{ productId: 'order-product-001', quantity: 1 }])
+    expect(onChange).toHaveBeenLastCalledWith([{ productId: 'order-product-001', quantity: 1, revenueType: 'NORMAL' }])
 
     rerender(<OrderItemSelector options={DEFAULT_ORDER_INFORMATION_OPTIONS} value={[
       { productId: 'order-product-001', quantity: 1 },

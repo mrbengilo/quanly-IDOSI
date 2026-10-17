@@ -39,6 +39,7 @@ describe('three category order editor and real domain contract', () => {
     expect(screen.getByRole('checkbox', { name: new RegExp(firstProduct.label) }).checked).toBe(true)
     fireEvent.click(screen.getByText('Lưu thử'))
     expect(save).toHaveBeenCalledWith(expect.objectContaining({ amount: 180000, normalAmount: 100000, items: expect.arrayContaining([
+      expect.objectContaining({ revenueType: 'NORMAL', quantity: 1 }),
       expect.objectContaining({ revenueType: 'SALE_KG', quantity: 2.5, unit: 'KG', lineAmount: 50000 }),
       expect.objectContaining({ revenueType: 'SALE_PIECE', quantity: 3, unit: 'PIECE', lineAmount: 30000 }),
     ]) }))
@@ -50,6 +51,16 @@ describe('three category order editor and real domain contract', () => {
     fireEvent.change(screen.getByLabelText(`Khối lượng ${firstProduct.label}`), { target: { value: '3' } })
     fireEvent.click(screen.getByText('Lưu thử'))
     expect(save).toHaveBeenCalledWith(expect.objectContaining({ amount: 60000, normalAmount: 0 }))
+  })
+  it('requires an explicit confirmation before a historical ordinary line becomes NORMAL', () => {
+    const save = vi.fn()
+    render(<Harness save={save} initialItems={[{ productId: firstProduct.id, quantity: 2 }]} />)
+    fireEvent.change(screen.getByPlaceholderText('Nhập số tiền'), { target: { value: '100000' } })
+    expect(within(screen.getByRole('region', { name: 'Tổng tiền đơn đang nhập' })).getByText('CHƯA PHÂN LOẠI')).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: 'Xác nhận Bán thường' }))
+    fireEvent.click(screen.getByText('Lưu thử'))
+    expect(save).toHaveBeenCalledWith(expect.objectContaining({ amount: 100000, items: [expect.objectContaining({ revenueType: 'NORMAL', quantity: 2 })] }))
+    expect(screen.queryByText('Chưa phân loại trong dữ liệu đã lưu')).toBeNull()
   })
   it('disables tab actions while saving and never displays loading as zero revenue', () => {
     render(<Harness save={vi.fn()} disabled />)

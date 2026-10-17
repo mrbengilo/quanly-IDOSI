@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { scheduleConflict, scheduleWindows, scheduledCheckInChoices, supportForScheduledWindow, shiftWindow } from './supportScheduling'
+import { buildLocalScheduleAssignments, scheduleConflict, scheduleWindows, scheduledCheckInChoices, supportForScheduledWindow, shiftWindow } from './supportScheduling'
 
 const employee = { id: 'E1', storeId: 'A' }
 const transfer = { id: 'T1', employeeId: 'E1', fromStoreId: 'A', toStoreId: 'B', startAt: '2026-09-07T08:00+07:00', endAt: '2026-09-07T17:00+07:00' }
@@ -137,4 +137,18 @@ describe('shared support scheduling', () => {
     expect(scheduledCheckInChoices(state, 'E1', '2026-09-07T01:00:00Z', 120)).toHaveLength(1)
     expect(scheduledCheckInChoices(state, 'E1', '2026-09-07T05:00:00Z', 120)).toEqual([])
   })
+})
+
+
+it('appends a later shift to a legacy single-shift assignment without losing its snapshot', () => {
+  const morning = assignment('AM', 'A', '08:00', '12:00')
+  morning.shiftId = 'AM'
+  delete morning.shiftIds
+  const state = { ...stateFor([morning]), shiftDefinitions: [{ id: 'PM', storeId: 'A', start: '12:00', end: '17:00' }] }
+  const result = buildLocalScheduleAssignments(state, {
+    employeeIds: ['E1'], shiftIds: ['PM', 'pm'], storeId: 'A', date: morning.date, createId: () => 'NEW',
+  })
+  expect(result.conflict).toBeNull()
+  expect(result.assignments[0]).toMatchObject({ id: 'AM', shiftId: 'AM', shiftIds: ['AM', 'pm'] })
+  expect(result.assignments[0].shiftSnapshots[0]).toEqual(morning.shiftSnapshots[0])
 })

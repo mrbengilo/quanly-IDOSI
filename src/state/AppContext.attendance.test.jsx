@@ -171,6 +171,8 @@ describe('local attendance canonical working time', () => {
     const openAttendance = {
       id: 'ATT-PROGRESS', employeeId: 'E01', storeId: 'S01', date: '2026-09-04',
       shiftId: 'CA-SANG', checkIn: '08:00', checkInAt: '2026-09-04T01:00:00.000Z',
+      taskShiftSelection: { attendanceId: 'ATT-PROGRESS', shiftId: 'CA-SANG', shiftName: 'Ca Sáng' },
+      taskShiftContexts: [{ shiftId: 'CA-SANG', shiftName: 'Ca Sáng', taskIds: ['TASK-PROGRESS'] }],
     }
     const task = {
       id: 'TASK-PROGRESS', checklistAttendanceId: 'ATT-PROGRESS', employeeIds: ['E01'],
@@ -183,6 +185,8 @@ describe('local attendance canonical working time', () => {
       activeStoreId: 'S01',
       stores: [{ id: 'S01', name: 'Dosii Tây Hòa', status: 'Đang hoạt động' }],
       employees: [{ id: 'E01', name: 'Nhân viên cửa hàng', unit: 'store', storeId: 'S01', status: 'Đang làm việc' }],
+      shiftDefinitions: [{ id: 'CA-SANG', storeId: 'S01', name: 'Ca Sáng', start: '08:00', end: '12:00' }],
+      workCatalogItems: [],
       attendance: [openAttendance],
       tasks: [task],
     }
@@ -213,8 +217,15 @@ describe('local attendance canonical working time', () => {
         .toMatchObject({ ok: true })
     })
     await act(async () => {
+      // An old caller without the locked shift never reaches the server.
       expect(await appRef.current.saveStoreTaskProgress({
         attendanceId: 'ATT-PROGRESS',
+        tasks: [{ id: 'TASK-PROGRESS', completed: true }],
+      })).toMatchObject({ ok: false, code: 'TASK_SHIFT_SELECTION_REQUIRED' })
+      expect(api.apiCommand).not.toHaveBeenCalledWith('task.progress.save', expect.anything(), expect.anything())
+      expect(await appRef.current.saveStoreTaskProgress({
+        attendanceId: 'ATT-PROGRESS',
+        selectedTaskShiftId: 'CA-SANG',
         tasks: [{ id: 'TASK-PROGRESS', completed: true }],
       })).toMatchObject({ ok: true, completionRate: 100 })
     })
@@ -247,7 +258,10 @@ describe('local attendance canonical working time', () => {
         id: 'ATT-LOCAL-PROGRESS', employeeId: employee.id, storeId: employee.storeId,
         date: '2026-08-30', workDate: '2026-08-30', shiftId: 'CA-SANG',
         checkIn: '08:00', checkInAt: '2026-08-30T01:00:00.000Z', checkOut: null, checkOutAt: null,
+        taskShiftContexts: [{ shiftId: 'CA-SANG', shiftName: 'Ca Sáng', taskIds: ['TASK-LOCAL-PROGRESS'] }],
       }],
+      shiftDefinitions: [{ id: 'CA-SANG', storeId: 'SM-TNV', name: 'Ca Sáng', start: '08:00', end: '12:00' }],
+      workCatalogItems: [],
       tasks: [{
         id: 'TASK-LOCAL-PROGRESS', assignmentId: 'ASSIGN-LOCAL-PROGRESS',
         checklistAttendanceId: 'att-local-progress', employeeIds: ['st-local-progress'],
@@ -271,6 +285,7 @@ describe('local attendance canonical working time', () => {
     await act(async () => {
       result = await appRef.current.saveStoreTaskProgress({
         attendanceId: 'att-local-progress',
+        selectedTaskShiftId: 'CA-SANG',
         tasks: [{ id: 'task-local-progress', completed: false }],
         incompleteReason: 'Khách đông nên chưa hoàn tất',
       })
@@ -611,6 +626,7 @@ describe('local attendance canonical working time', () => {
       id: 'ATT-TASK-COLLISION', employeeId: employee.id, storeId: employee.storeId,
       date: '2026-08-30', shiftId: 'CA-SANG', checkInAt: '2026-08-30T01:00:00.000Z',
       checkOut: null, checkOutAt: null,
+      taskShiftContexts: [{ shiftId: 'CA-SANG', shiftName: 'Ca Sáng', taskIds: ['TASK-X', 'task-x'] }],
     }
     renderLocalState({
       ...initial,
@@ -618,6 +634,8 @@ describe('local attendance canonical working time', () => {
       stores: [{ id: 'SM-TNV', name: 'SM TNV', status: 'Đang hoạt động' }],
       employees: [employee],
       attendance: [attendance],
+      shiftDefinitions: [{ id: 'CA-SANG', storeId: 'SM-TNV', name: 'Ca Sáng', start: '08:00', end: '12:00' }],
+      workCatalogItems: [],
       tasks: [{
         id: 'TASK-X', checklistAttendanceId: attendance.id, employeeIds: [employee.id],
         storeId: employee.storeId, date: attendance.date, shiftId: attendance.shiftId, required: true,
@@ -638,6 +656,7 @@ describe('local attendance canonical working time', () => {
     await act(async () => {
       result = await appRef.current.saveStoreTaskProgress({
         attendanceId: attendance.id,
+        selectedTaskShiftId: 'CA-SANG',
         tasks: [{ id: 'TASK-X', completed: true }, { id: 'task-x', completed: false }],
       })
     })

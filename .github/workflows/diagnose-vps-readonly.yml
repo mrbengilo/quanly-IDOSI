@@ -63,7 +63,27 @@ jobs:
           ssh -i "$HOME/.ssh/id_ed25519" -p "$VPS_PORT" \
             -o BatchMode=yes -o ConnectTimeout=15 -o ServerAliveInterval=15 \
             -o ServerAliveCountMax=3 -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \
-            "$VPS_USER@$VPS_HOST" 'bash -s' < deploy/vps/diagnose-readonly.sh
+            "$VPS_USER@$VPS_HOST" 'bash -s' < deploy/vps/diagnose-readonly.sh \
+            | tee "$RUNNER_TEMP/diagnostics.txt"
+
+      - name: Publish diagnostics as annotations
+        if: always()
+        run: |
+          set -Eeuo pipefail
+          [[ -s "$RUNNER_TEMP/diagnostics.txt" ]] || exit 0
+          # Annotations are readable through the REST API even where raw log
+          # downloads are unavailable. Keep within 10 notices per step.
+          python3 - "$RUNNER_TEMP/diagnostics.txt" <<'PY'
+          import sys
+          text = open(sys.argv[1], encoding='utf-8', errors='replace').read()
+          chunk_size, chunks = 4000, []
+          while text and len(chunks) < 10:
+              chunks.append(text[:chunk_size])
+              text = text[chunk_size:]
+          for index, chunk in enumerate(chunks, 1):
+              body = chunk.replace('%', '%25').replace('\r', '%0D').replace('\n', '%0A')
+              print(f'::notice title=diagnostics part {index}/{len(chunks)}::{body}')
+          PY
 
       - name: Cleanup SSH material
         if: always()

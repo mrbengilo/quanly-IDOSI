@@ -17,6 +17,8 @@ const baseApp = () => ({
     shiftId: 'CA-1', shiftName: 'Ca sáng', checkIn: '08:00', checkInAt: '2026-08-22T01:00:00.000Z',
     checkOut: null, checkOutAt: null,
   }],
+  shiftDefinitions: [{ id: 'CA-1', storeId: 'S01', name: 'Ca Sáng' }, { id: 'CA-2', storeId: 'S01', name: 'Ca Chiều' }, { id: 'CA-3', storeId: 'S01', name: 'Ca Tối' }],
+  workCatalogItems: [],
   expenseEntries: [],
   tasks: [],
   taskAssignmentHistory: [],
@@ -24,11 +26,63 @@ const baseApp = () => ({
   saveStoreTaskProgress: vi.fn().mockResolvedValue({ ok: true, completionRate: 100 }),
 })
 
-const renderAssignedTasks = (initialEntries = ['/employee/tasks']) => render(
-  <MemoryRouter initialEntries={initialEntries}><EmployeeAssignedTasksPage /></MemoryRouter>,
-)
+const lockAttendance = (shiftId) => {
+  mocked.app.attendance = mocked.app.attendance.map((row) => (row.checkOutAt ? row : {
+    ...row, taskShiftSelection: { attendanceId: row.id, shiftId, shiftName: shiftId },
+    taskShiftContexts: [...(row.taskShiftContexts || [])],
+  }))
+}
+
+// Server-locked state is what the page renders; `lock` simulates the attendance
+// returned by task.shift.select instead of a client-side dropdown.
+const renderAssignedTasks = (initialEntries = ['/employee/tasks'], lock = true) => {
+  if (lock) lockAttendance(mocked.app.attendance.find((row) => !row.checkOutAt)?.shiftId || 'CA-1')
+  return render(<MemoryRouter initialEntries={initialEntries}><EmployeeAssignedTasksPage /></MemoryRouter>)
+}
 
 describe('employee shift operations', () => {
+  it('opens independent time choices without writing or showing tasks, then locks only after server confirmation', async () => {
+    mocked.app.shiftDefinitions = [
+      ['AM1', 'Ca sáng', '08:00', '12:00'], ['AM2', 'Ca sáng', '08:30', '12:00'],
+      ['PM1', 'Ca chiều', '12:00', '18:00'], ['PM2', 'Ca chiều', '13:30', '18:00'],
+      ['N1', 'Ca tối', '17:00', '21:00'], ['N2', 'Ca tối', '19:00', '21:00'],
+    ].map(([id, name, start, end]) => ({ id, name, start, end, storeId: 'S01' }))
+    let finish
+    mocked.app.selectTaskShift = vi.fn(() => new Promise((resolve) => { finish = resolve }))
+    const view = renderAssignedTasks(['/employee/tasks'], false)
+    const morning = screen.getByRole('button', { name: /Ca sáng 2 ca/u })
+    expect(morning.disabled).toBe(false)
+    fireEvent.click(morning)
+    expect(morning.getAttribute('aria-expanded')).toBe('true')
+    expect(mocked.app.selectTaskShift).not.toHaveBeenCalled()
+    expect(screen.queryByRole('button', { name: 'LƯU' })).toBeNull()
+    const choice = screen.getByRole('button', { name: 'Ca sáng 08:30–12:00' })
+    fireEvent.click(choice)
+    fireEvent.click(choice)
+    expect(mocked.app.selectTaskShift).toHaveBeenCalledTimes(1)
+    expect(mocked.app.selectTaskShift).toHaveBeenCalledWith(expect.objectContaining({ selectedTaskShiftId: 'AM2' }))
+    expect(screen.queryByText(/Đã chọn · đã khóa/u)).toBeNull()
+    lockAttendance('AM2')
+    finish({ ok: true })
+    view.rerender(<MemoryRouter><EmployeeAssignedTasksPage /></MemoryRouter>)
+    await waitFor(() => expect(screen.getByText(/Đã chọn · đã khóa/u)).toBeTruthy())
+    expect(screen.getByRole('button', { name: /Ca sáng 08:30–12:00/u }).disabled).toBe(true)
+    expect(screen.queryByRole('button', { name: /Ca chiều/u })).toBeNull()
+  })
+  it('keeps all three choices usable when the configuration contains repeated copies without showing a checklist', async () => {
+    mocked.app.shiftDefinitions.push(...structuredClone(mocked.app.shiftDefinitions))
+    mocked.app.selectTaskShift = vi.fn().mockResolvedValue({ ok: false, uncertain: true, message: 'Chưa xác định kết quả' })
+    renderAssignedTasks(['/employee/tasks'], false)
+    for (const label of ['Ca sáng', 'Ca chiều', 'Ca tối']) {
+      expect(screen.getByRole('button', { name: new RegExp(label, 'u') }).disabled).toBe(false)
+    }
+    expect(screen.queryByText('Cấu hình trùng')).toBeNull()
+    expect(screen.queryByRole('button', { name: 'LƯU' })).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: /Ca chiều/u }))
+    await waitFor(() => expect(mocked.app.selectTaskShift).toHaveBeenCalledTimes(1))
+    expect(mocked.app.selectTaskShift).toHaveBeenCalledWith(expect.objectContaining({ attendanceId: 'ATT-01', selectedTaskShiftId: 'CA-2' }))
+    expect(screen.queryByText(/Đã chọn · đã khóa/u)).toBeNull()
+  })
   beforeEach(() => {
     globalThis.sessionStorage.clear()
     mocked.app = baseApp()
@@ -117,7 +171,6 @@ describe('employee shift operations', () => {
     expect(firstTitle.closest('strong')).toBeNull()
     expect(screen.queryByText('Mô tả không được hiển thị')).toBeNull()
     expect(screen.queryByText('Bắt buộc')).toBeNull()
-    expect(screen.getByText(/luôn hiển thị đến khi bạn bấm kết ca/i)).toBeTruthy()
     const checkboxes = screen.getAllByRole('checkbox')
     fireEvent.click(checkboxes[0])
     expect(screen.getByRole('button', { name: 'LƯU KẾT QUẢ' }).disabled).toBe(true)
@@ -132,13 +185,7 @@ describe('employee shift operations', () => {
       incompleteReason: 'Chưa kiểm xong kho cuối ca',
       idempotencyKey: expect.stringMatching(/^task-progress:/u),
     }))
-    expect(JSON.parse(globalThis.sessionStorage.getItem('idosi:task-progress:ATT-01'))).toEqual({
-      attendanceId: 'ATT-01',
-      employeeId: 'E01',
-      incompleteTaskIds: ['TASK-02'],
-      incompleteReason: 'Chưa kiểm xong kho cuối ca',
-      submittedAt: expect.any(String),
-    })
+    expect(mocked.app.saveStoreTaskProgress.mock.calls[0][0].selectedTaskShiftId).toBe('CA-1')
     await waitFor(() => expect(screen.getByRole('checkbox', { name: /Kiểm tra quầy/i }).disabled).toBe(true))
     expect(screen.getByText('Đã lưu')).toBeTruthy()
     expect(screen.getByText('Kiểm tra quầy').closest('label').classList.contains('is-locked')).toBe(true)
@@ -188,28 +235,6 @@ describe('employee shift operations', () => {
     expect(screen.getByRole('button', { name: 'LƯU KẾT QUẢ' }).disabled).toBe(true)
     fireEvent.click(screen.getByRole('button', { name: 'LƯU KẾT QUẢ' }))
     expect(mocked.app.saveStoreTaskProgress).not.toHaveBeenCalled()
-  })
-
-  it('shows the three canonical shift tabs and enables updates only for the checked-in shift', () => {
-    mocked.app.tasks = [{
-      id: 'TASK-MORNING', checklistAttendanceId: 'ATT-01', storeId: 'S01', date: '2026-08-22', shiftId: 'CA-1',
-      employeeIds: ['E01'], title: 'Checklist ca sáng', required: true, catalogKind: 'FIXED_TASK', completedBy: {},
-    }]
-
-    renderAssignedTasks()
-
-    expect(screen.getByRole('tab', { name: /Ca Sáng/i }).getAttribute('aria-selected')).toBe('true')
-    expect(screen.getByRole('tab', { name: /Ca Chiều/i })).toBeTruthy()
-    expect(screen.getByRole('tab', { name: /Ca Tối/i })).toBeTruthy()
-    expect(screen.getByText('Checklist ca sáng')).toBeTruthy()
-    expect(screen.getByRole('checkbox', { name: /Checklist ca sáng/i }).disabled).toBe(false)
-
-    fireEvent.click(screen.getByRole('tab', { name: /Ca Chiều/i }))
-
-    expect(screen.queryByText('Checklist ca sáng')).toBeNull()
-    expect(screen.getByText(/Chỉ ca đang điểm danh mới được tick và lưu/i)).toBeTruthy()
-    expect(screen.getByText(/Chưa có công việc bắt buộc cho ca này/i)).toBeTruthy()
-    expect(screen.getByRole('button', { name: 'LƯU KẾT QUẢ' }).disabled).toBe(true)
   })
 
   it('shows only checklist rows bound to the current open attendance', () => {
@@ -262,7 +287,7 @@ describe('employee shift operations', () => {
 
     expect(screen.getByText('Checklist cửa hàng hỗ trợ')).toBeTruthy()
     expect(screen.getByRole('checkbox', { name: /Checklist cửa hàng hỗ trợ/i }).disabled).toBe(false)
-    expect(screen.getByRole('tab', { name: /Ca Chiều/i }).getAttribute('aria-selected')).toBe('true')
+    expect(screen.getByRole('button', { name: /Ca chiều/u }).getAttribute('aria-pressed')).toBe('true')
   })
 
   it('does not attach a lowercase checklist binding to an exact uppercase attendance collision', () => {
@@ -286,37 +311,131 @@ describe('employee shift operations', () => {
     expect(screen.queryByRole('checkbox')).toBeNull()
   })
 
-  it('opens a future assignment from its notification deep link without allowing an early save', () => {
-    mocked.app.attendance = []
+  it('requires attendance before any shift selector or checklist, even from a deep link', () => {
+    mocked.app.attendance = [{ ...mocked.app.attendance[0], checkOut: '12:00', checkOutAt: '2026-08-22T05:00:00.000Z' }]
     mocked.app.tasks = [{
       id: 'TASK-FUTURE', assignmentId: 'ASSIGN-FUTURE', storeId: 'S01', date: '2026-09-02', shiftId: 'CA-2',
       employeeIds: ['E01'], title: 'Chuẩn bị quầy cho ca tương lai', required: true, catalogKind: 'FIXED_TASK', completedBy: {},
-    }, {
-      id: 'TASK-OTHER', assignmentId: 'ASSIGN-OTHER', storeId: 'S01', date: '2026-09-02', shiftId: 'CA-2',
-      employeeIds: ['E01'], title: 'Không thuộc thông báo', required: true, catalogKind: 'FIXED_TASK', completedBy: {},
     }]
-
-    renderAssignedTasks(['/employee/tasks?assignment=ASSIGN-FUTURE'])
-
-    expect(screen.getByText('Chuẩn bị quầy cho ca tương lai')).toBeTruthy()
-    expect(screen.queryByText('Không thuộc thông báo')).toBeNull()
-    expect(screen.getByRole('checkbox').disabled).toBe(true)
-    expect(screen.getByRole('button', { name: 'LƯU KẾT QUẢ' }).disabled).toBe(true)
+    mocked.app.taskAssignmentHistory = [{ id: 'ASSIGN-OLD', progressHistory: [{ employeeId: 'E01', at: '2026-08-21T10:00:00.000Z', shiftName: 'Ca Chiều', completedTasks: 1, totalTasks: 1, completionRate: 100 }] }]
+    mocked.app.selectTaskShift = vi.fn()
+    renderAssignedTasks(['/employee/tasks?assignment=ASSIGN-FUTURE'], false)
+    expect(screen.getByText('Bạn cần điểm danh trước khi chọn ca và xem công việc được giao.')).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Đi đến điểm danh' })).toBeTruthy()
+    expect(screen.queryByRole('group', { name: 'Chọn ca công việc' })).toBeNull()
+    expect(screen.queryByText('Chuẩn bị quầy cho ca tương lai')).toBeNull()
+    expect(screen.queryByRole('checkbox')).toBeNull()
+    expect(screen.queryByRole('button', { name: 'LƯU KẾT QUẢ' })).toBeNull()
+    expect(screen.getByText('Lịch sử kết quả đã gửi')).toBeTruthy()
+    expect(screen.getByText('100%')).toBeTruthy()
   })
 
-  it('keeps both forms read-only until the employee has an open attendance', () => {
-    vi.useFakeTimers()
-    vi.setSystemTime('2026-08-22T03:00:00.000Z')
-    mocked.app.attendance = []
-    mocked.app.tasks = [{
-      id: 'TASK-01', assignmentId: 'ASSIGN-01', storeId: 'S01', date: '2026-08-22', shiftId: 'CA-1',
-      employeeIds: ['E01'], title: 'Kiểm tra quầy', completedBy: {},
-    }]
-    const { unmount } = render(<EmployeeShiftExpensePage />)
-    expect(screen.getByRole('button', { name: 'LƯU' }).disabled).toBe(true)
-    unmount()
-    renderAssignedTasks()
-    expect(screen.getByRole('checkbox').disabled).toBe(true)
-    expect(screen.getByRole('button', { name: 'LƯU KẾT QUẢ' }).disabled).toBe(true)
+  it('offers three unselected shift buttons and locks the server-confirmed choice only', async () => {
+    mocked.app.attendance[0] = { ...mocked.app.attendance[0], shiftId: 'CA-3', checkIn: '16:48' }
+    mocked.app.shiftDefinitions = [
+      { id: 'uuid-am', storeId: 'S01', name: 'Ca Sáng', start: '08:00', end: '12:00' },
+      { id: 'uuid-pm', storeId: 'S01', name: 'Ca Chiều', start: '12:00', end: '17:00' },
+      { id: 'uuid-night', storeId: 'S01', name: 'Ca Tối', start: '17:00', end: '21:00' },
+    ]
+    mocked.app.tasks = ['uuid-am', 'uuid-pm', 'uuid-night'].map((shiftId) => ({
+      id: `TASK-${shiftId}`, storeId: 'S01', date: '2026-08-22', shiftId, employeeIds: ['E01'], title: `Checklist ${shiftId}`, required: true, completedBy: {},
+    }))
+    let finish
+    mocked.app.selectTaskShift = vi.fn(() => new Promise((resolve) => { finish = resolve }))
+    const view = renderAssignedTasks(['/employee/tasks'], false)
+    const group = screen.getByRole('group', { name: 'Chọn ca công việc' })
+    const buttons = Array.from(group.querySelectorAll('button'))
+    expect(buttons.map((button) => button.querySelector('strong').textContent)).toEqual(['Ca sáng', 'Ca chiều', 'Ca tối'])
+    expect(buttons.every((button) => button.getAttribute('aria-pressed') === 'false')).toBe(true)
+    expect(screen.queryByRole('checkbox')).toBeNull()
+    expect(screen.queryByRole('button', { name: 'LƯU KẾT QUẢ' })).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: /Ca chiều/u }))
+    fireEvent.click(screen.getByRole('button', { name: /Ca chiều/u }))
+    fireEvent.click(screen.getByRole('button', { name: /Ca tối/u }))
+    expect(mocked.app.selectTaskShift).toHaveBeenCalledTimes(1)
+    expect(mocked.app.selectTaskShift).toHaveBeenCalledWith({ attendanceId: 'ATT-01', selectedTaskShiftId: 'uuid-pm', idempotencyKey: expect.stringMatching(/^task-shift:/u) })
+    expect(screen.getByText('Đang ghi nhận…')).toBeTruthy()
+    expect(screen.queryByRole('checkbox')).toBeNull()
+    // The server confirms: its attendance record now carries the lock.
+    lockAttendance('uuid-pm')
+    finish({ ok: true })
+    view.rerender(<MemoryRouter initialEntries={['/employee/tasks']}><EmployeeAssignedTasksPage /></MemoryRouter>)
+    await waitFor(() => expect(screen.queryByText('Đang ghi nhận…')).toBeNull())
+    const locked = screen.getByRole('group', { name: 'Chọn ca công việc' }).querySelectorAll('button')
+    expect(locked).toHaveLength(1)
+    expect(locked[0].getAttribute('aria-pressed')).toBe('true')
+    expect(locked[0].disabled).toBe(true)
+    expect(screen.queryByRole('button', { name: /Ca sáng/u })).toBeNull()
+    expect(screen.queryByRole('button', { name: /Ca tối/u })).toBeNull()
+    expect(screen.getByText('Checklist uuid-pm')).toBeTruthy()
+    expect(screen.queryByText('Checklist uuid-night')).toBeNull()
+    expect(screen.queryByText('Checklist uuid-am')).toBeNull()
+    // Remount (reload / other device) shows the same server lock.
+    view.unmount()
+    renderAssignedTasks(['/employee/tasks'], false)
+    expect(screen.getByRole('button', { name: /Ca chiều/u }).getAttribute('aria-pressed')).toBe('true')
+    expect(screen.getAllByRole('checkbox')).toHaveLength(1)
   })
+
+  it('keeps an unknown outcome unlocked, reuses the idempotency key and never opens two shifts', async () => {
+    mocked.app.selectTaskShift = vi.fn()
+      .mockResolvedValueOnce({ ok: false, uncertain: true, message: 'Chưa xác định được kết quả chọn ca do kết nối gián đoạn.' })
+      .mockResolvedValueOnce({ ok: false, code: 'TASK_SHIFT_ALREADY_SELECTED', message: 'Lượt điểm danh này đã chọn ca công việc khác; không thể đổi ca.' })
+    renderAssignedTasks(['/employee/tasks'], false)
+    fireEvent.click(screen.getByRole('button', { name: /Ca sáng/u }))
+    await waitFor(() => expect(screen.getByText(/Chưa xác định được kết quả chọn ca/u)).toBeTruthy())
+    expect(screen.queryByRole('checkbox')).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: /Ca sáng/u }))
+    await waitFor(() => expect(mocked.app.selectTaskShift).toHaveBeenCalledTimes(2))
+    expect(mocked.app.selectTaskShift.mock.calls[1][0].idempotencyKey).toBe(mocked.app.selectTaskShift.mock.calls[0][0].idempotencyKey)
+    await waitFor(() => expect(screen.getByText(/không thể đổi ca/u)).toBeTruthy())
+    expect(screen.queryByRole('checkbox')).toBeNull()
+  })
+
+  it('disables missing or ambiguous shift configuration without guessing', () => {
+    mocked.app.shiftDefinitions = [
+      { id: 'A1', storeId: 'S01', name: 'Ca Sáng', start: '08:00', end: '12:00' },
+      { id: 'A2', storeId: 'S01', name: 'Ca Sáng', start: '08:00', end: '12:00' },
+      { id: 'CA-3', storeId: 'S01', name: 'Ca Tối', start: '17:00', end: '21:00' },
+    ]
+    mocked.app.selectTaskShift = vi.fn()
+    renderAssignedTasks(['/employee/tasks'], false)
+    expect(screen.getByRole('button', { name: /Ca sáng/u }).disabled).toBe(true)
+    expect(screen.getByRole('button', { name: /Ca sáng/u }).textContent).toContain('Cấu hình trùng')
+    expect(screen.getByRole('button', { name: /Ca chiều/u }).disabled).toBe(true)
+    expect(screen.getByRole('button', { name: /Ca chiều/u }).textContent).toContain('Chưa cấu hình')
+    expect(screen.getByRole('button', { name: /Ca tối/u }).disabled).toBe(false)
+    expect(screen.getByText(/cấu hình trùng cho cùng buổi/u)).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: /Ca sáng/u }))
+    expect(mocked.app.selectTaskShift).not.toHaveBeenCalled()
+  })
+
+  it('shows an empty state for a locked shift with no work and resets drafts for a new attendance', () => {
+    mocked.app.tasks = [{ id: 'TASK-1', storeId: 'S01', date: '2026-08-22', shiftId: 'CA-1', employeeIds: ['E01'], title: 'Checklist sáng', required: true, completedBy: {} }]
+    lockAttendance('CA-2')
+    const view = renderAssignedTasks(['/employee/tasks'], false)
+    expect(screen.getByText(/Không có công việc bắt buộc cho ca này/u)).toBeTruthy()
+    expect(screen.queryByText('Checklist sáng')).toBeNull()
+    view.unmount()
+    mocked.app.attendance = [{ ...mocked.app.attendance[0], checkOut: '17:00', checkOutAt: '2026-08-22T10:00:00.000Z' },
+      { id: 'ATT-02', employeeId: 'E01', storeId: 'S01', date: '2026-08-22', shiftId: 'CA-3', checkIn: '17:00', checkInAt: '2026-08-22T10:00:00.000Z', checkOut: null, checkOutAt: null }]
+    renderAssignedTasks(['/employee/tasks'], false)
+    expect(screen.getAllByRole('button', { name: /Ca (sáng|chiều|tối)/u })).toHaveLength(3)
+    expect(screen.getAllByRole('button', { name: /Ca (sáng|chiều|tối)/u }).every((button) => button.getAttribute('aria-pressed') === 'false')).toBe(true)
+  })
+
+  it('lets a legacy multi-shift attendance finish only its saved shifts', () => {
+    mocked.app.tasks = ['CA-1', 'CA-2', 'CA-3'].map((shiftId) => ({ id: `T-${shiftId}`, storeId: 'S01', date: '2026-08-22', shiftId, employeeIds: ['E01'], title: `Việc ${shiftId}`, required: true, completedBy: {} }))
+    mocked.app.attendance[0] = { ...mocked.app.attendance[0], taskShiftContexts: [{ shiftId: 'CA-1', taskIds: ['T-CA-1'] }, { shiftId: 'CA-2', taskIds: ['T-CA-2'] }] }
+    mocked.app.selectTaskShift = vi.fn()
+    renderAssignedTasks(['/employee/tasks'], false)
+    expect(screen.getByText(/nhiều ca trước khi áp dụng quy tắc một ca/u)).toBeTruthy()
+    expect(screen.queryByRole('button', { name: /Ca tối/u })).toBeNull()
+    expect(screen.queryByRole('checkbox')).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: /Ca chiều/u }))
+    expect(screen.getByText('Việc CA-2')).toBeTruthy()
+    expect(screen.queryByText('Việc CA-1')).toBeNull()
+    expect(mocked.app.selectTaskShift).not.toHaveBeenCalled()
+  })
+
 })

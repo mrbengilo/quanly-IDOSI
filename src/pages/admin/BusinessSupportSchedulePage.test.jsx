@@ -55,8 +55,9 @@ describe('BusinessSupportSchedulePage', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Sửa từ lịch sử của Hỗ trợ KD' }))
     expect(screen.getByText('Chỉnh sửa lịch làm việc')).toBeTruthy()
     fireEvent.change(screen.getByLabelText(/Giờ kết thúc/u), { target: { value: '18:00' } })
+    fireEvent.change(screen.getByLabelText(/Hình thức làm việc/u), { target: { value: 'Online' } })
     fireEvent.click(screen.getByRole('button', { name: 'LƯU' }))
-    await waitFor(() => expect(mocked.saveBusinessSupportSchedule).toHaveBeenCalledWith(expect.objectContaining({ scheduleId: 'SWS-01', shiftName: 'Ca linh hoạt cũ', end: '18:00' })))
+    await waitFor(() => expect(mocked.saveBusinessSupportSchedule).toHaveBeenCalledWith(expect.objectContaining({ scheduleId: 'SWS-01', shiftName: 'Ca linh hoạt cũ', end: '18:00', workMode: 'Online' })))
 
     fireEvent.click(screen.getByRole('button', { name: 'Xóa từ lịch sử của Hỗ trợ KD' }))
     await waitFor(() => expect(mocked.deleteBusinessSupportSchedule).toHaveBeenCalledWith('SWS-01', 'Phân lịch nhầm'))
@@ -77,10 +78,11 @@ describe('BusinessSupportSchedulePage', () => {
     fireEvent.change(screen.getByLabelText(/Chọn ngày/u), { target: { value: '2026-08-24' } })
     fireEvent.change(screen.getByLabelText(/Giờ bắt đầu/u), { target: { value: '08:00' } })
     fireEvent.change(screen.getByLabelText(/Giờ kết thúc/u), { target: { value: '17:30' } })
+    fireEvent.change(screen.getByLabelText(/Hình thức làm việc/u), { target: { value: 'Offline' } })
     fireEvent.click(screen.getByRole('button', { name: 'LƯU' }))
 
     await waitFor(() => expect(mocked.saveBusinessSupportSchedule).toHaveBeenCalledWith(expect.objectContaining({
-      targetUnit: 'office', employeeId: 'VP-01', date: '2026-08-24', start: '08:00', end: '17:30',
+      targetUnit: 'office', employeeId: 'VP-01', date: '2026-08-24', start: '08:00', end: '17:30', workMode: 'Offline',
     })))
   })
 
@@ -105,9 +107,10 @@ describe('BusinessSupportSchedulePage', () => {
     }
 
     fireEvent.change(screen.getByLabelText(/Giờ kết thúc/u), { target: { value: '18:15' } })
+    fireEvent.change(screen.getByLabelText(/Hình thức làm việc/u), { target: { value: 'Online' } })
     fireEvent.click(screen.getByRole('button', { name: 'LƯU' }))
     await waitFor(() => expect(mocked.saveBusinessSupportSchedule).toHaveBeenCalledWith(expect.objectContaining({
-      employeeId: 'VP-02', shiftName: 'Giờ hành chính', start: '08:30', end: '18:15',
+      employeeId: 'VP-02', shiftName: 'Giờ hành chính', start: '08:30', end: '18:15', workMode: 'Online',
     })))
   })
 
@@ -150,8 +153,8 @@ describe('BusinessSupportSchedulePage', () => {
       currentEmployee: { id: 'VP-01', name: 'Kế toán văn phòng', unit: 'office', employmentType: 'Full-Time' },
       session: { role: 'employee', employeeId: 'VP-01', name: 'Kế toán văn phòng', unit: 'office' },
       supportWorkSchedules: [
-        { id: 'S1', employeeId: 'VP-01', targetUnit: 'office', date: '2026-08-21', shiftName: 'Giờ hành chính', start: '08:00', end: '17:30' },
-        { id: 'S2', employeeId: 'VP-01', targetUnit: 'office', date: '2026-08-22', shiftName: 'Ca sáng', start: '08:00', end: '12:00', note: 'Họp đầu ca' },
+        { id: 'S1', employeeId: 'VP-01', targetUnit: 'office', date: '2026-08-21', shiftName: 'Giờ hành chính', start: '08:00', end: '17:30', workMode: 'Online' },
+        { id: 'S2', employeeId: 'VP-01', targetUnit: 'office', date: '2026-08-22', shiftName: 'Ca sáng', start: '08:00', end: '12:00', workMode: 'Offline', note: 'Họp đầu ca' },
       ],
     }
     await act(async () => { render(<MyBusinessSupportSchedulePage />) })
@@ -160,6 +163,8 @@ describe('BusinessSupportSchedulePage', () => {
     expect(document.querySelector('.my-work-schedule-grid')?.textContent).toContain('21/08')
     expect(screen.getByText('Giờ hành chính')).toBeTruthy()
     expect(screen.getByText('Ca sáng')).toBeTruthy()
+    expect(screen.getByText('Online')).toBeTruthy()
+    expect(screen.getByText('Offline')).toBeTruthy()
     expect(screen.getByText('Họp đầu ca')).toBeTruthy()
     expect(screen.getAllByText('Không có lịch')).toHaveLength(5)
     expect(screen.getByAltText('Ảnh đại diện Kế toán văn phòng').getAttribute('src')).toBe('blob:thumbnail-VP-01')
@@ -178,7 +183,7 @@ describe('BusinessSupportSchedulePage', () => {
       },
       session: { role: 'employee', employeeId: 'VP-02', name: 'Thực tập Marketing', unit: 'office' },
       supportWorkSchedules: [
-        { id: 'SELF-01', employeeId: 'VP-02', targetUnit: 'office', date: '2026-08-21', shiftName: 'Ca chiều', start: '13:00', end: '17:30' },
+        { id: 'SELF-01', employeeId: 'VP-02', targetUnit: 'office', date: '2026-08-21', shiftName: 'Ca chiều', start: '13:00', end: '17:30', workMode: 'Offline' },
       ],
     }
     render(<MyBusinessSupportSchedulePage />)
@@ -187,9 +192,10 @@ describe('BusinessSupportSchedulePage', () => {
     expect(screen.queryByLabelText(/Chọn nhân viên/u)).toBeNull()
     expect(screen.getByLabelText(/Chọn ca/u).textContent).toContain('Ca chiều · 13:00–17:30')
     fireEvent.change(screen.getByLabelText(/Chọn ngày/u), { target: { value: '2026-08-24' } })
+    fireEvent.change(screen.getByLabelText(/Hình thức làm việc/u), { target: { value: 'Online' } })
     fireEvent.click(screen.getByRole('button', { name: 'LƯU' }))
     await waitFor(() => expect(mocked.saveBusinessSupportSchedule).toHaveBeenCalledWith(expect.objectContaining({
-      employeeId: 'VP-02', targetUnit: 'office', date: '2026-08-24', shiftName: 'Ca chiều', start: '13:00', end: '17:30',
+      employeeId: 'VP-02', targetUnit: 'office', date: '2026-08-24', shiftName: 'Ca chiều', start: '13:00', end: '17:30', workMode: 'Online',
     })))
     expect(screen.getByRole('button', { name: 'LƯU' }).disabled).toBe(true)
     await act(async () => { completeCreate({ ok: true }) })
@@ -198,6 +204,7 @@ describe('BusinessSupportSchedulePage', () => {
 
     fireEvent.change(screen.getByDisplayValue('2026-08-24'), { target: { value: '2026-08-21' } })
     fireEvent.click(screen.getByRole('button', { name: 'Sửa lịch ngày 21/08/26' }))
+    expect(screen.getByLabelText(/Hình thức làm việc/u).value).toBe('Offline')
     fireEvent.change(screen.getByLabelText(/Giờ kết thúc/u), { target: { value: '18:00' } })
     fireEvent.click(screen.getByRole('button', { name: 'LƯU' }))
     await waitFor(() => expect(mocked.saveBusinessSupportSchedule).toHaveBeenCalledWith(expect.objectContaining({ scheduleId: 'SELF-01', employeeId: 'VP-02', end: '18:00' })))
@@ -223,6 +230,7 @@ describe('BusinessSupportSchedulePage', () => {
     fireEvent.click(screen.getByRole('button', { name: /Sửa lịch ngày/u }))
     expect(screen.getByLabelText(/Giờ bắt đầu/u).value).toBe('09:15')
     expect(screen.getByLabelText(/Giờ kết thúc/u).value).toBe('16:45')
+    fireEvent.change(screen.getByLabelText(/Hình thức làm việc/u), { target: { value: 'Offline' } })
     fireEvent.click(screen.getByRole('button', { name: 'LƯU' }))
     await waitFor(() => expect(mocked.saveBusinessSupportSchedule).toHaveBeenCalledWith(expect.objectContaining({
       scheduleId: 'CUSTOM-01', shiftName: 'Khung giờ cũ', start: '09:15', end: '16:45',
@@ -233,6 +241,7 @@ describe('BusinessSupportSchedulePage', () => {
     fireEvent.click(screen.getByRole('button', { name: /Chọn nhanh Ca chiều/u }))
     expect(screen.getByLabelText(/Giờ bắt đầu/u).value).toBe('13:00')
     expect(screen.getByLabelText(/Giờ kết thúc/u).value).toBe('17:30')
+    fireEvent.change(screen.getByLabelText(/Hình thức làm việc/u), { target: { value: 'Online' } })
     fireEvent.click(screen.getByRole('button', { name: 'LƯU' }))
     await waitFor(() => expect(mocked.saveBusinessSupportSchedule).toHaveBeenLastCalledWith(expect.objectContaining({
       scheduleId: '', shiftName: 'Ca chiều', start: '13:00', end: '17:30',
@@ -261,7 +270,7 @@ describe('BusinessSupportSchedulePage assigned schedule table', () => {
       employeeName: index % 2 ? 'Hỗ trợ Một' : 'Hỗ trợ Hai',
       targetUnit: 'business_support',
       date: `2026-09-${String(30 - index).padStart(2, '0')}`,
-      shiftName: 'Giờ hành chính', start: '08:30', end: '17:30',
+      shiftName: 'Giờ hành chính', start: '08:30', end: '17:30', workMode: index % 2 ? 'Online' : 'Offline',
     }))
     const officeSchedules = Array.from({ length: 20 }, (_, index) => ({
       id: `VP-${index + 1}`,
@@ -288,6 +297,9 @@ describe('BusinessSupportSchedulePage assigned schedule table', () => {
 
     const card = screen.getByRole('heading', { name: 'Lịch làm việc đã phân' }).closest('.card')
     expect(card.querySelectorAll('tbody tr')).toHaveLength(20)
+    expect(card.querySelector('thead').textContent).toContain('Hình thức làm việc')
+    expect(card.querySelector('tbody').textContent).toContain('Online')
+    expect(card.querySelector('tbody').textContent).toContain('Offline')
     expect(screen.getByText('Trang 1/3 · 45 lịch')).toBeTruthy()
     const employeeFilter = screen.getByLabelText('Lọc nhân viên lịch đã phân')
     expect(Array.from(employeeFilter.options, (option) => option.value)).toEqual([

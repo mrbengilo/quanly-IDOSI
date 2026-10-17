@@ -498,6 +498,17 @@ export function UnifiedSchedule() {
     return ''
   }
 
+  // A retired shift stays on its existing day; the backend only lets that day
+  // keep or remove its current assignees, never add new ones.
+  const editingShiftRetired = Boolean(editingAssignment)
+    && !dayShifts.some((shift) => same(shift.id, editingAssignment.shift.id))
+  const editAvailabilityMessage = (employee) => {
+    if (!editingAssignment) return ''
+    if (editingAssignment.records.some((record) => employeeMatches(employee, scheduleRecordEmployeeId(record)))) return ''
+    if (editingShiftRetired) return 'Ca đã ngừng sử dụng; chỉ có thể giữ hoặc gỡ nhân viên đã phân.'
+    return availabilityMessage(employee, [editingAssignment.shift.id], true)
+  }
+
   const toggleShift = (id) => {
     setSelectedShiftIds((current) => current.includes(id) ? current.filter((item) => item !== id) : [...current, id])
   }
@@ -581,9 +592,8 @@ export function UnifiedSchedule() {
   const saveEditedAssignment = async () => {
     if (!editingAssignment || !assignmentEmployeeIds.length || savingAssignment) return
     const unavailable = employees.find((employee) => assignmentEmployeeIds.includes(employeeIdentifier(employee))
-      && !editingAssignment.records.some((record) => employeeMatches(employee, scheduleRecordEmployeeId(record)))
-      && availabilityMessage(employee, [editingAssignment.shift.id], true))
-    if (unavailable) return notify?.(availabilityMessage(unavailable, [editingAssignment.shift.id], true), 'info')
+      && editAvailabilityMessage(employee))
+    if (unavailable) return notify?.(editAvailabilityMessage(unavailable), 'info')
     setSavingAssignment(true)
     const assignments = replaceShiftAssignees(
       editableDaySchedule(editingAssignment.shift.id),
@@ -877,10 +887,11 @@ export function UnifiedSchedule() {
           <div className="employee-picker schedule-edit-employees">
             {employees.map((employee) => {
               const employeeId = employeeIdentifier(employee)
+              const unavailableMessage = editAvailabilityMessage(employee)
               return <label key={employeeId} className={assignmentEmployeeIds.includes(employeeId) ? 'selected' : ''}>
                 <input
                   type="checkbox"
-                  disabled={!assignmentEmployeeIds.includes(employeeId) && Boolean(availabilityMessage(employee, [editingAssignment?.shift?.id], true))}
+                  disabled={!assignmentEmployeeIds.includes(employeeId) && Boolean(unavailableMessage)}
                   checked={assignmentEmployeeIds.includes(employeeId)}
                   onChange={() => toggleAssignmentEmployee(employeeId)}
                   aria-label={`Chọn ${employee.name} cho ${editingAssignment?.shift?.name || 'ca'}`}
@@ -889,7 +900,7 @@ export function UnifiedSchedule() {
                 <strong>{employee.name}</strong>
                 <SupportEmployeeTag context={supportContextForEmployeeDate(employee, date)} />
                 <small>{employee.code || employee.id || employee.employeeCode} · {employeeRole(employee)}</small>
-                {availabilityMessage(employee, [editingAssignment?.shift?.id], true) && <small className="schedule-availability-note">{availabilityMessage(employee, [editingAssignment?.shift?.id], true)}</small>}
+                {unavailableMessage && <small className="schedule-availability-note">{unavailableMessage}</small>}
               </label>
             })}
           </div>

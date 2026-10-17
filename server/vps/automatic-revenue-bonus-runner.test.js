@@ -60,6 +60,7 @@ describe('automatic revenue bonus runner', () => {
       expect(finalize).toHaveBeenLastCalledWith({ DB: {} }, {
         now: '2026-09-03T15:00:00.000Z',
         trigger: 'daily-cutoff',
+        yieldControl: expect.any(Function),
       })
 
       await vi.advanceTimersByTimeAsync(30_000)
@@ -89,6 +90,7 @@ describe('automatic revenue bonus runner', () => {
       expect(finalize).toHaveBeenCalledWith({}, {
         now: '2026-09-03T15:05:00.000Z',
         trigger: 'startup-after-cutoff',
+        yieldControl: expect.any(Function),
       })
 
       await vi.advanceTimersByTimeAsync(30_000)
