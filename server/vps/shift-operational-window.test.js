@@ -120,8 +120,9 @@ describe('shift command operational window', () => {
         'TASK-BOUND-OLD', 'TASK-FORGOTTEN-DAY', 'TASK-FORGOTTEN-UTC', 'TASK-OLD', 'TASK-TODAY', 'TASK-UNDATED', 'TASK-YESTERDAY',
       ])
       expect(idsOf(full, 'attendance')).toEqual(['ATT-FORGOTTEN', 'ATT-OLD', 'ATT-TODAY', 'ATT-YESTERDAY'])
-      expect(database.readStoreStateSnapshot('global', 'S01', 'E01', 'employee-tasks', '', '2026-10-17').entities)
-        .toEqual(database.readStoreStateSnapshot('global', 'S01', 'E01', 'employee-tasks').entities)
+      // The store manager task screen keeps the complete history.
+      expect(database.readStoreStateSnapshot('global', 'S01', 'E01', 'tasks', '', '2026-10-17').entities)
+        .toEqual(database.readStoreStateSnapshot('global', 'S01', 'E01', 'tasks').entities)
       expect(database.readStoreStateSnapshot('global', 'S01', 'E01', 'command-attendance', '', 'not-a-date').entities)
         .toEqual(full.entities)
     } finally {
@@ -130,18 +131,9 @@ describe('shift command operational window', () => {
   })
 })
 
-describe('employee task page month filter', () => {
-  it('resolves the open shift days once instead of once per history row', async () => {
-    // Production regression (2026-10-17): the open-shift day lookup sat inside
-    // the row filter as a subquery on params, so SQLite re-ran it for every
-    // task row and one store's employee task page took 43 s to read.
-    const database = await createDatabase([
-      ...rows.filter(([collectionKey]) => collectionKey !== 'tasks'),
-      ...Array.from({ length: 40 }, (_, index) => ['tasks', {
-        id: `TASK-SEPTEMBER-${index}`, storeId: 'S01', date: `2026-09-${String((index % 28) + 1).padStart(2, '0')}`,
-      }]),
-      ['tasks', { id: 'TASK-OCTOBER', storeId: 'S01', date: '2026-10-17' }],
-    ])
+describe('store employee task page', () => {
+  it('lists the selected shift window only and never reads assignment history', async () => {
+    const database = await createDatabase(rows)
     try {
       let snapshotSql = ''
       const prepare = database.database.prepare.bind(database.database)
@@ -149,14 +141,17 @@ describe('employee task page month filter', () => {
         if (sql.includes('row_kind')) snapshotSql = sql
         return prepare(sql)
       }
-      const snapshot = database.readStoreStateSnapshot('global', 'S01', 'E02', 'employee-tasks', '2026-10')
+      const snapshot = database.readStoreStateSnapshot('global', 'S01', 'E01', 'employee-tasks', '', '2026-10-17')
       database.database.prepare = prepare
-      // E02's shift open since 12/10 belongs to October; TASK-BOUND-OLD (20/09)
-      // is outside both the month and the open shift's day.
-      expect(idsOf(snapshot, 'tasks')).toEqual(['TASK-OCTOBER'])
-      const plan = prepare(`EXPLAIN QUERY PLAN ${snapshotSql}`).all('global', 'S01', 'E02', '2026-10', '')
+      expect(idsOf(snapshot, 'tasks')).toEqual([
+        'TASK-BOUND-OLD', 'TASK-FORGOTTEN-DAY', 'TASK-FORGOTTEN-UTC', 'TASK-TODAY', 'TASK-UNDATED', 'TASK-YESTERDAY',
+      ])
+      expect(idsOf(snapshot, 'taskAssignmentHistory')).toEqual([])
+      expect(idsOf(snapshot, 'attendance')).toEqual(['ATT-FORGOTTEN', 'ATT-TODAY', 'ATT-YESTERDAY'])
+      // Production regression (2026-10-17): a per-row correlated lookup of
+      // the open shift days made one task page read take 43 s.
+      const plan = prepare(`EXPLAIN QUERY PLAN ${snapshotSql}`).all('global', 'S01', 'E01', '', '2026-10-17')
         .map(({ detail }) => detail)
-      expect(plan).toContain('MATERIALIZE open_actor_attendance_dates')
       expect(plan.some((detail) => detail.startsWith('CORRELATED LIST SUBQUERY'))).toBe(false)
     } finally {
       database.close()

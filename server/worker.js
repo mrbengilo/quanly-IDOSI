@@ -4433,7 +4433,7 @@ const requestStateSnapshotValue = (row) => (
   isPlainRecord(row?._hydratedState) ? row._hydratedState : parseStoredJson(row?.value_json, {})
 )
 
-const repairEmployeeScreenStateIfNeeded = async (db, actor, context, row, screen, period = '') => {
+const repairEmployeeScreenStateIfNeeded = async (db, actor, context, row, screen, operationalDate = '') => {
   if (!row) return row
   const state = requestStateSnapshotValue(row)
   const employee = (Array.isArray(state.employees) ? state.employees : []).find((record) => (
@@ -4456,25 +4456,46 @@ const repairEmployeeScreenStateIfNeeded = async (db, actor, context, row, screen
   // Persistence still reconciles the complete canonical state under its
   // existing optimistic-concurrency and audit guards; never save a projection.
   await persistOpenStoreAttendanceChecklistRepairs(db, actor, context)
-  return loadStoreState(db, 'global', actor.store_id, actor.employee_id, screen, period)
+  return loadStoreState(db, 'global', actor.store_id, actor.employee_id, screen, '', operationalDate)
 }
 
-// A store employee's task page lists the current month only. The open shift
-// keeps its checklist even when it started on the previous month's last day.
-// Rows without any date stay visible, matching the SQLite projection.
-const limitEmployeeTaskStateToPeriod = (state, period) => {
-  const openDates = new Set((Array.isArray(state.attendance) ? state.attendance : [])
-    .map((record) => stateEntityQueryDimensions('attendance', record))
-    .filter((dimensions) => dimensions.openFlag === 1 && dimensions.occurredOn)
-    .map((dimensions) => dimensions.occurredOn))
-  for (const collectionKey of ['tasks', 'taskAssignmentHistory']) {
-    if (!Array.isArray(state[collectionKey])) continue
-    state[collectionKey] = state[collectionKey].filter((record) => {
-      const { periodKey, occurredOn } = stateEntityQueryDimensions(collectionKey, record)
-      return !periodKey || periodKey === period || openDates.has(occurredOn)
-    })
+// A store employee's task page lists the selected shift's work only, from the
+// operational window of the shift commands (see storeStateSnapshotSql): open
+// attendance, rows from the day before the earliest open shift (or before
+// today) onward, tasks bound to an open shift and undated rows. It shows no
+// assignment history. SQLite applies the window before any JSON is hydrated;
+// this keeps the D1 fallback, which loads the complete state, identical.
+const limitEmployeeTaskStateToShiftWindow = (state, date) => {
+  const attendance = Array.isArray(state.attendance) ? state.attendance : []
+  const openAttendance = attendance
+    .filter((record) => stateEntityQueryDimensions('attendance', record).openFlag === 1)
+  const dayBefore = (value) => {
+    const epochMs = Date.parse(`${String(value || '').trim().slice(0, 10)}T00:00:00.000Z`)
+    return Number.isFinite(epochMs) ? new Date(epochMs - 86_400_000).toISOString().slice(0, 10) : ''
   }
-  return state
+  const windowStarts = [date, ...openAttendance.map((record) => (
+    String(record.date || '').trim() || String(record.workDate || '').trim()
+      || stateEntityQueryDimensions('attendance', record).occurredOn
+  ))].map(dayBefore)
+  // An open shift without a valid business date disables the window.
+  const windowStart = windowStarts.every(Boolean) ? windowStarts.sort()[0] : ''
+  const boundTaskIds = new Set(openAttendance
+    .flatMap((record) => (Array.isArray(record.taskShiftContexts) ? record.taskShiftContexts : []))
+    .flatMap((context) => (Array.isArray(context?.taskIds) ? context.taskIds : []))
+    .map((taskId) => String(taskId ?? '').trim().toLowerCase()))
+  const inWindow = (collectionKey) => (record) => {
+    const { occurredOn, recordId, openFlag } = stateEntityQueryDimensions(collectionKey, record)
+    if (!windowStart || !occurredOn || occurredOn >= windowStart) return true
+    return collectionKey === 'attendance'
+      ? openFlag === 1
+      : boundTaskIds.has(String(recordId || '').toLowerCase())
+  }
+  return {
+    ...state,
+    attendance: attendance.filter(inWindow('attendance')),
+    tasks: (Array.isArray(state.tasks) ? state.tasks : []).filter(inWindow('tasks')),
+    taskAssignmentHistory: [],
+  }
 }
 
 const assignStateEntityOrders = (descriptors) => {
@@ -5592,14 +5613,16 @@ const getSystemScreen = async (request, env, context, screen) => {
     && Boolean(String(user.store_id || '').trim())
   const actorEmployee = (Array.isArray(user._globalState?.employees) ? user._globalState.employees : [])
     .find((record) => employeeIdentifierValues(record).some((id) => sameIdentifier(id, user.employee_id)))
-  const taskPeriod = useEmployeeStoreProjection && screen === 'employee-tasks'
+  // Office staff use this route for reward work with a date picker, so only
+  // store employees get the selected-shift window.
+  const taskWindowDate = useEmployeeStoreProjection && screen === 'employee-tasks'
     && actorEmployee && employeeUnit(actorEmployee) === 'store'
-    ? localDateTimeParts(context.now).date.slice(0, 7)
+    ? localDateTimeParts(context.now).date
     : ''
   const useOptimizedSystemProjection = typeof db?.readSystemStateSnapshot === 'function'
     && ['tasks', 'office', 'support-tasks', 'support-assigned-work', 'support-overview'].includes(screen)
   const readScreen = () => useEmployeeStoreProjection
-    ? loadStoreState(db, 'global', user.store_id, user.employee_id, screen, taskPeriod)
+    ? loadStoreState(db, 'global', user.store_id, user.employee_id, screen, '', taskWindowDate)
     : useOptimizedSystemProjection
       ? loadOptimizedSystemStateSnapshot(
           db,
@@ -5612,7 +5635,7 @@ const getSystemScreen = async (request, env, context, screen) => {
   let row = await readScreen()
   if (collections.includes('attendance') && screen !== 'support-overview') {
     if (useEmployeeStoreProjection) {
-      row = await repairEmployeeScreenStateIfNeeded(db, user, context, row, screen, taskPeriod)
+      row = await repairEmployeeScreenStateIfNeeded(db, user, context, row, screen, taskWindowDate)
     } else if (await hasPendingOpenStoreAttendanceChecklistRepair(db)) {
       await persistOpenStoreAttendanceChecklistRepairs(db, user, context)
       row = await readScreen()
@@ -5648,8 +5671,8 @@ const getSystemScreen = async (request, env, context, screen) => {
     scope: 'global',
     projection: 'global',
     screen,
-    state: taskPeriod
-      ? limitEmployeeTaskStateToPeriod(projectSharedState(rawState, user), taskPeriod)
+    state: taskWindowDate
+      ? limitEmployeeTaskStateToShiftWindow(projectSharedState(rawState, user), taskWindowDate)
       : projectSharedState(rawState, user),
     version: Number(row?.version || 0),
     updatedAt: row?.updated_at || null,

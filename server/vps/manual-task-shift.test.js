@@ -96,7 +96,12 @@ it('persists manual shift progress atomically, isolates scopes, preserves legacy
       checklistSnapshot: original.checklistSnapshot, taskShiftContexts: [{ shiftId: 'ca3', taskIds: requestBody.tasks.map((task) => task.id) }] })
     expect(state.tasks.find((task) => task.catalogItemId === 'REWARD').completedBy).toEqual({})
     expect(state.workCatalogProgress || []).toEqual([])
-    const histories = state.taskAssignmentHistory.flatMap((assignment) => assignment.progressHistory || [])
+    // The employee task page no longer carries assignment history; read the
+    // persisted rows to prove exactly one progress event was recorded.
+    expect(state.taskAssignmentHistory).toEqual([])
+    const histories = runtime.database.database
+      .prepare("SELECT value_json FROM state_entities WHERE collection_key = 'taskAssignmentHistory'").all()
+      .flatMap(({ value_json: valueJson }) => JSON.parse(valueJson).progressHistory || [])
     expect(histories.filter((event) => event.shiftId === 'ca3')).toHaveLength(1)
     // The check-in snapshot captured the afternoon catalog by check-in time; with
     // the night shift locked it stays stored but is no longer owed or writable.
