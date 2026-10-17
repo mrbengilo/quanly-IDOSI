@@ -326,7 +326,7 @@ describe('employee shift operations', () => {
     expect(screen.queryByText('Chuẩn bị quầy cho ca tương lai')).toBeNull()
     expect(screen.queryByRole('checkbox')).toBeNull()
     expect(screen.queryByRole('button', { name: 'LƯU KẾT QUẢ' })).toBeNull()
-    expect(screen.getByText('Lịch sử kết quả đã gửi trong tháng này')).toBeTruthy()
+    expect(screen.getByText('Lịch sử kết quả đã gửi')).toBeTruthy()
     expect(screen.getByText('100%')).toBeTruthy()
   })
 

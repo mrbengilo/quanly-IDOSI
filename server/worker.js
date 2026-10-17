@@ -4433,7 +4433,7 @@ const requestStateSnapshotValue = (row) => (
   isPlainRecord(row?._hydratedState) ? row._hydratedState : parseStoredJson(row?.value_json, {})
 )
 
-const repairEmployeeScreenStateIfNeeded = async (db, actor, context, row, screen, period = '') => {
+const repairEmployeeScreenStateIfNeeded = async (db, actor, context, row, screen) => {
   if (!row) return row
   const state = requestStateSnapshotValue(row)
   const employee = (Array.isArray(state.employees) ? state.employees : []).find((record) => (
@@ -4456,25 +4456,7 @@ const repairEmployeeScreenStateIfNeeded = async (db, actor, context, row, screen
   // Persistence still reconciles the complete canonical state under its
   // existing optimistic-concurrency and audit guards; never save a projection.
   await persistOpenStoreAttendanceChecklistRepairs(db, actor, context)
-  return loadStoreState(db, 'global', actor.store_id, actor.employee_id, screen, period)
-}
-
-// A store employee's task page lists the current month only. The open shift
-// keeps its checklist even when it started on the previous month's last day.
-// Rows without any date stay visible, matching the SQLite projection.
-const limitEmployeeTaskStateToPeriod = (state, period) => {
-  const openDates = new Set((Array.isArray(state.attendance) ? state.attendance : [])
-    .map((record) => stateEntityQueryDimensions('attendance', record))
-    .filter((dimensions) => dimensions.openFlag === 1 && dimensions.occurredOn)
-    .map((dimensions) => dimensions.occurredOn))
-  for (const collectionKey of ['tasks', 'taskAssignmentHistory']) {
-    if (!Array.isArray(state[collectionKey])) continue
-    state[collectionKey] = state[collectionKey].filter((record) => {
-      const { periodKey, occurredOn } = stateEntityQueryDimensions(collectionKey, record)
-      return !periodKey || periodKey === period || openDates.has(occurredOn)
-    })
-  }
-  return state
+  return loadStoreState(db, 'global', actor.store_id, actor.employee_id, screen)
 }
 
 const assignStateEntityOrders = (descriptors) => {
@@ -5590,16 +5572,10 @@ const getSystemScreen = async (request, env, context, screen) => {
   const useEmployeeStoreProjection = user.role === 'employee'
     && isEmployeeScreen
     && Boolean(String(user.store_id || '').trim())
-  const actorEmployee = (Array.isArray(user._globalState?.employees) ? user._globalState.employees : [])
-    .find((record) => employeeIdentifierValues(record).some((id) => sameIdentifier(id, user.employee_id)))
-  const taskPeriod = useEmployeeStoreProjection && screen === 'employee-tasks'
-    && actorEmployee && employeeUnit(actorEmployee) === 'store'
-    ? localDateTimeParts(context.now).date.slice(0, 7)
-    : ''
   const useOptimizedSystemProjection = typeof db?.readSystemStateSnapshot === 'function'
     && ['tasks', 'office', 'support-tasks', 'support-assigned-work', 'support-overview'].includes(screen)
   const readScreen = () => useEmployeeStoreProjection
-    ? loadStoreState(db, 'global', user.store_id, user.employee_id, screen, taskPeriod)
+    ? loadStoreState(db, 'global', user.store_id, user.employee_id, screen)
     : useOptimizedSystemProjection
       ? loadOptimizedSystemStateSnapshot(
           db,
@@ -5612,7 +5588,7 @@ const getSystemScreen = async (request, env, context, screen) => {
   let row = await readScreen()
   if (collections.includes('attendance') && screen !== 'support-overview') {
     if (useEmployeeStoreProjection) {
-      row = await repairEmployeeScreenStateIfNeeded(db, user, context, row, screen, taskPeriod)
+      row = await repairEmployeeScreenStateIfNeeded(db, user, context, row, screen)
     } else if (await hasPendingOpenStoreAttendanceChecklistRepair(db)) {
       await persistOpenStoreAttendanceChecklistRepairs(db, user, context)
       row = await readScreen()
@@ -5648,9 +5624,7 @@ const getSystemScreen = async (request, env, context, screen) => {
     scope: 'global',
     projection: 'global',
     screen,
-    state: taskPeriod
-      ? limitEmployeeTaskStateToPeriod(projectSharedState(rawState, user), taskPeriod)
-      : projectSharedState(rawState, user),
+    state: projectSharedState(rawState, user),
     version: Number(row?.version || 0),
     updatedAt: row?.updated_at || null,
     policies,

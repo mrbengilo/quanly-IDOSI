@@ -300,7 +300,6 @@ const storeSnapshotSqlCache = new Map()
 const STORE_SCREEN_PERIOD_COLLECTIONS = Object.freeze({
   overview: ['orders', 'schedule', 'expenseEntries', 'violationRefunds'],
   'command-task': ['tasks', 'taskAssignmentHistory', 'notifications'],
-  'employee-tasks': ['tasks', 'taskAssignmentHistory'],
   payroll: [
     'attendance', 'salaryAdjustments', 'salaryAdvances', 'payrollPeriods', 'payrollPayments',
     'compensationEntries', 'violations', 'violationRefunds',
@@ -494,21 +493,8 @@ const storeStateSnapshotSql = (screen = '') => {
   const legacyTaskPeriodSql = normalizedScreen === 'command-task'
     ? `OR entity.period_key IS NULL OR entity.period_key = ''`
     : ''
-  // The employee task page lists one month, plus the open shift's own day
-  // (an overnight shift can still be open on the next month's first day).
-  const employeeTaskPeriodSql = normalizedScreen === 'employee-tasks'
-    ? `OR entity.period_key IS NULL OR entity.period_key = ''
-       OR entity.occurred_on IN (
-         SELECT attendance.occurred_on
-         FROM state_entities AS attendance
-         WHERE attendance.scope_key = params.scope_key
-           AND attendance.collection_key = 'attendance'
-           AND attendance.employee_id = params.actor_employee_key COLLATE NOCASE
-           AND attendance.open_flag = 1
-       )`
-    : ''
   const periodFilterSql = periodCollections.length
-    ? `AND (params.period_key = '' OR entity.collection_key NOT IN (${sqlStringList(periodCollections)}) OR entity.period_key = params.period_key ${overviewTodaySql} ${legacyTaskPeriodSql} ${employeeTaskPeriodSql})`
+    ? `AND (params.period_key = '' OR entity.collection_key NOT IN (${sqlStringList(periodCollections)}) OR entity.period_key = params.period_key ${overviewTodaySql} ${legacyTaskPeriodSql})`
     : ''
   const payrollAttendanceEmployeeSeedSql = normalizedScreen === 'payroll'
     ? `
