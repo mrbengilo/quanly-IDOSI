@@ -1048,6 +1048,68 @@ describe('remote command active-store preservation', () => {
     expect(api.apiGetStateMetadata).toHaveBeenCalledTimes(1)
     expect(REMOTE_POLL_INTERVAL_MS).toBe(30_000)
   })
+
+  it('reloads an employee screen only when its own store change token moves', async () => {
+    vi.useFakeTimers()
+    window.location.hash = '#/login'
+    const employeeState = {
+      ...makeRemoteState('STORE-A'),
+      employees: [{ id: 'E01', name: 'Nhân viên 01', unit: 'store', storeId: 'STORE-A' }],
+    }
+    api.apiLogin.mockResolvedValue({
+      user: employeeHomeUser,
+      bootstrap: {
+        user: employeeHomeUser,
+        state: { stores: employeeState.stores.slice(0, 1), employees: employeeState.employees },
+        policies: [],
+        version: 1,
+        partial: true,
+      },
+    })
+    const screenPayload = (version) => ({
+      user: employeeHomeUser, projection: 'global', screen: 'employee-home', changeStoreId: 'STORE-A',
+      state: employeeState, policies: [], version,
+    })
+    api.apiGetSystemScreenState.mockResolvedValue(screenPayload(1))
+    renderProvider()
+    await act(async () => {
+      expect((await appRef.current.login('employee-one', 'password')).ok).toBe(true)
+      await Promise.resolve()
+    })
+    expect(appRef.current.remoteProjection.screen).toBe('employee-home')
+    const metadata = (version, scopeVersion) => ({
+      version, userVersion: 1, policyVersions: {}, ...(scopeVersion === undefined ? {} : { scopeVersion }),
+    })
+    const poll = async () => { await act(async () => { await vi.advanceTimersByTimeAsync(REMOTE_POLL_INTERVAL_MS) }) }
+    api.apiGetSystemScreenState.mockClear()
+
+    // Until a poll has downloaded the screen with a token, the global version
+    // decides: this reload adopts the store's token (2).
+    api.apiGetSystemScreenState.mockResolvedValue(screenPayload(3))
+    api.apiGetStateMetadata.mockResolvedValueOnce(metadata(3, 2))
+    await poll()
+    expect(api.apiGetStateMetadata).toHaveBeenLastCalledWith('global', { storeId: 'STORE-A' })
+    expect(api.apiGetSystemScreenState).toHaveBeenCalledTimes(1)
+
+    // Other stores wrote (global version 3 -> 8): this store's token did not move.
+    api.apiGetStateMetadata.mockResolvedValueOnce(metadata(8, 2))
+    await poll()
+    expect(api.apiGetSystemScreenState).toHaveBeenCalledTimes(1)
+
+    // This store wrote: reload once and adopt the new token.
+    api.apiGetSystemScreenState.mockResolvedValue(screenPayload(9))
+    api.apiGetStateMetadata.mockResolvedValueOnce(metadata(9, 9))
+    await poll()
+    expect(api.apiGetSystemScreenState).toHaveBeenCalledTimes(2)
+    api.apiGetStateMetadata.mockResolvedValueOnce(metadata(12, 9))
+    await poll()
+    expect(api.apiGetSystemScreenState).toHaveBeenCalledTimes(2)
+
+    // Without a token (older server, unattributed write) the global version decides.
+    api.apiGetStateMetadata.mockResolvedValueOnce(metadata(13))
+    await poll()
+    expect(api.apiGetSystemScreenState).toHaveBeenCalledTimes(3)
+  })
 })
 
 describe('visited workspace projection cache', () => {

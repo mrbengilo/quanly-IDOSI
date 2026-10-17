@@ -120,6 +120,13 @@
       "when": 1790812800000,
       "tag": "0016_staff_violation_points",
       "breakpoints": true
+    },
+    {
+      "idx": 17,
+      "version": "6",
+      "when": 1792195200000,
+      "tag": "0017_state_change_partitions",
+      "breakpoints": true
     }
   ]
 }

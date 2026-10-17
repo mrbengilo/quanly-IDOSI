@@ -1829,6 +1829,8 @@ export function AppProvider({ children }) {
       : ''
     remote.projectionScreen = String(payload.screen || '')
     remote.projectionPeriod = remote.projection === 'store' ? String(payload.period || '') : ''
+    // Store whose change token this projection polls (none: global version).
+    remote.changeStoreId = payload.changeStoreId
     if (remote.fullStateReady) {
       cacheVisitedProjection(remote, {
         kind: remote.projection,
@@ -1884,6 +1886,9 @@ export function AppProvider({ children }) {
     remote.projectionStoreId = projection.storeId
     remote.projectionScreen = projection.screen
     remote.projectionPeriod = projection.period
+    // A cached screen may predate the known token: compare the global version
+    // until the next download names the store again.
+    remote.changeStoreId = ''
     remote.fullStateReady = true
     remote.hydratedVersion = Number(cached.version || 0)
     remote.projectionWriteVersion = Number(cached.version || 0)
@@ -2401,11 +2406,22 @@ export function AppProvider({ children }) {
       pendingForce = false
       busy = true
       try {
-        const metadata = forceRefresh ? null : await apiGetStateMetadata('global')
+        const metadata = forceRefresh
+          ? null
+          : await apiGetStateMetadata('global', ...(remote.changeStoreId ? [{ storeId: remote.changeStoreId }] : []))
         // A command can finish before its background projection download. Track
         // the version actually rendered separately so a failed reconciliation
         // is retried by the next lightweight metadata poll.
-        const stateVersionAdvanced = Number(metadata?.version || 0) > Number(remote.hydratedVersion || 0)
+        // A store screen reloads only when its own store's change token moved,
+        // not on every other store's check-in. remote.seenScope holds
+        // [rendered version, token]: versions only grow, so data at least that
+        // fresh includes the token whichever store or screen is open. Older
+        // (cached) data and screens without a token use the global version.
+        // The server sends scopeVersion only for the requested change store.
+        const scopeVersion = metadata?.scopeVersion
+        const stateVersionAdvanced = scopeVersion != null && remote.hydratedVersion >= remote.seenScope?.[0]
+          ? scopeVersion > remote.seenScope[1]
+          : Number(metadata?.version || 0) > Number(remote.hydratedVersion || 0)
         const metadataPolicyVersions = metadata?.policyVersions && typeof metadata.policyVersions === 'object'
           ? metadata.policyVersions
           : null
@@ -2444,7 +2460,11 @@ export function AppProvider({ children }) {
           const users = Array.isArray(latest.users) ? { users: latest.users } : await apiListUsers()
           latest.state.employees = mergeEmployeeAuthUsers(latest.state.employees, users.users)
         }
-        if (active) activateRemotePayload(latest, latest.user || remote.user, activeStoreIdRef.current)
+        if (active) {
+          activateRemotePayload(latest, latest.user || remote.user, activeStoreIdRef.current)
+          // The token was read before this download, so the data includes it.
+          remote.seenScope = scopeVersion != null ? [remote.hydratedVersion, scopeVersion] : null
+        }
       } catch (error) {
         // Polling is best-effort; the next interval or a foreground action will
         // retry. A revoked session is final and returns the user to login.

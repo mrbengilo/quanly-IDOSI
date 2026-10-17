@@ -4644,6 +4644,30 @@ const stateEntityQueryDimensions = (collectionKey, value) => {
   }
 }
 
+// Collections whose rows a store's screens read across stores (directory,
+// configuration, notifications and schedules matched by JSON references).
+// Their changes reach every store's change token through '*'.
+const STATE_CHANGE_GLOBAL_COLLECTIONS = Object.freeze([
+  'stores', 'deletedStores', 'employees', 'deletedEmployees', 'supportTransfers', 'shiftDefinitions',
+  'schedule', 'notifications', 'payrollPeriods', 'workCatalogItems', 'storeShiftTaskTemplates',
+  'orderInformationOptions', 'accountSettings',
+])
+
+// The shell holds settings for every screen. stateVersion alone changes on
+// every command and does not change what any screen shows.
+const compactStateChanged = (current, compactState) => {
+  const previous = isPlainRecord(current?._commandState)
+    ? current._commandState
+    : isPlainRecord(current?._hydratedState) ? current._hydratedState : null
+  if (!previous) return true
+  const keys = new Set([
+    ...Object.keys(previous).filter((key) => !Array.isArray(previous[key])),
+    ...Object.keys(compactState),
+  ])
+  keys.delete('stateVersion')
+  return [...keys].some((key) => JSON.stringify(previous[key]) !== JSON.stringify(compactState[key]))
+}
+
 const prepareStatePersistencePlan = (current, nextState, now) => {
   if (containsEmbeddedImageData(nextState)) {
     throw new ApiError(400, 'EMBEDDED_IMAGE_STATE_FORBIDDEN', 'Ảnh riêng tư phải được lưu trong kho ảnh; trạng thái chỉ được chứa metadata.')
@@ -4668,6 +4692,8 @@ const prepareStatePersistencePlan = (current, nextState, now) => {
   const entityUpserts = []
   const entityDeletes = []
   const collectionClears = []
+  // Rows whose previous store/employee must also learn about this change.
+  const replacedEntities = []
 
   for (const key of nextCollections.keys()) {
     if (key.length > 512) throw new ApiError(400, 'STATE_COLLECTION_KEY_INVALID', 'Tên danh mục trạng thái quá dài.')
@@ -4714,6 +4740,7 @@ const prepareStatePersistencePlan = (current, nextState, now) => {
       if (!descriptor.match
         || descriptor.match.valueJson !== descriptor.valueJson
         || descriptor.match.entityOrder !== descriptor.entityOrder) {
+        if (descriptor.match) replacedEntities.push({ collectionKey, entityKey })
         entityUpserts.push({
           collectionKey,
           entityKey,
@@ -4738,6 +4765,12 @@ const prepareStatePersistencePlan = (current, nextState, now) => {
     collectionClears,
     entityUpserts,
     entityDeletes,
+    changePartitions: {
+      global: compactStateChanged(current, compactState)
+        || Boolean(manifestCreates.length || manifestDeletes.length || collectionClears.length),
+      previousEntities: [...entityDeletes, ...replacedEntities],
+      nextEntities: entityUpserts.map(({ collectionKey, storeId, employeeId }) => ({ collectionKey, storeId, employeeId })),
+    },
   }
 }
 
@@ -4746,8 +4779,75 @@ const stateSuccessSql = `
   WHERE scope_key = ? AND version = ? AND last_request_id = ?
 `
 
+const STATE_CHANGE_GLOBAL_COLLECTIONS_SQL = STATE_CHANGE_GLOBAL_COLLECTIONS.map((key) => `'${key}'`).join(', ')
+
+const changePartitionUpsertSql = (dimensionSql) => `
+  WITH dimension AS (${dimensionSql})
+  INSERT INTO state_change_partitions (scope_key, partition_key, version, updated_at)
+  SELECT ?, changed.partition_key, ?, ?
+  FROM (
+    SELECT CASE
+      WHEN dimension.collection_key IN (${STATE_CHANGE_GLOBAL_COLLECTIONS_SQL}) OR dimension.store_key = '' THEN '*'
+      ELSE 'store:' || dimension.store_key
+    END AS partition_key
+    FROM dimension
+    UNION
+    SELECT 'employee:' || dimension.employee_key
+    FROM dimension
+    WHERE dimension.employee_key <> ''
+  ) AS changed
+  WHERE EXISTS (${stateSuccessSql})
+  ON CONFLICT(scope_key, partition_key) DO UPDATE SET
+    version = excluded.version,
+    updated_at = excluded.updated_at
+`
+
+const PREVIOUS_ENTITY_DIMENSION_SQL = `
+  SELECT
+    existing.collection_key AS collection_key,
+    lower(trim(COALESCE(existing.store_id, ''))) AS store_key,
+    lower(trim(COALESCE(existing.employee_id, ''))) AS employee_key
+  FROM json_each(?) AS entry
+  JOIN state_entities AS existing
+    ON existing.scope_key = ?
+    AND existing.collection_key = json_extract(entry.value, '$.collectionKey')
+    AND existing.entity_key = json_extract(entry.value, '$.entityKey')
+`
+
+const NEXT_ENTITY_DIMENSION_SQL = `
+  SELECT
+    json_extract(entry.value, '$.collectionKey') AS collection_key,
+    lower(trim(COALESCE(CAST(json_extract(entry.value, '$.storeId') AS TEXT), ''))) AS store_key,
+    lower(trim(COALESCE(CAST(json_extract(entry.value, '$.employeeId') AS TEXT), ''))) AS employee_key
+  FROM json_each(?) AS entry
+`
+
+// Change tokens (drizzle/0017): record the store, employee or global
+// partitions this commit touches. Runs first in the batch so the previous
+// dimensions of replaced and deleted rows are read before they change.
+const changePartitionStatements = (db, scope, changes, nextVersion, requestId, now) => {
+  const previous = packJsonArrayPayloads(changes?.previousEntities || [])
+  const next = packJsonArrayPayloads(changes?.nextEntities || [])
+  const global = !changes || changes.global || previous.oversized.length > 0 || next.oversized.length > 0
+  return [
+    ...previous.payloads.map((payload) => db.prepare(changePartitionUpsertSql(PREVIOUS_ENTITY_DIMENSION_SQL))
+      .bind(payload, scope, scope, nextVersion, now, scope, nextVersion, requestId)),
+    ...next.payloads.map((payload) => db.prepare(changePartitionUpsertSql(NEXT_ENTITY_DIMENSION_SQL))
+      .bind(payload, scope, nextVersion, now, scope, nextVersion, requestId)),
+    db.prepare(`
+      INSERT INTO state_change_partitions (scope_key, partition_key, version, updated_at)
+      SELECT ?, CAST(entry.value AS TEXT), ?, ?
+      FROM json_each(?) AS entry
+      WHERE EXISTS (${stateSuccessSql})
+      ON CONFLICT(scope_key, partition_key) DO UPDATE SET
+        version = excluded.version,
+        updated_at = excluded.updated_at
+    `).bind(scope, nextVersion, now, JSON.stringify(['#attributed', ...(global ? ['*'] : [])]), scope, nextVersion, requestId),
+  ]
+}
+
 const statePersistenceStatements = (db, scope, plan, nextVersion, requestId, now) => {
-  const statements = []
+  const statements = [...changePartitionStatements(db, scope, plan.changePartitions, nextVersion, requestId, now)]
   for (const payload of packJsonArrayPayloads(plan.manifestCreates).payloads) {
     statements.push(db.prepare(`
       INSERT INTO state_collections (scope_key, collection_key, created_at, updated_at)
@@ -5502,7 +5602,8 @@ const getBootstrap = async (request, env, context, url) => {
     user: publicUser(effectiveUser),
     scope,
     projection: storeId ? 'store' : scope === 'global' ? effectiveUser.role : 'private',
-    ...(storeId ? { storeId } : {}),
+    // The client polls this store's change token while the projection is open.
+    ...(storeId ? { storeId, changeStoreId: storeId } : {}),
     ...(storeId && requestedScreen ? { screen: requestedScreen } : {}),
     ...(storeId && requestedPeriod ? { period: requestedPeriod } : {}),
     state: scope === 'global'
@@ -5548,7 +5649,8 @@ const getState = async (request, env, context, url) => {
     user: publicUser(user),
     scope,
     projection: storeId ? 'store' : scope === 'global' ? user.role : 'private',
-    ...(storeId ? { storeId } : {}),
+    // The client polls this store's change token while the projection is open.
+    ...(storeId ? { storeId, changeStoreId: storeId } : {}),
     ...(storeId && requestedScreen ? { screen: requestedScreen } : {}),
     ...(storeId && requestedPeriod ? { period: requestedPeriod } : {}),
     state: scope === 'global'
@@ -5580,9 +5682,21 @@ const getStateMetadata = async (request, env, context, url) => {
     FROM policies
     ORDER BY policy_key
   `)
+  // A store projection polls its own store's change token. Store staff only
+  // get the token of a store their session belongs to; otherwise the client
+  // keeps comparing the global version.
+  const changeStoreId = String(url.searchParams.get('storeId') || '').trim()
+  const changeStoreAllowed = Boolean(changeStoreId) && changeStoreId.length <= 200 && (
+    ['admin', 'business_support'].includes(String(user.role || ''))
+    || [user.store_id, user.active_store_id].some((storeId) => sameIdentifier(storeId, changeStoreId))
+  )
+  const scopeVersion = changeStoreAllowed && scope === 'global' && typeof db?.readStoreChangeVersion === 'function'
+    ? await db.readStoreChangeVersion(scope, changeStoreId, String(user.active_employee_id || user.employee_id || ''))
+    : null
   return jsonResponse(apiPayload(context, {
     scope,
     version: Number(row?.version || 0),
+    ...(Number.isSafeInteger(scopeVersion) ? { scopeVersion } : {}),
     updatedAt: row?.updated_at || null,
     userVersion: Number(user.version || 0),
     ...(restore ? { user: publicUser(user) } : {}),
@@ -5674,6 +5788,8 @@ const getSystemScreen = async (request, env, context, screen) => {
     state: taskWindowDate
       ? limitEmployeeTaskStateToShiftWindow(projectSharedState(rawState, user), taskWindowDate)
       : projectSharedState(rawState, user),
+    // The store this projection was read for: the client polls its token.
+    ...(useEmployeeStoreProjection ? { changeStoreId: String(user.store_id) } : {}),
     version: Number(row?.version || 0),
     updatedAt: row?.updated_at || null,
     policies,
