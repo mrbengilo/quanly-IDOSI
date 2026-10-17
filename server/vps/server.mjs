@@ -184,6 +184,12 @@ export const createIdosiServer = (options = {}) => {
     const timing = { bodyReadMs: 0, handlerMs: 0, serializeMs: 0 }
     const databaseMetrics = { statements: 0, reads: 0, writes: 0, batches: 0, totalMs: 0, maxMs: 0, maxStatement: '' }
     let requestLogged = false
+    // Clients send `<command type>:<uuid>` (or `state-patch:<uuid>`) as the
+    // idempotency key, so its prefix names a slow command without reading or
+    // logging the request body.
+    const commandType = path === '/api/command'
+      ? (String(nodeRequest.headers['idempotency-key'] || '').split(':')[0].match(/^[a-z0-9_.-]{1,80}$/iu)?.[0] || '')
+      : ''
     const writeRequestLog = (aborted) => {
       if (requestLogged || !path.startsWith('/api/') || typeof requestLogger !== 'function') return
       requestLogged = true
@@ -211,6 +217,7 @@ export const createIdosiServer = (options = {}) => {
             totalMs: roundedMs(databaseMetrics.totalMs),
             maxMs: roundedMs(databaseMetrics.maxMs),
           },
+          ...(commandType ? { commandType } : {}),
         })
       } catch (error) {
         console.error('Unable to write IDOSI VPS request timing log', { requestId, error: String(error) })
