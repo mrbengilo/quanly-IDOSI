@@ -246,6 +246,37 @@ describe('IDOSI VPS runtime', () => {
     }
   })
 
+  it('names the command type from the idempotency key prefix without logging the key', async () => {
+    const directory = await temporaryDirectory()
+    const entries = []
+    const { server } = createIdosiServer({
+      databasePath: resolve(directory, 'idosi.sqlite'),
+      imagesDirectory: resolve(directory, 'images'),
+      requestLogger: (entry) => entries.push(entry),
+    })
+    await new Promise((resolveListen) => server.listen(0, '127.0.0.1', resolveListen))
+    const baseUrl = `http://127.0.0.1:${server.address().port}`
+    const command = (idempotencyKey) => fetch(`${baseUrl}/api/command`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'idempotency-key': idempotencyKey },
+      body: JSON.stringify({ type: 'state.merge', payload: {} }),
+    })
+    try {
+      await command('state-patch:private-key-suffix')
+      await command('bad key"<script>:x')
+      await fetch(`${baseUrl}/api/health`, { headers: { 'idempotency-key': 'order.create:x' } })
+
+      expect(entries).toHaveLength(3)
+      expect(entries[0]).toMatchObject({ path: '/api/command', commandType: 'state-patch' })
+      expect(entries[1].path).toBe('/api/command')
+      expect(entries[1]).not.toHaveProperty('commandType')
+      expect(entries[2]).not.toHaveProperty('commandType')
+      expect(JSON.stringify(entries)).not.toContain('private-key-suffix')
+    } finally {
+      await new Promise((resolveClose) => server.close(resolveClose))
+    }
+  })
+
   it('records a client-aborted API request exactly once without logging its body', async () => {
     const directory = await temporaryDirectory()
     let resolveLog
