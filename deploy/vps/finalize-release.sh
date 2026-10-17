@@ -150,3 +150,38 @@ mv "$REPORT_TEMP" "$REPORT_FILE"
 rm -f "$POINTER_FILE"
 log "SUCCESS: external verification attestation đã được xác thực cho $RELEASE_SHA."
 log "Deployment report: $REPORT_FILE"
+
+# Every deployment archives the whole data volume (~0.5 GB) and nothing
+# removed old archives, so the VPS disk filled up release after release. Only
+# after this release is externally verified, keep the newest deploy archives
+# (always including this release's rollback point). Manual-rollback emergency
+# archives, daily backups, reports and logs are never touched. A cleanup
+# problem must not turn a verified deployment into a failure.
+prune_deploy_backups() {
+  local keep="$1"
+  local current_backup="$2"
+  local -a archives=()
+  local archive=''
+  local index=0
+  local removed=0
+  mapfile -t archives < <(
+    find "$BACKUP_DIR" -maxdepth 1 -type f -name 'idosi-data-*-before-*.tar.gz' -printf '%f\n' \
+      | grep -E '^idosi-data-[0-9]{8}T[0-9]{6}Z-before-[0-9a-f]{12}\.tar\.gz$' \
+      | sort -r
+  )
+  for archive in "${archives[@]}"; do
+    index=$((index + 1))
+    (( index <= keep )) && continue
+    [[ "$BACKUP_DIR/$archive" == "$current_backup" ]] && continue
+    rm -f -- "${BACKUP_DIR:?}/$archive" && removed=$((removed + 1))
+  done
+  log "Giữ ${keep} backup deploy mới nhất; đã xoá ${removed} backup deploy cũ."
+}
+
+DEPLOY_BACKUP_KEEP="${IDOSI_DEPLOY_BACKUP_KEEP:-3}"
+if [[ "$DEPLOY_BACKUP_KEEP" =~ ^[1-9][0-9]*$ ]]; then
+  prune_deploy_backups "$DEPLOY_BACKUP_KEEP" "$(read_report_value BACKUP_FILE)" \
+    || log 'WARNING: không dọn được backup deploy cũ; deployment vẫn SUCCESS.'
+else
+  log 'WARNING: IDOSI_DEPLOY_BACKUP_KEEP không hợp lệ; bỏ qua dọn backup deploy cũ.'
+fi
