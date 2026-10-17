@@ -56,6 +56,14 @@ printf 'loadavg=%s\n' "$(tr ' ' ',' </proc/loadavg)"
 section 'memory_and_disk'
 free -h
 df -hT / "$IDOSI_ROOT" | awk 'NR == 1 || !seen[$1]++'
+backup_root="$IDOSI_ROOT/deploy/vps/backups"
+printf 'deploy_backup_archives=%s\n' \
+  "$(find "$backup_root" -maxdepth 1 -type f -name 'idosi-data-*.tar.gz' 2>/dev/null | wc -l)"
+printf 'deploy_backup_archive_bytes=%s\n' \
+  "$(find "$backup_root" -maxdepth 1 -type f -name 'idosi-data-*.tar.gz' -printf '%s\n' 2>/dev/null \
+    | awk '{ total += $1 } END { printf "%d", total }')"
+printf 'daily_backup_size=%s\n' "$(du -sh "$backup_root/daily" 2>/dev/null | awk '{ print $1 }')"
+docker system df 2>/dev/null || printf 'docker_system_df=unavailable\n'
 
 section 'cpu_io_samples'
 vmstat 1 5
