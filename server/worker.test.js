@@ -2923,6 +2923,22 @@ describe('IDOSI Worker security primitives', () => {
     expect(managerProjection.officeAdjustments).toEqual(state.officeAdjustments)
   })
 
+  it('strips secrets identically when the same field names repeat across many records', () => {
+    const orders = Array.from({ length: 50 }, (_, index) => JSON.parse(`{"id":"O${index}","storeId":"S01","total":${index},`
+      + `"apiKey":"key-${index}","note":{"accessToken":"hidden","label":"ok"},`
+      + '"payment":{"hash":"h","salt":"s","iterations":1,"algorithm":"a"},"__proto__":{"polluted":true}}'))
+    for (let round = 0; round < 2; round += 1) {
+      const projection = projectSharedState({ stores: [{ id: 'S01' }], orders }, { role: 'admin' })
+      expect(projection.orders).toHaveLength(50)
+      for (const order of projection.orders) {
+        expect(Object.keys(order)).toEqual(['id', 'storeId', 'total', 'note', '__proto__'])
+        expect(order.note).toEqual({ label: 'ok' })
+        expect(Object.hasOwn(order, '__proto__')).toBe(true)
+        expect(Object.getPrototypeOf(order)).toBe(Object.prototype)
+      }
+    }
+  })
+
   it('fails closed for case-colliding employee profiles while keeping admin repair access', () => {
     const state = {
       stores: [{ id: 'S01' }, { id: 'S02' }],

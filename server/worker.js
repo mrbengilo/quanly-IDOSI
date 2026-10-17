@@ -1773,9 +1773,27 @@ const SECRET_STATE_FIELDS = new Set([
   'token_hash',
 ])
 
-const normalizedStateKey = (key) => String(key || '').toLocaleLowerCase('en-US').replace(/[^a-z0-9]/gu, '')
+// Every screen read sanitizes each field of every record. Field names repeat
+// across records, so their classification is cached (bounded for safety when
+// record keys are data such as employee IDs).
+const MAX_STATE_KEY_CACHE_ENTRIES = 10_000
+const memoizeStateKey = (classify) => {
+  const cache = new Map()
+  return (key) => {
+    const cacheKey = String(key || '')
+    let result = cache.get(cacheKey)
+    if (result === undefined) {
+      if (cache.size >= MAX_STATE_KEY_CACHE_ENTRIES) cache.clear()
+      result = classify(key)
+      cache.set(cacheKey, result)
+    }
+    return result
+  }
+}
 
-const isSecretStateField = (key) => {
+const normalizedStateKey = memoizeStateKey((key) => String(key || '').toLocaleLowerCase('en-US').replace(/[^a-z0-9]/gu, ''))
+
+const isSecretStateField = memoizeStateKey((key) => {
   if (SECRET_STATE_FIELDS.has(key)) return true
   const normalized = normalizedStateKey(key)
   return [
@@ -1806,26 +1824,37 @@ const isSecretStateField = (key) => {
     || normalized.includes('credential')
     || normalized.includes('authorization')
     || normalized.includes('cookie')
-}
+})
 
 const isCredentialEnvelope = (value) => {
   if (!isPlainRecord(value)) return false
-  const keys = new Set(Object.keys(value).map(normalizedStateKey))
+  const ownKeys = Object.keys(value)
+  // An envelope needs four distinct normalized keys.
+  if (ownKeys.length < 4) return false
+  const keys = new Set(ownKeys.map(normalizedStateKey))
   return ['hash', 'salt', 'iterations', 'algorithm'].every((key) => keys.has(key))
 }
 
 const sanitizeStateValue = (value, depth = 0) => {
   if (depth > MAX_JSON_DEPTH) throw new ApiError(400, 'JSON_TOO_DEEP', 'Dữ liệu JSON lồng quá sâu.')
-  if (Array.isArray(value)) return value
-    .filter((item) => !isCredentialEnvelope(item))
-    .map((item) => sanitizeStateValue(item, depth + 1))
+  // Single-pass loops: this runs over every record of every screen response.
+  if (Array.isArray(value)) {
+    const items = []
+    for (let index = 0; index < value.length; index += 1) {
+      if (!(index in value)) continue
+      const item = value[index]
+      if (!isCredentialEnvelope(item)) items.push(sanitizeStateValue(item, depth + 1))
+    }
+    return items
+  }
   if (!isPlainRecord(value)) return value
   if (isCredentialEnvelope(value)) return null
-  return Object.fromEntries(
-    Object.entries(value)
-      .filter(([key, item]) => !isSecretStateField(key) && !isCredentialEnvelope(item))
-      .map(([key, item]) => [key, sanitizeStateValue(item, depth + 1)]),
-  )
+  const entries = []
+  for (const key of Object.keys(value)) {
+    const item = value[key]
+    if (!isSecretStateField(key) && !isCredentialEnvelope(item)) entries.push([key, sanitizeStateValue(item, depth + 1)])
+  }
+  return Object.fromEntries(entries)
 }
 
 const COMPENSATION_STATE_COLLECTIONS = Object.freeze([
