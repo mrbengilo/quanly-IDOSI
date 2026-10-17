@@ -1,0 +1,28 @@
+.sidebar__nav-icon {
+  --nav-icon-color: #475569;
+  --nav-icon-background: #f1f5f9;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 32px;
+  width: 32px;
+  height: 32px;
+  border-radius: 9px;
+  background: var(--nav-icon-background);
+  box-shadow: inset 0 0 0 1px rgb(255 255 255 / 35%);
+}
+
+.sidebar__nav-icon--blue { --nav-icon-color: #1d4ed8; --nav-icon-background: #dbeafe; }
+.sidebar__nav-icon--cyan { --nav-icon-color: #0e7490; --nav-icon-background: #cffafe; }
+.sidebar__nav-icon--violet { --nav-icon-color: #6d28d9; --nav-icon-background: #ede9fe; }
+.sidebar__nav-icon--orange { --nav-icon-color: #c2410c; --nav-icon-background: #ffedd5; }
+.sidebar__nav-icon--amber { --nav-icon-color: #92400e; --nav-icon-background: #fef3c7; }
+.sidebar__nav-icon--green { --nav-icon-color: #047857; --nav-icon-background: #d1fae5; }
+.sidebar__nav-icon--rose { --nav-icon-color: #be123c; --nav-icon-background: #ffe4e6; }
+
+/* Preserve category colors on both green/white sidebars and active links. */
+.app-shell .sidebar nav a span.sidebar__nav-icon svg {
+  color: var(--nav-icon-color);
+  flex-shrink: 0;
+  transform: none;
+}
