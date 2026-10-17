@@ -331,10 +331,15 @@ const indexedCandidateKeysSql = (name, collectionsSql, scannedCollectionsSql = '
 
 const storeSnapshotSqlCache = new Map()
 
-// Shift commands that may load only the task and attendance history of the
-// operational window (see storeStateSnapshotSql). Other commands on these
-// screens, such as manager edits of past attendance, load all of it.
-const STORE_OPERATIONAL_WINDOW_SCREENS = new Set(['command-attendance', 'command-task-progress'])
+// Shift commands and the store employee task page may load only the task and
+// attendance history of the operational window (see storeStateSnapshotSql).
+// Other commands on these screens, such as manager edits of past attendance,
+// and office staff on the task page load all of it.
+const STORE_OPERATIONAL_WINDOW_SCREENS = new Set(['command-attendance', 'command-task-progress', 'employee-tasks'])
+// The windowed task page lists the selected shift's work only: no history.
+const STORE_OPERATIONAL_WINDOW_OMITTED_COLLECTIONS = Object.freeze({
+  'employee-tasks': ['taskAssignmentHistory'],
+})
 const STORE_OPERATIONAL_TASK_COLLECTIONS = Object.freeze(['tasks', 'taskAssignmentHistory'])
 const STORE_OPERATIONAL_WINDOW_COLLECTIONS = Object.freeze([...STORE_OPERATIONAL_TASK_COLLECTIONS, 'attendance'])
 const OPERATIONAL_WINDOW_DISABLED = '0000-01-01'
@@ -342,7 +347,6 @@ const OPERATIONAL_WINDOW_DISABLED = '0000-01-01'
 const STORE_SCREEN_PERIOD_COLLECTIONS = Object.freeze({
   overview: ['orders', 'schedule', 'expenseEntries', 'violationRefunds'],
   'command-task': ['tasks', 'taskAssignmentHistory', 'notifications'],
-  'employee-tasks': ['tasks', 'taskAssignmentHistory'],
   payroll: [
     'attendance', 'salaryAdjustments', 'salaryAdvances', 'payrollPeriods', 'payrollPayments',
     'compensationEntries', 'violations', 'violationRefunds',
@@ -578,8 +582,12 @@ const storeStateSnapshotSql = (screen = '', operationalWindow = false) => {
   )`
     : ''
   const taskCollectionsSql = sqlStringList(STORE_OPERATIONAL_TASK_COLLECTIONS)
+  const omittedCollections = windowed
+    ? STORE_OPERATIONAL_WINDOW_OMITTED_COLLECTIONS[normalizedScreen] || []
+    : []
   const operationalWindowFilterSql = windowed
-    ? `AND (
+    ? `${omittedCollections.length ? `AND entity.collection_key NOT IN (${sqlStringList(omittedCollections)})` : ''}
+      AND (
         entity.collection_key NOT IN (${sqlStringList(STORE_OPERATIONAL_WINDOW_COLLECTIONS)})
         OR entity.occurred_on IS NULL
         OR trim(entity.occurred_on) = ''
@@ -594,11 +602,13 @@ const storeStateSnapshotSql = (screen = '', operationalWindow = false) => {
   // occurred_on and record_id are indexed, so windowed history rows are chosen
   // without reading the JSON of the rows outside the window.
   const windowCollections = windowed
-    ? selectedCollections.filter((key) => STORE_OPERATIONAL_WINDOW_COLLECTIONS.includes(key))
+    ? selectedCollections.filter((key) => STORE_OPERATIONAL_WINDOW_COLLECTIONS.includes(key)
+      && !omittedCollections.includes(key))
     : []
   const windowCollectionsSql = sqlStringList(windowCollections)
-  const candidateCollectionsSql = windowCollections.length
-    ? sqlStringList(selectedCollections.filter((key) => !windowCollections.includes(key)))
+  const candidateCollectionsSql = windowed
+    ? sqlStringList(selectedCollections.filter((key) => !windowCollections.includes(key)
+      && !omittedCollections.includes(key)))
     : storeWorkspaceCollectionsSql
   const windowCandidateBranchesSql = windowCollections.length
     ? `${candidateKeyBranchesSql(windowCollectionsSql, `(
@@ -629,14 +639,8 @@ const storeStateSnapshotSql = (screen = '', operationalWindow = false) => {
   const legacyTaskPeriodSql = normalizedScreen === 'command-task'
     ? `OR entity.period_key IS NULL OR entity.period_key = ''`
     : ''
-  // The employee task page lists one month, plus the open shift's own day
-  // (an overnight shift can still be open on the next month's first day).
-  const employeeTaskPeriodSql = normalizedScreen === 'employee-tasks'
-    ? `OR entity.period_key IS NULL OR entity.period_key = ''
-       OR entity.occurred_on IN (SELECT occurred_on FROM open_actor_attendance_dates)`
-    : ''
   const periodFilterSql = periodCollections.length
-    ? `AND (params.period_key = '' OR entity.collection_key NOT IN (${sqlStringList(periodCollections)}) OR entity.period_key = params.period_key ${overviewTodaySql} ${legacyTaskPeriodSql} ${employeeTaskPeriodSql})`
+    ? `AND (params.period_key = '' OR entity.collection_key NOT IN (${sqlStringList(periodCollections)}) OR entity.period_key = params.period_key ${overviewTodaySql} ${legacyTaskPeriodSql})`
     : ''
   const payrollAttendanceEmployeeSeedSql = normalizedScreen === 'payroll'
     ? `
@@ -713,16 +717,6 @@ const storeStateSnapshotSql = (screen = '', operationalWindow = false) => {
   ),
   open_actor_attendance_ids AS MATERIALIZED (
     SELECT lower(trim(CAST(json_extract(attendance.value_json, '$.id') AS TEXT))) AS attendance_key
-    FROM state_entities AS attendance
-    JOIN params ON attendance.scope_key = params.scope_key
-    WHERE attendance.collection_key = 'attendance'
-      AND attendance.employee_id = params.actor_employee_key COLLATE NOCASE
-      AND attendance.open_flag = 1
-  ),
-  -- Read once per snapshot: as a subquery on params inside the row filter it
-  -- was re-evaluated for every candidate row (43 s for one store's history).
-  open_actor_attendance_dates AS MATERIALIZED (
-    SELECT DISTINCT attendance.occurred_on
     FROM state_entities AS attendance
     JOIN params ON attendance.scope_key = params.scope_key
     WHERE attendance.collection_key = 'attendance'

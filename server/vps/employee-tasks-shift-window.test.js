@@ -17,7 +17,7 @@ const history = (id, employeeId, date) => ({
   progressHistory: [{ employeeId, at: `${date}T09:00:00.000Z`, completedTasks: 1, totalTasks: 1, completionRate: 100 }],
 })
 
-it('loads only the current month and the open shift day on a store employee task page', async () => {
+it('loads only the selected shift window and no history on a store employee task page', async () => {
   // 00:30 on the 1st in Vietnam: last night's shift (30/09) is still open.
   vi.useFakeTimers({ toFake: ['Date'] })
   vi.setSystemTime(new Date('2026-10-01T00:30:00+07:00'))
@@ -93,13 +93,12 @@ it('loads only the current month and the open shift day on a store employee task
     }
 
     const storeState = (await request('/api/system-screens/employee-tasks', null, await login('month.store'))).state
+    // Today and last night's still-open shift; older days stay out.
     expect(ids(storeState.tasks)).toEqual(['T-E1-OCT', 'T-E1-OPEN'])
-    expect(ids(storeState.taskAssignmentHistory)).toEqual(['H-E1-OCT', 'H-E1-OPEN'])
-    // Older months are filtered in SQLite, before any JSON is hydrated.
-    expect(loadedTaskIds).toEqual(expect.arrayContaining(['T-E1-OCT', 'T-E1-OPEN', 'H-E1-OCT', 'H-E1-OPEN']))
-    expect(loadedTaskIds).not.toContain('T-E1-SEP')
-    expect(loadedTaskIds).not.toContain('T-E1-AUG')
-    expect(loadedTaskIds).not.toContain('H-E1-SEP')
+    expect(storeState.taskAssignmentHistory).toEqual([])
+    // The window is applied in SQLite, before any JSON is hydrated, and the
+    // assignment history is never read.
+    expect(loadedTaskIds.sort()).toEqual(['T-E1-OCT', 'T-E1-OPEN'])
 
     // Office staff use this route for reward work with a date picker, so
     // their earlier months stay available.

@@ -216,15 +216,6 @@ export function EmployeeAssignedTasksPage() {
   const ready = selectedShiftIsOpen && displayedTasks.length > 0
     && (newlyCompletedTasks.length > 0 || (noteRequired && incompleteReason.trim()))
     && (!noteRequired || incompleteReason.trim())
-  const history = (app.taskAssignmentHistory || []).flatMap((assignment) => (
-    (assignment.progressHistory || []).filter((event) => (
-      referenceMatchesTarget(app.employees, employee, event.employeeId, employeeAliases)
-    )).map((event) => ({
-      ...event,
-      assignmentId: event.assignmentId || assignment.assignmentId || assignment.id,
-    }))
-  )).sort((left, right) => String(right.at || '').localeCompare(String(left.at || '')))
-
   const chooseSlot = async (slot) => {
     if (!attendance || !slot.shift || selectBusyRef.current || lock.status !== TASK_SHIFT_LOCK_STATUS.NONE
       || typeof app.selectTaskShift !== 'function') return
@@ -388,15 +379,6 @@ export function EmployeeAssignedTasksPage() {
           </>}
         </Card>
       )}
-      <Card title="Lịch sử kết quả đã gửi trong tháng này">
-        <TableWrap>
-          <thead><tr><th>Thời gian</th><th>Ca / Lượt giao</th><th>Hoàn thành</th><th>Tỷ lệ</th><th>Ghi chú</th></tr></thead>
-          <tbody>
-            {history.map((event, index) => <tr key={`${event.assignmentId || 'assignment'}-${event.at || index}`}><td>{shortDateTime24(event.at)}</td><td>{event.shiftName || event.shiftId || '—'} · {event.assignmentId || '—'}</td><td>{event.completedTasks || 0}/{event.totalTasks || 0}</td><td><Badge tone={Number(event.completionRate) === 100 ? 'green' : 'orange'}>{Number(event.completionRate) || 0}%</Badge></td><td>{event.incompleteReason || 'Đã hoàn thành tất cả'}</td></tr>)}
-            {!history.length && <tr><td colSpan="5">Chưa có lần gửi kết quả công việc trong tháng này.</td></tr>}
-          </tbody>
-        </TableWrap>
-      </Card>
     </div>
   )
 }
