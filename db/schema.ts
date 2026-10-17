@@ -130,6 +130,11 @@ export const schema = {
       'open_flag',
     ],
   },
+  stateChangePartitions: {
+    table: 'state_change_partitions',
+    primaryKey: ['scope_key', 'partition_key'],
+    columns: ['scope_key', 'partition_key', 'version', 'updated_at'],
+  },
   commandReceiptChunks: {
     table: 'command_receipt_chunks',
     primaryKey: ['actor_id', 'idempotency_key', 'chunk_index'],
@@ -155,4 +160,5 @@ export const migrations = [
   'drizzle/0014_order_product_options.sql',
   'drizzle/0015_retire_legacy_product_names.sql',
   'drizzle/0016_staff_violation_points.sql',
+  'drizzle/0017_state_change_partitions.sql',
 ] as const

@@ -329,7 +329,103 @@ const indexedCandidateKeysSql = (name, collectionsSql, scannedCollectionsSql = '
 ].filter(Boolean).join('\n    UNION')}
   )`
 
+// Employees whose rows belong to a store's projection: the actor, inbound
+// support employees, the store's own employees and every identifier alias of
+// them. Shared by the store snapshot and the store change token so both see
+// the same employees. Requires a params CTE with scope, store and actor keys.
+const storeEmployeeIdentityCtesSql = (extraSeedSql = '') => `
+  inbound_employee_ids AS MATERIALIZED (
+    SELECT DISTINCT lower(trim(CAST(identifier.value AS TEXT))) AS employee_key
+    FROM params CROSS JOIN state_entities AS transfer
+    CROSS JOIN json_each(json_array(
+      json_extract(transfer.value_json, '$.employeeId'),
+      json_extract(transfer.value_json, '$.employee_id'),
+      json_extract(transfer.value_json, '$.employeeCode'),
+      json_extract(transfer.value_json, '$.employee_code')
+    )) AS identifier
+    WHERE transfer.scope_key = params.scope_key
+      AND transfer.collection_key = 'supportTransfers'
+      AND lower(trim(CAST(json_extract(transfer.value_json, '$.toStoreId') AS TEXT))) = params.store_key
+      AND identifier.value IS NOT NULL
+      AND trim(CAST(identifier.value AS TEXT)) <> ''
+  ),
+  seed_employee_ids AS MATERIALIZED (
+    SELECT actor_employee_key AS employee_key FROM params WHERE actor_employee_key <> ''
+    UNION
+    SELECT employee_key FROM inbound_employee_ids WHERE employee_key <> ''
+    ${extraSeedSql}
+  ),
+  relevant_employee_rows AS MATERIALIZED (
+    SELECT employee.entity_key
+    FROM params CROSS JOIN state_entities AS employee
+    WHERE employee.scope_key = params.scope_key
+      AND employee.collection_key = 'employees'
+      AND (
+        employee.store_id = params.store_key COLLATE NOCASE
+        OR employee.employee_id IN (
+          SELECT employee_key COLLATE NOCASE FROM seed_employee_ids
+        )
+        OR EXISTS (
+          SELECT 1
+          FROM json_each(json_array(
+            json_extract(employee.value_json, '$.id'),
+            json_extract(employee.value_json, '$.code'),
+            json_extract(employee.value_json, '$.employeeId'),
+            json_extract(employee.value_json, '$.employee_id'),
+            json_extract(employee.value_json, '$.employeeCode'),
+            json_extract(employee.value_json, '$.employee_code')
+          )) AS identifier
+          JOIN seed_employee_ids AS seed
+            ON lower(trim(CAST(identifier.value AS TEXT))) = seed.employee_key
+        )
+      )
+  ),
+  selected_employee_ids AS MATERIALIZED (
+    SELECT employee_key FROM seed_employee_ids
+    UNION
+    SELECT DISTINCT lower(trim(CAST(identifier.value AS TEXT))) AS employee_key
+    FROM state_entities AS employee
+    JOIN params ON employee.scope_key = params.scope_key
+    JOIN relevant_employee_rows AS relevant ON relevant.entity_key = employee.entity_key
+    JOIN json_each(json_array(
+      json_extract(employee.value_json, '$.id'),
+      json_extract(employee.value_json, '$.code'),
+      json_extract(employee.value_json, '$.employeeId'),
+      json_extract(employee.value_json, '$.employee_id'),
+      json_extract(employee.value_json, '$.employeeCode'),
+      json_extract(employee.value_json, '$.employee_code')
+    )) AS identifier
+    WHERE employee.collection_key = 'employees'
+      AND identifier.value IS NOT NULL
+      AND trim(CAST(identifier.value AS TEXT)) <> ''
+  )`
+
 const storeSnapshotSqlCache = new Map()
+
+// One statement, so the head version and the partitions are read together.
+const STORE_CHANGE_VERSION_SQL = `
+  WITH
+  params AS (
+    SELECT ? AS scope_key, lower(trim(?)) AS store_key, lower(trim(?)) AS actor_employee_key
+  ),
+  ${storeEmployeeIdentityCtesSql()}
+  SELECT
+    (SELECT app.version FROM params CROSS JOIN app_state AS app WHERE app.scope_key = params.scope_key) AS head_version,
+    (
+      SELECT partition.version
+      FROM params CROSS JOIN state_change_partitions AS partition
+      WHERE partition.scope_key = params.scope_key AND partition.partition_key = '#attributed'
+    ) AS attributed_version,
+    (
+      SELECT max(partition.version)
+      FROM params CROSS JOIN state_change_partitions AS partition
+      WHERE partition.scope_key = params.scope_key
+        AND (
+          partition.partition_key IN ('*', 'store:' || params.store_key)
+          OR partition.partition_key IN (SELECT 'employee:' || employee_key FROM selected_employee_ids)
+        )
+    ) AS scope_version
+`
 
 // Shift commands and the store employee task page may load only the task and
 // attendance history of the operational window (see storeStateSnapshotSql).
@@ -723,72 +819,8 @@ const storeStateSnapshotSql = (screen = '', operationalWindow = false) => {
       AND attendance.employee_id = params.actor_employee_key COLLATE NOCASE
       AND attendance.open_flag = 1
   ),
-  inbound_employee_ids AS MATERIALIZED (
-    SELECT DISTINCT lower(trim(CAST(identifier.value AS TEXT))) AS employee_key
-    FROM params CROSS JOIN state_entities AS transfer
-    CROSS JOIN json_each(json_array(
-      json_extract(transfer.value_json, '$.employeeId'),
-      json_extract(transfer.value_json, '$.employee_id'),
-      json_extract(transfer.value_json, '$.employeeCode'),
-      json_extract(transfer.value_json, '$.employee_code')
-    )) AS identifier
-    WHERE transfer.scope_key = params.scope_key
-      AND transfer.collection_key = 'supportTransfers'
-      AND lower(trim(CAST(json_extract(transfer.value_json, '$.toStoreId') AS TEXT))) = params.store_key
-      AND identifier.value IS NOT NULL
-      AND trim(CAST(identifier.value AS TEXT)) <> ''
-  ),
-  seed_employee_ids AS MATERIALIZED (
-    SELECT actor_employee_key AS employee_key FROM params WHERE actor_employee_key <> ''
-    UNION
-    SELECT employee_key FROM inbound_employee_ids WHERE employee_key <> ''
-    ${payrollAttendanceEmployeeSeedSql}
-    ${violationEmployeeSeedSql}
-  ),
-  relevant_employee_rows AS MATERIALIZED (
-    SELECT employee.entity_key
-    FROM params CROSS JOIN state_entities AS employee
-    WHERE employee.scope_key = params.scope_key
-      AND employee.collection_key = 'employees'
-      AND (
-        employee.store_id = params.store_key COLLATE NOCASE
-        OR employee.employee_id IN (
-          SELECT employee_key COLLATE NOCASE FROM seed_employee_ids
-        )
-        OR EXISTS (
-          SELECT 1
-          FROM json_each(json_array(
-            json_extract(employee.value_json, '$.id'),
-            json_extract(employee.value_json, '$.code'),
-            json_extract(employee.value_json, '$.employeeId'),
-            json_extract(employee.value_json, '$.employee_id'),
-            json_extract(employee.value_json, '$.employeeCode'),
-            json_extract(employee.value_json, '$.employee_code')
-          )) AS identifier
-          JOIN seed_employee_ids AS seed
-            ON lower(trim(CAST(identifier.value AS TEXT))) = seed.employee_key
-        )
-      )
-  ),
-  selected_employee_ids AS MATERIALIZED (
-    SELECT employee_key FROM seed_employee_ids
-    UNION
-    SELECT DISTINCT lower(trim(CAST(identifier.value AS TEXT))) AS employee_key
-    FROM state_entities AS employee
-    JOIN params ON employee.scope_key = params.scope_key
-    JOIN relevant_employee_rows AS relevant ON relevant.entity_key = employee.entity_key
-    JOIN json_each(json_array(
-      json_extract(employee.value_json, '$.id'),
-      json_extract(employee.value_json, '$.code'),
-      json_extract(employee.value_json, '$.employeeId'),
-      json_extract(employee.value_json, '$.employee_id'),
-      json_extract(employee.value_json, '$.employeeCode'),
-      json_extract(employee.value_json, '$.employee_code')
-    )) AS identifier
-    WHERE employee.collection_key = 'employees'
-      AND identifier.value IS NOT NULL
-      AND trim(CAST(identifier.value AS TEXT)) <> ''
-  ),
+  ${storeEmployeeIdentityCtesSql(`${payrollAttendanceEmployeeSeedSql}
+    ${violationEmployeeSeedSql}`)},
   ${indexedCandidateKeysSql('order_candidate_keys', "'orders'")},
   relevant_order_ids AS MATERIALIZED (
     SELECT DISTINCT lower(trim(CAST(json_extract(entity.value_json, '$.id') AS TEXT))) AS order_key
@@ -1298,6 +1330,20 @@ export class SqliteD1 {
         .all(scope, storeId, actorEmployeeId, period, String(operationalDate || ''))
     ), `readStoreStateSnapshot:${screen || 'default'}${windowed ? ':window' : ''}`)
     return decodeStateSnapshotRecords(records)
+  }
+
+  // Change token of one store's projection (drizzle/0017). Any version bump
+  // not attributed to partitions falls back to the global version.
+  readStoreChangeVersion(scope, storeId, actorEmployeeId = '') {
+    const row = measuredStatement('reads', () => (
+      this.database.prepare(STORE_CHANGE_VERSION_SQL).get(scope, storeId, actorEmployeeId)
+    ), 'readStoreChangeVersion')
+    const headVersion = Number(row?.head_version || 0)
+    const attributedVersion = row?.attributed_version
+    if (attributedVersion === null || attributedVersion === undefined || headVersion > Number(attributedVersion)) {
+      return headVersion
+    }
+    return Number(row?.scope_version ?? headVersion)
   }
 
   readSystemStateSnapshot(scope, collectionKeys, screen = '', employeeIds = []) {

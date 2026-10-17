@@ -544,6 +544,7 @@ class MemoryD1 {
       'drizzle/0007_session_roles.sql',
       'drizzle/0008_order_information_options.sql',
       'drizzle/0012_state_entity_query_indexes.sql',
+      'drizzle/0017_state_change_partitions.sql',
     ]) {
       const migration = readFileSync(file, 'utf8').replaceAll('--> statement-breakpoint', '')
       this.database.exec(migration)
@@ -2313,6 +2314,7 @@ describe('IDOSI Worker security primitives', () => {
     // data assertions above.
     database.exec(readFileSync('drizzle/0007_session_roles.sql', 'utf8').replaceAll('--> statement-breakpoint', ''))
     database.exec(readFileSync('drizzle/0012_state_entity_query_indexes.sql', 'utf8').replaceAll('--> statement-breakpoint', ''))
+    database.exec(readFileSync('drizzle/0017_state_change_partitions.sql', 'utf8').replaceAll('--> statement-breakpoint', ''))
 
     const migratedD1 = new MemoryD1()
     migratedD1.database.close()
