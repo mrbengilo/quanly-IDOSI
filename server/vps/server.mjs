@@ -182,7 +182,7 @@ export const createIdosiServer = (options = {}) => {
     let requestId = randomUUID()
     let responseBytes = 0
     const timing = { bodyReadMs: 0, handlerMs: 0, serializeMs: 0 }
-    const databaseMetrics = { statements: 0, reads: 0, writes: 0, batches: 0, totalMs: 0, maxMs: 0 }
+    const databaseMetrics = { statements: 0, reads: 0, writes: 0, batches: 0, totalMs: 0, maxMs: 0, maxStatement: '' }
     let requestLogged = false
     const writeRequestLog = (aborted) => {
       if (requestLogged || !path.startsWith('/api/') || typeof requestLogger !== 'function') return

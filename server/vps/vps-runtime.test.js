@@ -236,6 +236,7 @@ describe('IDOSI VPS runtime', () => {
         && database.totalMs >= 0
         && database.maxMs >= 0
       ))).toBe(true)
+      expect(loginEntry.database.maxStatement).toMatch(/^SELECT /u)
       expect(JSON.stringify(entries)).not.toMatch(
         /private_token|private-observability-user|private-employee-id|must-not-be-logged/u,
       )

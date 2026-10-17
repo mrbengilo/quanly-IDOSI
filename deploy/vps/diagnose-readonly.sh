@@ -201,6 +201,11 @@ grep '"path":"/api/command"' <<<"$app_logs" | tail -n 15 \
 printf -- '--- slowest_recent_requests ---\n'
 grep '"slow":true' <<<"$app_logs" | tail -n 15 \
   | sed -E 's/.*"timestamp":"([^"]+)".*"method":"([A-Z]+)","path":"([^"]+)","status":([0-9]+).*"durationMs":([0-9.]+).*/ts=\1 \2 \3 status=\4 ms=\5/' || true
+printf -- '--- slowest_statement_labels ---\n'
+grep '"slow":true' <<<"$app_logs" \
+  | grep -o '"maxMs":[0-9.]*,"maxStatement":"[^"]*"' \
+  | sed -E 's/"maxMs":([0-9.]+),"maxStatement":"([^"]*)"/max_ms=\1 statement=\2/' \
+  | sort -t= -k2 -rn | head -n 15 || true
 printf -- '--- recent_error_lines ---\n'
 grep -Ei 'error|unhandled|SQLITE_BUSY|database is locked' <<<"$app_logs" | grep -v '"event":"idosi.api.request"' | tail -n 20 | cut -c1-400 || true
 printf -- '--- context_before_oom ---\n'
