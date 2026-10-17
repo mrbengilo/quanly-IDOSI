@@ -295,6 +295,39 @@ export const STORE_SCREEN_COLLECTIONS = Object.freeze({
 
 const sqlStringList = (values) => values.map((value) => `'${value.replaceAll("'", "''")}'`).join(', ')
 const storeWorkspaceGlobalCollectionsSql = sqlStringList(STORE_WORKSPACE_GLOBAL_COLLECTIONS)
+// Store snapshot branches that match rows of any store (by collection or by a
+// JSON reference) are limited to these small collections.
+const STORE_SNAPSHOT_SCANNED_COLLECTIONS = Object.freeze([
+  'stores', 'payrollPeriods', 'shiftDefinitions', 'schedule', 'supportTransfers', 'notifications',
+])
+
+// A store snapshot matches rows through an OR of store, employee and JSON
+// references that SQLite cannot drive from an index, so every store's rows of
+// each collection were scanned. Collect the keys that can satisfy a branch
+// through the indexed columns instead; callers still apply the complete
+// predicate to these candidates, so the selected rows are unchanged.
+const candidateKeyBranchesSql = (collectionsSql, conditionSql = '') => [
+  'candidate.store_id = params.store_key COLLATE NOCASE',
+  'candidate.employee_id IN (SELECT employee_key COLLATE NOCASE FROM selected_employee_ids)',
+  'candidate.store_id IS NULL',
+].map((branchSql) => `
+    SELECT candidate.collection_key, candidate.entity_key
+    FROM params CROSS JOIN state_entities AS candidate
+    WHERE candidate.scope_key = params.scope_key
+      AND candidate.collection_key IN (${collectionsSql})
+      AND ${branchSql}${conditionSql ? `
+      AND ${conditionSql}` : ''}`).join('\n    UNION')
+
+const indexedCandidateKeysSql = (name, collectionsSql, scannedCollectionsSql = '', extraBranchesSql = '') => `${name} AS MATERIALIZED (${[
+  collectionsSql ? candidateKeyBranchesSql(collectionsSql) : '',
+  scannedCollectionsSql ? `
+    SELECT candidate.collection_key, candidate.entity_key
+    FROM params CROSS JOIN state_entities AS candidate
+    WHERE candidate.scope_key = params.scope_key
+      AND candidate.collection_key IN (${scannedCollectionsSql})` : '',
+  extraBranchesSql,
+].filter(Boolean).join('\n    UNION')}
+  )`
 
 const storeSnapshotSqlCache = new Map()
 const STORE_SCREEN_PERIOD_COLLECTIONS = Object.freeze({
@@ -483,6 +516,8 @@ const storeStateSnapshotSql = (screen = '') => {
   const cacheKey = screenCollections ? normalizedScreen : 'workspace'
   if (storeSnapshotSqlCache.has(cacheKey)) return storeSnapshotSqlCache.get(cacheKey)
   const storeWorkspaceCollectionsSql = sqlStringList(selectedCollections)
+  const scannedCollectionsSql = sqlStringList(STORE_SNAPSHOT_SCANNED_COLLECTIONS
+    .filter((key) => selectedCollections.includes(key)))
   const periodCollections = STORE_SCREEN_PERIOD_COLLECTIONS[normalizedScreen] || []
   // The overview combines the selected financial month with today's live
   // operations. Keep undated recurring schedules and today's orders as well.
@@ -642,11 +677,16 @@ const storeStateSnapshotSql = (screen = '') => {
       AND identifier.value IS NOT NULL
       AND trim(CAST(identifier.value AS TEXT)) <> ''
   ),
+  ${indexedCandidateKeysSql('order_candidate_keys', "'orders'")},
   relevant_order_ids AS MATERIALIZED (
     SELECT DISTINCT lower(trim(CAST(json_extract(entity.value_json, '$.id') AS TEXT))) AS order_key
-    FROM state_entities AS entity
-    JOIN params ON entity.scope_key = params.scope_key
-    WHERE entity.collection_key = 'orders'
+    FROM params
+    CROSS JOIN order_candidate_keys AS candidate
+    CROSS JOIN state_entities AS entity
+    WHERE entity.scope_key = params.scope_key
+      AND entity.collection_key = candidate.collection_key
+      AND entity.entity_key = candidate.entity_key
+      AND entity.collection_key = 'orders'
       AND json_extract(entity.value_json, '$.id') IS NOT NULL
       AND (
         entity.store_id = params.store_key COLLATE NOCASE
@@ -665,7 +705,8 @@ const storeStateSnapshotSql = (screen = '') => {
           WHERE reference.type NOT IN ('object', 'array')
         ))
       )
-  )
+  ),
+  ${indexedCandidateKeysSql('candidate_entity_keys', storeWorkspaceCollectionsSql, scannedCollectionsSql)}
   SELECT
     0 AS row_kind,
     app.scope_key,
@@ -716,9 +757,13 @@ const storeStateSnapshotSql = (screen = '') => {
     NULL,
     NULL,
     NULL
-  FROM state_entities AS entity
-  JOIN params ON entity.scope_key = params.scope_key
-  WHERE entity.collection_key IN (${storeWorkspaceCollectionsSql})
+  FROM params
+  CROSS JOIN candidate_entity_keys AS candidate
+  CROSS JOIN state_entities AS entity
+  WHERE entity.scope_key = params.scope_key
+    AND entity.collection_key = candidate.collection_key
+    AND entity.entity_key = candidate.entity_key
+    AND entity.collection_key IN (${storeWorkspaceCollectionsSql})
     ${periodFilterSql}
     ${sessionFilterSql}
     ${employeeHomeOrderFilterSql}
