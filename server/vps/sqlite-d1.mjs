@@ -633,14 +633,7 @@ const storeStateSnapshotSql = (screen = '', operationalWindow = false) => {
   // (an overnight shift can still be open on the next month's first day).
   const employeeTaskPeriodSql = normalizedScreen === 'employee-tasks'
     ? `OR entity.period_key IS NULL OR entity.period_key = ''
-       OR entity.occurred_on IN (
-         SELECT attendance.occurred_on
-         FROM state_entities AS attendance
-         WHERE attendance.scope_key = params.scope_key
-           AND attendance.collection_key = 'attendance'
-           AND attendance.employee_id = params.actor_employee_key COLLATE NOCASE
-           AND attendance.open_flag = 1
-       )`
+       OR entity.occurred_on IN (SELECT occurred_on FROM open_actor_attendance_dates)`
     : ''
   const periodFilterSql = periodCollections.length
     ? `AND (params.period_key = '' OR entity.collection_key NOT IN (${sqlStringList(periodCollections)}) OR entity.period_key = params.period_key ${overviewTodaySql} ${legacyTaskPeriodSql} ${employeeTaskPeriodSql})`
@@ -720,6 +713,16 @@ const storeStateSnapshotSql = (screen = '', operationalWindow = false) => {
   ),
   open_actor_attendance_ids AS MATERIALIZED (
     SELECT lower(trim(CAST(json_extract(attendance.value_json, '$.id') AS TEXT))) AS attendance_key
+    FROM state_entities AS attendance
+    JOIN params ON attendance.scope_key = params.scope_key
+    WHERE attendance.collection_key = 'attendance'
+      AND attendance.employee_id = params.actor_employee_key COLLATE NOCASE
+      AND attendance.open_flag = 1
+  ),
+  -- Read once per snapshot: as a subquery on params inside the row filter it
+  -- was re-evaluated for every candidate row (43 s for one store's history).
+  open_actor_attendance_dates AS MATERIALIZED (
+    SELECT DISTINCT attendance.occurred_on
     FROM state_entities AS attendance
     JOIN params ON attendance.scope_key = params.scope_key
     WHERE attendance.collection_key = 'attendance'

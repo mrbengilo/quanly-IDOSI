@@ -52,34 +52,34 @@ const idsOf = (snapshot, collectionKey) => snapshot.entities
   .map((entity) => JSON.parse(entity.value_json).id)
   .sort()
 
-describe('shift command operational window', () => {
-  const rows = [
-    ['stores', { id: 'S01', name: 'Cửa hàng 1' }],
-    ['stores', { id: 'S02', name: 'Cửa hàng 2' }],
-    ['employees', { id: 'E01', storeId: 'S01', unit: 'store' }],
-    ['employees', { id: 'E02', storeId: 'S01', unit: 'store' }],
-    ['supportTransfers', { id: 'ST-1', employeeId: 'E01', fromStoreId: 'S01', toStoreId: 'S02', status: 'Hoàn tất' }],
-    ['attendance', { id: 'ATT-TODAY', storeId: 'S01', employeeId: 'E01', date: '2026-10-17', checkOutAt: null }, { openFlag: 1 }],
-    ['attendance', { id: 'ATT-YESTERDAY', storeId: 'S01', employeeId: 'E02', date: '2026-10-16', checkOutAt: 'x' }, { openFlag: 0 }],
-    ['attendance', { id: 'ATT-OLD', storeId: 'S01', employeeId: 'E02', date: '2026-10-01', checkOutAt: 'x' }, { openFlag: 0 }],
-    ['attendance', {
-      id: 'ATT-FORGOTTEN', storeId: 'S01', employeeId: 'E02', date: '2026-10-12', checkOutAt: null,
-      taskShiftContexts: [{ shiftId: 'ca1', taskIds: ['TASK-BOUND-OLD'] }],
-    }, { openFlag: 1 }],
-    ['tasks', { id: 'TASK-TODAY', storeId: 'S01', date: '2026-10-17' }],
-    ['tasks', { id: 'TASK-YESTERDAY', storeId: 'S01', date: '2026-10-16' }],
-    ['tasks', { id: 'TASK-OLD', storeId: 'S01', date: '2026-10-01' }],
-    ['tasks', { id: 'TASK-FORGOTTEN-DAY', storeId: 'S01', date: '2026-10-12', checklistAttendanceId: 'ATT-FORGOTTEN' }],
-    ['tasks', { id: 'TASK-FORGOTTEN-UTC', storeId: 'S01', checklistAttendanceId: 'ATT-FORGOTTEN' }, { occurredOn: '2026-10-11' }],
-    ['tasks', { id: 'TASK-BOUND-OLD', storeId: 'S01', date: '2026-09-20' }],
-    ['tasks', { id: 'TASK-UNDATED', storeId: 'S01' }, { occurredOn: null }],
-    ['tasks', { id: 'TASK-OTHER-STORE', storeId: 'S02', date: '2026-10-17' }],
-    ['taskAssignmentHistory', { id: 'HISTORY-TODAY', storeId: 'S01', date: '2026-10-17' }],
-    ['taskAssignmentHistory', { id: 'HISTORY-OLD', storeId: 'S01', date: '2026-10-01' }],
-    ['orders', { id: 'ORDER-TODAY', storeId: 'S01', employeeId: 'E01', date: '2026-10-17' }],
-    ['orders', { id: 'ORDER-OLD', storeId: 'S01', employeeId: 'E01', date: '2026-09-01' }],
-  ]
+const rows = [
+  ['stores', { id: 'S01', name: 'Cửa hàng 1' }],
+  ['stores', { id: 'S02', name: 'Cửa hàng 2' }],
+  ['employees', { id: 'E01', storeId: 'S01', unit: 'store' }],
+  ['employees', { id: 'E02', storeId: 'S01', unit: 'store' }],
+  ['supportTransfers', { id: 'ST-1', employeeId: 'E01', fromStoreId: 'S01', toStoreId: 'S02', status: 'Hoàn tất' }],
+  ['attendance', { id: 'ATT-TODAY', storeId: 'S01', employeeId: 'E01', date: '2026-10-17', checkOutAt: null }, { openFlag: 1 }],
+  ['attendance', { id: 'ATT-YESTERDAY', storeId: 'S01', employeeId: 'E02', date: '2026-10-16', checkOutAt: 'x' }, { openFlag: 0 }],
+  ['attendance', { id: 'ATT-OLD', storeId: 'S01', employeeId: 'E02', date: '2026-10-01', checkOutAt: 'x' }, { openFlag: 0 }],
+  ['attendance', {
+    id: 'ATT-FORGOTTEN', storeId: 'S01', employeeId: 'E02', date: '2026-10-12', checkOutAt: null,
+    taskShiftContexts: [{ shiftId: 'ca1', taskIds: ['TASK-BOUND-OLD'] }],
+  }, { openFlag: 1 }],
+  ['tasks', { id: 'TASK-TODAY', storeId: 'S01', date: '2026-10-17' }],
+  ['tasks', { id: 'TASK-YESTERDAY', storeId: 'S01', date: '2026-10-16' }],
+  ['tasks', { id: 'TASK-OLD', storeId: 'S01', date: '2026-10-01' }],
+  ['tasks', { id: 'TASK-FORGOTTEN-DAY', storeId: 'S01', date: '2026-10-12', checklistAttendanceId: 'ATT-FORGOTTEN' }],
+  ['tasks', { id: 'TASK-FORGOTTEN-UTC', storeId: 'S01', checklistAttendanceId: 'ATT-FORGOTTEN' }, { occurredOn: '2026-10-11' }],
+  ['tasks', { id: 'TASK-BOUND-OLD', storeId: 'S01', date: '2026-09-20' }],
+  ['tasks', { id: 'TASK-UNDATED', storeId: 'S01' }, { occurredOn: null }],
+  ['tasks', { id: 'TASK-OTHER-STORE', storeId: 'S02', date: '2026-10-17' }],
+  ['taskAssignmentHistory', { id: 'HISTORY-TODAY', storeId: 'S01', date: '2026-10-17' }],
+  ['taskAssignmentHistory', { id: 'HISTORY-OLD', storeId: 'S01', date: '2026-10-01' }],
+  ['orders', { id: 'ORDER-TODAY', storeId: 'S01', employeeId: 'E01', date: '2026-10-17' }],
+  ['orders', { id: 'ORDER-OLD', storeId: 'S01', employeeId: 'E01', date: '2026-09-01' }],
+]
 
+describe('shift command operational window', () => {
   it('keeps every row a still open shift can reference and drops older history', async () => {
     const database = await createDatabase(rows)
     try {
@@ -124,6 +124,40 @@ describe('shift command operational window', () => {
         .toEqual(database.readStoreStateSnapshot('global', 'S01', 'E01', 'employee-tasks').entities)
       expect(database.readStoreStateSnapshot('global', 'S01', 'E01', 'command-attendance', '', 'not-a-date').entities)
         .toEqual(full.entities)
+    } finally {
+      database.close()
+    }
+  })
+})
+
+describe('employee task page month filter', () => {
+  it('resolves the open shift days once instead of once per history row', async () => {
+    // Production regression (2026-10-17): the open-shift day lookup sat inside
+    // the row filter as a subquery on params, so SQLite re-ran it for every
+    // task row and one store's employee task page took 43 s to read.
+    const database = await createDatabase([
+      ...rows.filter(([collectionKey]) => collectionKey !== 'tasks'),
+      ...Array.from({ length: 40 }, (_, index) => ['tasks', {
+        id: `TASK-SEPTEMBER-${index}`, storeId: 'S01', date: `2026-09-${String((index % 28) + 1).padStart(2, '0')}`,
+      }]),
+      ['tasks', { id: 'TASK-OCTOBER', storeId: 'S01', date: '2026-10-17' }],
+    ])
+    try {
+      let snapshotSql = ''
+      const prepare = database.database.prepare.bind(database.database)
+      database.database.prepare = (sql) => {
+        if (sql.includes('row_kind')) snapshotSql = sql
+        return prepare(sql)
+      }
+      const snapshot = database.readStoreStateSnapshot('global', 'S01', 'E02', 'employee-tasks', '2026-10')
+      database.database.prepare = prepare
+      // E02's shift open since 12/10 belongs to October; TASK-BOUND-OLD (20/09)
+      // is outside both the month and the open shift's day.
+      expect(idsOf(snapshot, 'tasks')).toEqual(['TASK-OCTOBER'])
+      const plan = prepare(`EXPLAIN QUERY PLAN ${snapshotSql}`).all('global', 'S01', 'E02', '2026-10', '')
+        .map(({ detail }) => detail)
+      expect(plan).toContain('MATERIALIZE open_actor_attendance_dates')
+      expect(plan.some((detail) => detail.startsWith('CORRELATED LIST SUBQUERY'))).toBe(false)
     } finally {
       database.close()
     }
