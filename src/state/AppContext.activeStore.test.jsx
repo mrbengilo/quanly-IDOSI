@@ -1,7 +1,13 @@
 import { act, cleanup, render, screen } from '@testing-library/react'
 import { createRef, forwardRef, useImperativeHandle } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { AppProvider, createInitialState, SYSTEM_RESET_IDEMPOTENCY_STORAGE_KEY, useApp } from './AppContext'
+import {
+  AppProvider,
+  createInitialState,
+  REMOTE_POLL_INTERVAL_MS,
+  SYSTEM_RESET_IDEMPOTENCY_STORAGE_KEY,
+  useApp,
+} from './AppContext'
 
 const api = vi.hoisted(() => ({
   apiBootstrapState: vi.fn(),
@@ -1000,6 +1006,47 @@ describe('remote command active-store preservation', () => {
     const allResetCalls = api.apiCommand.mock.calls.filter(([type]) => type === 'system.reset_all')
     expect(allResetCalls.at(-1)[2].idempotencyKey).toBe(persistedKey)
     expect(sessionStorage.getItem(SYSTEM_RESET_IDEMPOTENCY_STORAGE_KEY)).toBeNull()
+  })
+
+  it('polls the busy employee home screen every 30 seconds, not every 5 seconds', async () => {
+    vi.useFakeTimers()
+    window.location.hash = '#/login'
+    const employeeState = {
+      ...makeRemoteState('STORE-A'),
+      employees: [{ id: 'E01', name: 'Nhân viên 01', unit: 'store', storeId: 'STORE-A' }],
+    }
+    api.apiLogin.mockResolvedValue({
+      user: employeeHomeUser,
+      bootstrap: {
+        user: employeeHomeUser,
+        state: { stores: employeeState.stores.slice(0, 1), employees: employeeState.employees },
+        policies: [],
+        version: 1,
+        partial: true,
+      },
+    })
+    api.apiGetSystemScreenState.mockResolvedValue({
+      user: employeeHomeUser,
+      projection: 'global',
+      screen: 'employee-home',
+      state: employeeState,
+      policies: [],
+      version: 1,
+    })
+    renderProvider()
+    await act(async () => {
+      expect((await appRef.current.login('employee-one', 'password')).ok).toBe(true)
+      await Promise.resolve()
+    })
+    expect(appRef.current.remoteProjection.screen).toBe('employee-home')
+    api.apiGetStateMetadata.mockClear()
+
+    await act(async () => { await vi.advanceTimersByTimeAsync(REMOTE_POLL_INTERVAL_MS - 1_000) })
+    expect(api.apiGetStateMetadata).not.toHaveBeenCalled()
+
+    await act(async () => { await vi.advanceTimersByTimeAsync(1_000) })
+    expect(api.apiGetStateMetadata).toHaveBeenCalledTimes(1)
+    expect(REMOTE_POLL_INTERVAL_MS).toBe(30_000)
   })
 })
 

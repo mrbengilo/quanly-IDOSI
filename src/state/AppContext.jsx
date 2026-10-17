@@ -272,6 +272,8 @@ const revenueBonusView = (dailyRecords = [], allocationRecords = []) => {
   })
 }
 
+export const REMOTE_POLL_INTERVAL_MS = 30_000
+
 const REMOTE_ARRAY_KEYS = [
   'supportRoster', 'scheduleBusy', 'violationPointSummaries',
   'stores', 'employees', 'imports', 'attendance', 'schedule', 'tasks', 'taskAssignmentHistory', 'supportWorkAssignments', 'supportWorkSchedules', 'supportWorkScheduleHistory', 'supportSchedulePresets', 'supportSchedulePresetHistory', 'officeAdjustments',
@@ -2452,8 +2454,11 @@ export function AppProvider({ children }) {
         if (active && pendingForce && (typeof document === 'undefined' || !document.hidden)) void refresh()
       }
     }
-    const supportScreen = ['overview', 'employee-home', 'employee-attendance', 'employee-schedule', 'schedule', 'support-transfers'].includes(remote.projectionScreen)
-    const timer = window.setInterval(refresh, supportScreen ? 5_000 : 30_000)
+    // Every open client polls; a 5s cadence on busy screens made each state
+    // change trigger heavy screen reloads from all clients and saturated the
+    // single VPS runtime. Commands, tab focus and shift boundaries still
+    // refresh immediately.
+    const timer = window.setInterval(refresh, REMOTE_POLL_INTERVAL_MS)
     let boundaryTimer = null
     if (['store_manager', 'employee'].includes(role)) {
       // Load scheduling rules only inside the authenticated workspace.
