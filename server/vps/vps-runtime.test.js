@@ -614,6 +614,118 @@ describe('IDOSI VPS runtime', () => {
     }
   })
 
+  it('applies an admin state patch without materializing or rewriting untouched collections', async () => {
+    const directory = await temporaryDirectory()
+    const { server, runtime } = createIdosiServer({
+      databasePath: resolve(directory, 'idosi.sqlite'),
+      imagesDirectory: resolve(directory, 'images'),
+      bootstrapToken: 'bootstrap-projected-state-merge',
+    })
+    await new Promise((resolveListen) => server.listen(0, '127.0.0.1', resolveListen))
+    const baseUrl = `http://127.0.0.1:${server.address().port}`
+    const entityRows = (collectionKey) => runtime.database.prepare(`
+      SELECT entity_key, entity_order, value_json, created_at, updated_at
+      FROM state_entities
+      WHERE scope_key = 'global' AND collection_key = ?
+      ORDER BY entity_order, entity_key
+    `).bind(collectionKey).all().then(({ results }) => results)
+    try {
+      const bootstrap = await postJson(baseUrl, '/api/bootstrap', {
+        username: 'admin.projected.merge',
+        password: 'admin-projected-merge-password',
+        displayName: 'Admin Projected Merge',
+        initialState: {
+          stores: [{ id: 'S01', name: 'Cửa hàng 01', status: 'Đang hoạt động' }],
+          employees: [{ id: 'E01', storeId: 'S01', unit: 'store', name: 'Nhân viên 01' }],
+          tasks: [{ id: 'T01', storeId: 'S01', title: 'Lau kệ', employeeIds: ['E01'] }],
+          notifications: [{ id: 'N01', title: 'Thông báo', readAt: '2026-10-17T01:00:00.000Z' }],
+        },
+      }, { 'x-idosi-bootstrap-token': 'bootstrap-projected-state-merge' })
+      expect(bootstrap.response.status).toBe(201)
+      const rawShell = JSON.parse((await runtime.database.prepare(
+        "SELECT value_json FROM app_state WHERE scope_key = 'global'",
+      ).first()).value_json)
+      rawShell.legacyIntegration = { access_token: 'projected-merge-secret-sentinel' }
+      rawShell.settings = { bio: 'Giữ lại', access_token: 'projected-settings-secret-sentinel' }
+      await runtime.database.prepare("UPDATE app_state SET value_json = ? WHERE scope_key = 'global'")
+        .bind(JSON.stringify(rawShell)).run()
+
+      const login = await postJson(baseUrl, '/api/login', {
+        username: 'admin.projected.merge',
+        password: 'admin-projected-merge-password',
+      })
+      expect(login.response.status).toBe(200)
+      const headers = { authorization: `Bearer ${login.body.token}` }
+      const merge = (patch, idempotencyKey, expectedVersion = 1) => postJson(baseUrl, '/api/command', {
+        type: 'state.merge', expectedVersion, includeState: false, payload: { patch },
+      }, { ...headers, 'idempotency-key': idempotencyKey })
+
+      const observedSnapshots = []
+      const readStateSnapshot = runtime.database.readStateSnapshot.bind(runtime.database)
+      runtime.database.readStateSnapshot = (...arguments_) => {
+        const snapshot = readStateSnapshot(...arguments_)
+        observedSnapshots.push(snapshot.unchanged)
+        return snapshot
+      }
+      const taskRowsBefore = await entityRows('tasks')
+      const employeeRowsBefore = await entityRows('employees')
+      expect(taskRowsBefore).toHaveLength(1)
+      expect(employeeRowsBefore).toHaveLength(1)
+
+      const protectedChange = await merge({ tasks: [] }, 'state-patch:projected-protected')
+      expect(protectedChange.response.status).toBe(400)
+      expect(protectedChange.body).toMatchObject({ error: { code: 'DOMAIN_COMMAND_REQUIRED' } })
+      const accountSettings = await merge({ accountSettings: {} }, 'state-patch:projected-account')
+      expect(accountSettings.response.status).toBe(400)
+      expect(accountSettings.body).toMatchObject({ error: { code: 'DOMAIN_COMMAND_REQUIRED' } })
+
+      const merged = await merge({
+        stores: [{ id: 'S01', name: 'Cửa hàng đổi tên', status: 'Đang hoạt động' }],
+        notifications: [{ id: 'N01', title: 'Thông báo sửa', readAt: null }],
+        session: { token: 'client-session-must-not-persist' },
+        phaseMarker: 'after',
+      }, 'state-patch:projected-merge')
+      expect(merged.response.status).toBe(200)
+      expect(merged.body).toMatchObject({ command: 'state.merge', version: 2 })
+      expect(merged.body).not.toHaveProperty('state')
+
+      const stale = await merge({ phaseMarker: 'stale' }, 'state-patch:projected-stale', 1)
+      expect(stale.response.status).toBe(409)
+      expect(stale.body).toMatchObject({ error: { code: 'VERSION_CONFLICT', details: { currentVersion: 2 } } })
+      expect(observedSnapshots).toEqual([])
+
+      expect(await entityRows('tasks')).toEqual(taskRowsBefore)
+      expect(await entityRows('employees')).toEqual(employeeRowsBefore)
+      expect((await entityRows('stores')).map(({ value_json: value }) => JSON.parse(value).name))
+        .toEqual(['Cửa hàng đổi tên'])
+      expect((await entityRows('notifications')).map(({ value_json: value }) => JSON.parse(value))).toEqual([
+        expect.objectContaining({ id: 'N01', title: 'Thông báo sửa', readAt: '2026-10-17T01:00:00.000Z' }),
+      ])
+      const shell = (await runtime.database.prepare(
+        "SELECT value_json, version FROM app_state WHERE scope_key = 'global'",
+      ).first())
+      expect(shell.version).toBe(2)
+      expect(JSON.parse(shell.value_json)).toMatchObject({ phaseMarker: 'after' })
+      expect(JSON.parse(shell.value_json)).not.toHaveProperty('session')
+      expect(shell.value_json).not.toMatch(/projected-merge-secret-sentinel|projected-settings-secret-sentinel/u)
+      expect(JSON.parse(shell.value_json).settings).toEqual({ bio: 'Giữ lại' })
+      const audit = await runtime.database.prepare(`
+        SELECT metadata_json FROM audit_log WHERE action = 'state.merge' ORDER BY id DESC LIMIT 1
+      `).first()
+      expect(JSON.parse(audit.metadata_json)).toMatchObject({
+        fromVersion: 1,
+        toVersion: 2,
+        patchedKeys: ['stores', 'notifications', 'session', 'phaseMarker'],
+      })
+      // A key the collection loader cannot name keeps the complete-state path.
+      const legacyKey = await merge({ legacy_flag: true }, 'state-patch:projected-legacy-key', 2)
+      expect(legacyKey.response.status).toBe(200)
+      expect(observedSnapshots).toEqual([false])
+    } finally {
+      await new Promise((resolveClose) => server.close(resolveClose))
+    }
+  })
+
   it('uses the SQLite store projection without materializing the global snapshot', async () => {
     const directory = await temporaryDirectory()
     const { server, runtime } = createIdosiServer({

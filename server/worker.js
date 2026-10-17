@@ -7067,6 +7067,8 @@ const assertProtectedCollectionsUnchanged = (currentState, nextState, {
   allowSupportTransferCollisionRepair = false,
 } = {}) => {
   for (const key of DOMAIN_PROTECTED_STATE_COLLECTIONS) {
+    // An untouched collection is the same array; skip canonicalizing it.
+    if (currentState?.[key] === nextState?.[key]) continue
     if (key === 'supportTransfers' && allowSupportTransferCollisionRepair) {
       const currentValue = protectedCollectionComparable(key, currentState?.[key])
       const nextValue = protectedCollectionComparable(key, nextState?.[key])
@@ -7122,20 +7124,93 @@ const preserveNotificationReadReceipts = (currentState, nextState) => {
   })
 }
 
+// The admin client syncs edits as a small state.merge patch. Loading and
+// re-normalizing the whole global state (task history makes it ~270 MiB) for
+// that patch blocked the single VPS runtime for 1-2 minutes, so a patch that
+// needs no response state loads only the collections it names plus those the
+// identifier invariants read. Protected collections cannot change through a
+// patch, so an unloaded one is never written.
+const STATE_MERGE_PROJECTION_COLLECTIONS = Object.freeze([
+  'employees', 'deletedEmployees', 'stores', 'deletedStores', 'supportTransfers', 'attendance', 'workCatalogItems',
+])
+const MAX_PROJECTED_STATE_MERGE_KEYS = 40
+
+const projectedStateMergePatch = (body, scope) => {
+  const patch = isPlainRecord(body?.payload) ? body.payload.patch : null
+  if (body?.type !== 'state.merge' || scope !== 'global' || body.includeState !== false) return null
+  if (body._preloadedGlobalStateRow || body._operationalCollisionRepair === true) return null
+  if (!isPlainRecord(patch)) return null
+  const keys = Object.keys(patch)
+  // The SQLite collection loader only accepts these names; anything else
+  // keeps the complete-state path.
+  if (keys.length > MAX_PROJECTED_STATE_MERGE_KEYS
+    || keys.some((key) => key.length > 80 || !/^[A-Za-z][A-Za-z0-9-]*$/u.test(key))) return null
+  return patch
+}
+
+// Besides collection counts for the audit, the command only reads the
+// account and settings shell values of the normalized current state.
+const projectedCurrentStateView = (currentState) => {
+  const shellKeys = ['accountSettings', 'settings']
+  const normalizedShell = normalizeSharedStateForStorage(Object.fromEntries(
+    shellKeys.filter((key) => Object.hasOwn(currentState, key)).map((key) => [key, currentState[key]]),
+  ))
+  const view = { ...currentState }
+  for (const key of shellKeys) {
+    if (Object.hasOwn(normalizedShell, key)) view[key] = normalizedShell[key]
+    else delete view[key]
+  }
+  return view
+}
+
+// Persisted entities and the state shell are stored normalized, so only the
+// patched keys and the small shell need normalizing again. Cross-key rules of
+// normalizeSharedStateForStorage read protected collections (restored from
+// the current state above) or the work-catalog seed, which is included here.
+const normalizeProjectedStateMerge = (nextState, patch) => {
+  const keys = new Set(Object.keys(patch).filter((key) => !DOMAIN_PROTECTED_STATE_COLLECTIONS.has(key)))
+  for (const [key, value] of Object.entries(nextState)) {
+    if (!Array.isArray(value)) keys.add(key)
+  }
+  if (Number(nextState.staffWorkCatalogSeedVersion || 0) < STAFF_WORK_CATALOG_SEED_VERSION) {
+    keys.add('workCatalogItems')
+    keys.add('staffWorkCatalogSeedVersion')
+  }
+  const normalized = normalizeSharedStateForStorage(Object.fromEntries(
+    [...keys].filter((key) => Object.hasOwn(nextState, key)).map((key) => [key, nextState[key]]),
+  ))
+  const result = { ...nextState }
+  for (const key of keys) {
+    if (Object.hasOwn(normalized, key)) result[key] = normalized[key]
+    else delete result[key]
+  }
+  return result
+}
+
 const stateCommand = async (db, user, body, commandContext) => {
   const scope = String(body.scope || defaultScope(user))
   assertScope(user, scope, true)
   const expectedVersion = commandExpectedVersion(body)
-  const current = scope === 'global' && body._preloadedGlobalStateRow
-    ? body._preloadedGlobalStateRow
-    : await loadState(db, scope)
+  const projectedPatch = projectedStateMergePatch(body, scope)
+  const current = projectedPatch
+    ? await loadStateCollections(db, 'global', [
+        ...STATE_MERGE_PROJECTION_COLLECTIONS,
+        ...Object.keys(projectedPatch),
+      ])
+    : scope === 'global' && body._preloadedGlobalStateRow
+      ? body._preloadedGlobalStateRow
+      : await loadState(db, scope)
   const currentVersion = Number(current?.version || 0)
   if (currentVersion !== expectedVersion) {
     throw new ApiError(409, 'VERSION_CONFLICT', 'Dữ liệu đã thay đổi trên máy chủ.', { currentVersion })
   }
 
   const payload = isPlainRecord(body.payload) ? body.payload : {}
-  const currentState = current ? parseStoredJson(current.value_json, {}) : {}
+  // normalizedCommandState keeps the hydrated arrays by reference, so the
+  // persistence plan skips every collection the patch did not replace.
+  const currentState = projectedPatch && current
+    ? normalizedCommandState(current)
+    : current ? parseStoredJson(current.value_json, {}) : {}
   if (scope === 'global') {
     const rawMutation = body.type === 'state.replace' ? payload.state : payload.patch
     if (isPlainRecord(rawMutation) && Object.hasOwn(rawMutation, 'accountSettings')) {
@@ -7170,14 +7245,21 @@ const stateCommand = async (db, user, body, commandContext) => {
       allowSupportTransferCollisionRepair: operationalCollisionRepair,
     })
   }
-  nextState = normalizeSharedStateForStorage(nextState)
+  nextState = projectedPatch
+    ? normalizeProjectedStateMerge(nextState, projectedPatch)
+    : normalizeSharedStateForStorage(nextState)
+  const normalizedCurrentState = scope !== 'global'
+    ? null
+    : projectedPatch ? projectedCurrentStateView(currentState) : normalizeSharedStateForStorage(currentState)
   if (scope === 'global') {
-    const normalizedCurrentState = normalizeSharedStateForStorage(currentState)
     const currentAccountSettings = normalizedCurrentState.accountSettings
     nextState.accountSettings = isPlainRecord(currentAccountSettings) ? currentAccountSettings : {}
     if (Object.hasOwn(normalizedCurrentState, 'settings')) nextState.settings = normalizedCurrentState.settings
     else delete nextState.settings
-    nextState.notifications = preserveNotificationReadReceipts(currentState, nextState)
+    // A projected patch only loads notifications when it replaces them.
+    if (!projectedPatch || Object.hasOwn(projectedPatch, 'notifications')) {
+      nextState.notifications = preserveNotificationReadReceipts(currentState, nextState)
+    }
     assertNoReservedPhysicalStoreIdentifiers(nextState)
     assertNoCaseCollidingOperationalIdentifiers(nextState)
   }
@@ -7223,10 +7305,14 @@ const stateCommand = async (db, user, body, commandContext) => {
       body.type,
       scope,
       current ? boundedAuditJson(scope === 'global'
-        ? stateAuditSnapshot(normalizeSharedStateForStorage(currentState))
+        ? stateAuditSnapshot(normalizedCurrentState)
         : stateAuditSnapshot(sanitizeStateValue(currentState))) : null,
       boundedAuditJson(stateAuditSnapshot(nextState)),
-      JSON.stringify({ fromVersion: currentVersion, toVersion: nextVersion }),
+      JSON.stringify({
+        fromVersion: currentVersion,
+        toVersion: nextVersion,
+        ...(projectedPatch ? { patchedKeys: Object.keys(projectedPatch) } : {}),
+      }),
       commandContext.now,
       scope,
       nextVersion,
@@ -7244,9 +7330,13 @@ const stateCommand = async (db, user, body, commandContext) => {
     }),
   ])
   if (changes(results?.[0]) !== 1) {
-    const latest = await loadState(db, scope)
+    // Report the head version only; hydrating the whole state to read one
+    // number repeated the slow load on every lost compare-and-swap.
+    const latestVersion = scope === 'global'
+      ? await globalStateHeadVersion(db)
+      : Number((await loadState(db, scope))?.version || 0)
     throw new ApiError(409, 'VERSION_CONFLICT', 'Dữ liệu đã thay đổi trên máy chủ.', {
-      currentVersion: Number(latest?.version || 0),
+      currentVersion: latestVersion,
     })
   }
   return jsonResponse(responseBody)
