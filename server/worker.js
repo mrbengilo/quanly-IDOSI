@@ -4459,6 +4459,25 @@ const repairEmployeeScreenStateIfNeeded = async (db, actor, context, row, screen
   return loadStoreState(db, 'global', actor.store_id, actor.employee_id, screen)
 }
 
+// A store employee's task page lists the current month only. The open shift
+// keeps its checklist even when it started on the previous month's last day.
+// Rows without any date stay visible. The SQLite read is left unfiltered: a
+// period filter on this projection took ~180s on production data.
+const limitEmployeeTaskStateToPeriod = (state, period) => {
+  const openDates = new Set((Array.isArray(state.attendance) ? state.attendance : [])
+    .map((record) => stateEntityQueryDimensions('attendance', record))
+    .filter((dimensions) => dimensions.openFlag === 1 && dimensions.occurredOn)
+    .map((dimensions) => dimensions.occurredOn))
+  for (const collectionKey of ['tasks', 'taskAssignmentHistory']) {
+    if (!Array.isArray(state[collectionKey])) continue
+    state[collectionKey] = state[collectionKey].filter((record) => {
+      const { periodKey, occurredOn } = stateEntityQueryDimensions(collectionKey, record)
+      return !periodKey || periodKey === period || openDates.has(occurredOn)
+    })
+  }
+  return state
+}
+
 const assignStateEntityOrders = (descriptors) => {
   const anchors = descriptors
     .map((descriptor, index) => descriptor.match ? { index, order: descriptor.match.entityOrder } : null)
@@ -5572,6 +5591,12 @@ const getSystemScreen = async (request, env, context, screen) => {
   const useEmployeeStoreProjection = user.role === 'employee'
     && isEmployeeScreen
     && Boolean(String(user.store_id || '').trim())
+  const actorEmployee = (Array.isArray(user._globalState?.employees) ? user._globalState.employees : [])
+    .find((record) => employeeIdentifierValues(record).some((id) => sameIdentifier(id, user.employee_id)))
+  const taskPeriod = useEmployeeStoreProjection && screen === 'employee-tasks'
+    && actorEmployee && employeeUnit(actorEmployee) === 'store'
+    ? localDateTimeParts(context.now).date.slice(0, 7)
+    : ''
   const useOptimizedSystemProjection = typeof db?.readSystemStateSnapshot === 'function'
     && ['tasks', 'office', 'support-tasks', 'support-assigned-work', 'support-overview'].includes(screen)
   const readScreen = () => useEmployeeStoreProjection
@@ -5624,7 +5649,9 @@ const getSystemScreen = async (request, env, context, screen) => {
     scope: 'global',
     projection: 'global',
     screen,
-    state: projectSharedState(rawState, user),
+    state: taskPeriod
+      ? limitEmployeeTaskStateToPeriod(projectSharedState(rawState, user), taskPeriod)
+      : projectSharedState(rawState, user),
     version: Number(row?.version || 0),
     updatedAt: row?.updated_at || null,
     policies,
