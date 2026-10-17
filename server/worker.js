@@ -4427,9 +4427,15 @@ const repairScopedStoreStateIfNeeded = async (db, actor, context, row, storeId, 
   return loadStoreState(db, 'global', storeId, actor.employee_id, screen, period)
 }
 
+// A store snapshot row is read for this request only, so its hydrated state
+// can be read directly instead of parsing the serialized copy again.
+const requestStateSnapshotValue = (row) => (
+  isPlainRecord(row?._hydratedState) ? row._hydratedState : parseStoredJson(row?.value_json, {})
+)
+
 const repairEmployeeScreenStateIfNeeded = async (db, actor, context, row, screen) => {
   if (!row) return row
-  const state = parseStoredJson(row.value_json, {})
+  const state = requestStateSnapshotValue(row)
   const employee = (Array.isArray(state.employees) ? state.employees : []).find((record) => (
     employeeIdentifierValues(record).some((id) => sameIdentifier(id, actor.employee_id))
   ))
@@ -5594,7 +5600,9 @@ const getSystemScreen = async (request, env, context, screen) => {
       ? visibleUserRowsForActor(db, user)
       : Promise.resolve(null),
   ])
-  let rawState = row ? parseStoredJson(row.value_json, {}) : {}
+  let rawState = !row ? {} : useEmployeeStoreProjection
+    ? requestStateSnapshotValue(row)
+    : parseStoredJson(row.value_json, {})
   if (screen === 'support-overview') {
     // The personal support dashboard only renders the actor's attendance and
     // working-time overrides. Keep complete own records, including historical
