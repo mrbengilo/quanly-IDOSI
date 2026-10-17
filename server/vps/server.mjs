@@ -182,7 +182,7 @@ export const createIdosiServer = (options = {}) => {
     let requestId = randomUUID()
     let responseBytes = 0
     const timing = { bodyReadMs: 0, handlerMs: 0, serializeMs: 0 }
-    const databaseMetrics = { statements: 0, reads: 0, writes: 0, batches: 0, totalMs: 0, maxMs: 0 }
+    const databaseMetrics = { statements: 0, reads: 0, writes: 0, batches: 0, totalMs: 0, maxMs: 0, maxStatement: '' }
     let requestLogged = false
     const writeRequestLog = (aborted) => {
       if (requestLogged || !path.startsWith('/api/') || typeof requestLogger !== 'function') return
@@ -222,6 +222,14 @@ export const createIdosiServer = (options = {}) => {
       const bodyStartedAt = performance.now()
       const body = ['GET', 'HEAD'].includes(method) ? null : await readBody(nodeRequest)
       timing.bodyReadMs = performance.now() - bodyStartedAt
+      // Under load a request can wait in the event loop until its client (or
+      // Caddy) has given up. Two turns let a pending socket close surface;
+      // then skip the handler, because work nobody receives only lengthens the
+      // queue for live users. IncomingMessage.destroyed is true after a normal
+      // body read, so only the socket/response state signals a gone client.
+      await nextEventLoopTurn()
+      await nextEventLoopTurn()
+      if (nodeRequest.socket?.destroyed || nodeResponse.destroyed) return
       const headers = new Headers()
       for (const [name, value] of Object.entries(nodeRequest.headers)) {
         if (Array.isArray(value)) value.forEach((entry) => headers.append(name, entry))

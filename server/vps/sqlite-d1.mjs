@@ -938,7 +938,16 @@ const ORDER_HISTORY_ROWS_SQL = `
   LIMIT ?
 `
 
-const measuredStatement = (kind, operation) => {
+const MAX_STATEMENT_LABEL_LENGTH = 160
+
+// A request log names its slowest statement so production latency can be
+// traced to one query. Labels are SQL text or a reader name, never bindings.
+export const sqlStatementLabel = (sql) => String(sql || '')
+  .replace(/\s+/gu, ' ')
+  .trim()
+  .slice(0, MAX_STATEMENT_LABEL_LENGTH)
+
+const measuredStatement = (kind, operation, label = '') => {
   const metrics = requestMetrics.getStore()
   if (!metrics) return operation()
   const startedAt = performance.now()
@@ -949,6 +958,7 @@ const measuredStatement = (kind, operation) => {
     metrics.statements += 1
     metrics[kind] += 1
     metrics.totalMs += durationMs
+    if (durationMs >= metrics.maxMs) metrics.maxStatement = label
     metrics.maxMs = Math.max(metrics.maxMs, durationMs)
   }
 }
@@ -1002,11 +1012,19 @@ class SqliteD1Statement {
   }
 
   _firstSync() {
-    return measuredStatement('reads', () => this.database.prepare(this.sql).get(...this.bindings) || null)
+    return measuredStatement(
+      'reads',
+      () => this.database.prepare(this.sql).get(...this.bindings) || null,
+      sqlStatementLabel(this.sql),
+    )
   }
 
   _allSync() {
-    return measuredStatement('reads', () => ({ results: this.database.prepare(this.sql).all(...this.bindings) }))
+    return measuredStatement(
+      'reads',
+      () => ({ results: this.database.prepare(this.sql).all(...this.bindings) }),
+      sqlStatementLabel(this.sql),
+    )
   }
 
   _runSync() {
@@ -1018,7 +1036,7 @@ class SqliteD1Statement {
           last_row_id: Number(result.lastInsertRowid || 0),
         },
       }
-    })
+    }, sqlStatementLabel(this.sql))
   }
 
   async first() {
@@ -1097,7 +1115,7 @@ export class SqliteD1 {
     if (known && Number.isSafeInteger(knownVersion) && knownVersion >= 1) {
       const head = measuredStatement('reads', () => (
         this.database.prepare(STATE_SNAPSHOT_HEAD_SQL).get(scope) || null
-      ))
+      ), 'readStateSnapshot:head')
       if (!head) {
         return { unchanged: false, row: null, manifests: [], entities: [] }
       }
@@ -1109,14 +1127,14 @@ export class SqliteD1 {
 
     const records = measuredStatement('reads', () => (
       this.database.prepare(STATE_SNAPSHOT_SQL).all(scope, scope, scope)
-    ))
+    ), 'readStateSnapshot')
     return decodeStateSnapshotRecords(records)
   }
 
   readStoreStateSnapshot(scope, storeId, actorEmployeeId = '', screen = '', period = '') {
     const records = measuredStatement('reads', () => (
       this.database.prepare(storeStateSnapshotSql(screen)).all(scope, storeId, actorEmployeeId, period)
-    ))
+    ), `readStoreStateSnapshot:${screen || 'default'}`)
     return decodeStateSnapshotRecords(records)
   }
 
@@ -1125,21 +1143,21 @@ export class SqliteD1 {
     const records = measuredStatement('reads', () => (
       this.database.prepare(systemStateSnapshotSql(collectionKeys, screen))
         .all(scope, JSON.stringify(identifiers))
-    ))
+    ), `readSystemStateSnapshot:${screen || 'default'}`)
     return decodeStateSnapshotRecords(records)
   }
 
   readRevenueBonusStateSnapshot(scope, storeId, dateKey) {
     const records = measuredStatement('reads', () => (
       this.database.prepare(REVENUE_BONUS_SNAPSHOT_SQL).all(scope, storeId, dateKey)
-    ))
+    ), 'readRevenueBonusStateSnapshot')
     return decodeStateSnapshotRecords(records)
   }
 
   readFinanceOverview(period) {
     return measuredStatement('reads', () => (
       this.database.prepare(FINANCE_OVERVIEW_SQL).all(period, period, period)
-    ))
+    ), 'readFinanceOverview')
   }
 
   readEntityHistory({
@@ -1189,7 +1207,7 @@ export class SqliteD1 {
         cursorOrder,
         beforeKey,
         limit,
-      ))
+      ), 'readEntityHistory:orders')
     }
     return measuredStatement('reads', () => this.database.prepare(`
       SELECT
@@ -1225,7 +1243,7 @@ export class SqliteD1 {
       cursorOrder,
       beforeKey,
       limit,
-    ))
+    ), `readEntityHistory:${collectionKey}`)
   }
 
   readOrderSummaryRows({ scope = 'global', storeId, employeeId = '', period }) {
@@ -1253,7 +1271,7 @@ export class SqliteD1 {
           ), 1, 7) IN (?, ?, ?)
         )
       ORDER BY entity_order DESC, entity_key DESC
-    `).all(scope, storeId, employeeId, employeeId, ...periods, ...periods))
+    `).all(scope, storeId, employeeId, employeeId, ...periods, ...periods), 'readOrderSummaryRows')
   }
 
   async batch(statements) {
