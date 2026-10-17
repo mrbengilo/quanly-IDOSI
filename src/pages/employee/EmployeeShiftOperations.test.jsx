@@ -326,8 +326,10 @@ describe('employee shift operations', () => {
     expect(screen.queryByText('Chuẩn bị quầy cho ca tương lai')).toBeNull()
     expect(screen.queryByRole('checkbox')).toBeNull()
     expect(screen.queryByRole('button', { name: 'LƯU KẾT QUẢ' })).toBeNull()
-    expect(screen.getByText('Lịch sử kết quả đã gửi trong tháng này')).toBeTruthy()
-    expect(screen.getByText('100%')).toBeTruthy()
+    // The page lists the selected shift's work only; submission history is
+    // not loaded or rendered.
+    expect(screen.queryByText(/Lịch sử kết quả đã gửi/u)).toBeNull()
+    expect(screen.queryByText('100%')).toBeNull()
   })
 
   it('offers three unselected shift buttons and locks the server-confirmed choice only', async () => {
