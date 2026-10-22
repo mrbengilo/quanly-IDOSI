@@ -101,6 +101,10 @@ export const buildScheduleSwap = (state, payload, { now, actor } = {}) => {
     if (selected.ids.some((id) => !same(id, outgoingId) && same(id, incoming.id))) {
       fail('SCHEDULE_DUPLICATE_SHIFT', 'Nhân viên đã có ca sẽ nhận trong lịch còn lại.')
     }
+    // Preserve cancellation history; never silently reactivate a cancelled shift.
+    if (list(selected.assignment.cancelledShifts).some((shift) => same(shift.shiftId || shift.id || shift, incoming.id))) {
+      fail('SCHEDULE_CANCELLED_SHIFT', 'Ca nhận từng bị hủy trong lịch của nhân viên; cần đối soát lịch trước khi đổi.')
+    }
     const received = { ...incoming }
     delete received.supportTransferId
     if (!same(selected.employee.storeId, storeId)) {

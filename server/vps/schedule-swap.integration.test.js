@@ -166,6 +166,21 @@ it.each(['audit_log', 'command_receipts'])('rolls back state, audit and receipt 
   expect(audit()).toHaveLength(1)
 })
 
+it('rejects receipt of a cancelled shift without changing persisted cancellation history', async () => {
+  const assignment = rows('schedule').find((row) => row.employeeId === 'A')
+  assignment.cancelledShifts = [{ shiftId: 'PM', reason: 'Historical cancellation', cancelledAt: '2026-10-21' }]
+  const value = JSON.stringify(assignment)
+  expect(db().prepare("UPDATE state_entities SET value_json=?, value_bytes=? WHERE collection_key='schedule' AND json_extract(value_json, '$.id')=?")
+    .run(value, Buffer.byteLength(value), assignment.id).changes).toBe(1)
+  const before = rows('schedule'); const v = version()
+  const receipts = db().prepare('SELECT COUNT(*) AS n FROM command_receipts').get().n
+  const result = await command()
+  expect(result.status).toBe(409)
+  expect(result.body.error.code).toBe('SCHEDULE_CANCELLED_SHIFT')
+  expect(rows('schedule')).toEqual(before); expect(version()).toBe(v); expect(audit()).toHaveLength(0)
+  expect(db().prepare('SELECT COUNT(*) AS n FROM command_receipts').get().n).toBe(receipts)
+})
+
 it.each([['Đã khóa', 'PAYROLL_PERIOD_LOCKED'], ['Đã chi', 'PAYROLL_PERIOD_PAID']])('preserves %s payroll history and blocks the swap', async (status, code) => {
   const value = JSON.stringify({ id: 'LOCKED-PAYROLL', storeId: 'STORE', period: '2026-10', status, rows: [{ employeeId: 'A', salary: 123456 }] })
   db().prepare(`INSERT INTO state_entities(scope_key, collection_key, entity_key, entity_order, value_json, value_bytes, created_at, updated_at)

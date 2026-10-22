@@ -75,6 +75,14 @@ describe('atomic schedule swap domain', () => {
     state.schedule[0].shiftSnapshots[1].start = '12:00'
     expect(buildScheduleSwap(state, payload(state)).assignments).toHaveLength(2)
   })
+  it.each([0, 1])('rejects a previously cancelled incoming shift for side %s without erasing history', (side) => {
+    const state = fixture()
+    state.schedule[side].cancelledShifts = [{ shiftId: state.schedule[1 - side].shiftId, reason: 'Historical cancellation', cancelledAt: '2026-10-21' }]
+    rejects(state, 'SCHEDULE_CANCELLED_SHIFT')
+    state.schedule[side].cancelledShifts[0].shiftId = 'OTHER-CANCELLED'
+    const result = buildScheduleSwap(state, payload(state))
+    expect(result.assignments[side].cancelledShifts).toEqual(state.schedule[side].cancelledShifts)
+  })
   it('checks adjacent dates and other stores after both replacements', () => {
     const state = fixture()
     state.schedule[2] = { id: 'NIGHT', employeeId: 'A', storeId: 'OTHER', date: '2026-10-21', shiftIds: ['N'],

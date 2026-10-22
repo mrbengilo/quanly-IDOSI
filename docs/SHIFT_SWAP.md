@@ -44,6 +44,8 @@ trợ khi có snapshot hợp lệ.
 Hệ thống từ chối:
 
 - cùng ca/no-op hoặc ca nhận đã có trong các ca còn lại;
+- ca nhận từng bị hủy trong assignment của người nhận (`SCHEDULE_CANCELLED_SHIFT`):
+  cần đối soát lịch trước, không tự xóa lịch sử hủy hoặc khôi phục ca;
 - xung đột giờ với ca còn lại, cửa hàng khác hoặc ngày liền kề/qua đêm;
 - ca được chọn đã điểm danh (`SCHEDULE_STARTED_IMMUTABLE`);
 - assignment/snapshot bị khóa hoặc dữ liệu công việc/đơn hàng legacy liên
