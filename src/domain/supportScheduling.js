@@ -16,6 +16,7 @@ const employeeIdentifierKeys = (record = {}) => [...new Set([
   record.employee_id,
   record.employeeCode,
   record.employee_code,
+  ...list(record.identifierAliases),
 ].map(key).filter(Boolean))]
 const employeeIdentity = (state, value) => {
   const reference = employeeKey(value)

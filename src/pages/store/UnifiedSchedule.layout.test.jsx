@@ -104,10 +104,10 @@ describe('store schedule visual flow', () => {
 
     const metrics = screen.getByRole('region', { name: 'Thống kê lịch phân ca' })
     expect(within(metrics).getByText('Nhân viên đã xếp')).toBeTruthy()
-    expect(screen.getAllByRole('button', { name: 'Theo ngày' }).length).toBeGreaterThan(0)
-    expect(screen.getAllByRole('button', { name: 'Theo tuần' }).length).toBeGreaterThan(0)
-    expect(screen.getAllByRole('button', { name: 'Theo tháng' }).length).toBeGreaterThan(0)
-    expect(screen.getByRole('button', { name: 'Theo nhân viên' })).toBeTruthy()
+    expect(screen.getAllByRole('tab', { name: 'Theo ngày' }).length).toBeGreaterThan(0)
+    expect(screen.getAllByRole('tab', { name: 'Theo tuần' }).length).toBeGreaterThan(0)
+    expect(screen.getAllByRole('tab', { name: 'Theo tháng' }).length).toBeGreaterThan(0)
+    expect(screen.getByRole('tab', { name: 'Theo nhân viên' })).toBeTruthy()
     expect(screen.getAllByRole('table').length).toBeGreaterThan(0)
 
     const toolbar = container.querySelector('.schedule-toolbar-card')
@@ -251,12 +251,12 @@ describe('store schedule visual flow', () => {
     expect(within(board).getAllByText('Ca đêm lịch sử').length).toBeGreaterThan(0)
     expect(within(board).getAllByText('22:00 - 06:00 (+1 ngày)').length).toBeGreaterThan(0)
 
-    fireEvent.click(within(board).getByRole('button', { name: 'Theo tuần' }))
+    fireEvent.click(within(board).getByRole('tab', { name: 'Theo tuần' }))
     expect(within(board).getByText('Ca đêm lịch sử')).toBeTruthy()
     expect(within(board).getByText('22:00 - 06:00 (+1 ngày)')).toBeTruthy()
     expect(board.querySelector('.schedule-matrix--week')).toBeTruthy()
 
-    fireEvent.click(within(board).getByRole('button', { name: 'Theo tháng' }))
+    fireEvent.click(within(board).getByRole('tab', { name: 'Theo tháng' }))
     expect(within(board).getByText('Ca đêm lịch sử')).toBeTruthy()
     expect(board.querySelector('.schedule-matrix--month')).toBeTruthy()
   })
@@ -446,11 +446,11 @@ describe('store schedule visual flow', () => {
     }
 
     expectBothShiftsIn('.schedule-matrix--day')
-    fireEvent.click(within(board).getByRole('button', { name: 'Theo tuần' }))
+    fireEvent.click(within(board).getByRole('tab', { name: 'Theo tuần' }))
     expectBothShiftsIn('.schedule-matrix--week')
-    fireEvent.click(within(board).getByRole('button', { name: 'Theo tháng' }))
+    fireEvent.click(within(board).getByRole('tab', { name: 'Theo tháng' }))
     expectBothShiftsIn('.schedule-matrix--month')
-    fireEvent.click(within(board).getByRole('button', { name: 'Theo nhân viên' }))
+    fireEvent.click(within(board).getByRole('tab', { name: 'Theo nhân viên' }))
     expectBothShiftsIn('.schedule-matrix--employee')
 
     fireEvent.click(screen.getByRole('button', { name: 'Xuất Excel' }))
