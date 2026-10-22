@@ -911,6 +911,7 @@ const BUSINESS_SUPPORT_DOMAIN_COMMANDS = new Set([
   'shift_definition.update',
   'shift_definition.delete',
   'schedule.assign',
+  'schedule.swap',
   'schedule.replace_day',
   'tasks.assign',
   'tasks.replace_scope',
@@ -8108,6 +8109,10 @@ export const commandStateProjection = (body) => {
   if (type.startsWith('shift_definition.')) {
     return projection('command-shift-definition', ['shiftDefinitions'], '', '', '', false)
   }
+  // Swap validates lifecycle and schedules across all stores, including adjacent days.
+  if (type === 'schedule.swap') return projection('command-schedule-swap', [
+    'schedule', 'shiftDefinitions', 'attendance', 'tasks', 'workCatalogProgress', 'orders', 'payrollPeriods',
+  ], '', '', '', false)
   if (type.startsWith('schedule.')) {
     return projection(
       'command-schedule',
@@ -11168,7 +11173,40 @@ const shiftDefinitionCommand = async (db, actor, body, commandContext) => {
   }, commandContext)
 }
 
+const scheduleSwapCommand = async (db, actor, body, commandContext) => {
+  assertOperationsRole(actor, 'Tài khoản không có quyền đổi ca cửa hàng.')
+  const payload = isPlainRecord(body.payload) ? body.payload : {}
+  assertOperationalStoreAccess(actor, payload.storeId)
+  const { current, state } = await loadGlobalCommandState(db, body, actor)
+  const store = requireStore(state, payload.storeId)
+  const { buildScheduleSwap } = await import('../src/domain/scheduleSwap.js')
+  let swap
+  try {
+    swap = buildScheduleSwap(state, { ...payload, storeId: store.id }, {
+      now: commandContext.now, actor: serverActorSnapshot(actor),
+    })
+  } catch (error) {
+    if (error.code) throw new ApiError(error.status || 409, error.code, error.message)
+    throw error
+  }
+  assertPayrollNotPaidOrLocked(state, store.id, payload.date.slice(0, 7))
+  for (const employee of swap.employees) {
+    if (employee?.storeId && !sameIdentifier(employee.storeId, store.id)) {
+      assertPayrollNotPaidOrLocked(state, employee.storeId, payload.date.slice(0, 7))
+    }
+  }
+  return commitGlobalStateDomainCommand(db, actor, current, {
+    ...state, schedule: swap.schedule, stateVersion: Math.max(1, Number(state.stateVersion) || 1) + 1,
+  }, {
+    action: 'schedule.swap', entityType: 'schedule-swap', entityId: commandContext.requestId,
+    before: swap.before, after: swap.assignments,
+    metadata: { storeId: store.id, date: payload.date, operationId: commandContext.requestId },
+    response: { command: 'schedule.swap', storeId: store.id, date: payload.date, assignments: swap.assignments },
+  }, commandContext)
+}
+
 const scheduleCommand = async (db, actor, body, commandContext) => {
+  if (body.type === 'schedule.swap') return scheduleSwapCommand(db, actor, body, commandContext)
   assertOperationsRole(actor, 'Tài khoản không có quyền phân ca cửa hàng.')
   if (!['schedule.assign', 'schedule.replace_day'].includes(body.type)) {
     throw new ApiError(400, 'COMMAND_UNKNOWN', 'Lệnh lịch phân ca không được hỗ trợ.')
