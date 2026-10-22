@@ -49,6 +49,7 @@ import {
   vietnamScheduleDate,
 } from './scheduleView'
 import './UnifiedSchedule.css'
+import ScheduleSwapPanel from './ScheduleSwapPanel'
 
 const displayDate = (value) => {
   const [year, month, day] = String(value || '').split('-')
@@ -151,6 +152,7 @@ export function UnifiedSchedule() {
   const allEmployees = uniqueEmployees([...(app.employees || []), ...(app.supportRoster || [])])
   const supportTransfers = Array.isArray(app.supportTransfers) ? app.supportTransfers : []
   const canManageStore = ['admin', 'business_support', 'manager', 'store_manager'].includes(session?.role)
+  const canSwapShifts = ['admin', 'business_support', 'store_manager'].includes(session?.role)
   const storeId = session?.role === 'store_manager'
     ? session.storeId
     : activeStore?.id || activeStoreId || session?.storeId || ''
@@ -707,11 +709,20 @@ export function UnifiedSchedule() {
 
       <Card className="schedule-board">
         <div className="card__subheader">
-          <div className="tabs" role="tablist" aria-label="Kiểu xem lịch phân ca">
-            <button type="button" className={viewMode === 'day' ? 'active' : ''} onClick={() => setViewMode('day')}>Theo ngày</button>
-            <button type="button" className={viewMode === 'week' ? 'active' : ''} onClick={() => setViewMode('week')}>Theo tuần</button>
-            <button type="button" className={viewMode === 'month' ? 'active' : ''} onClick={() => setViewMode('month')}>Theo tháng</button>
-            <button type="button" className={viewMode === 'employee' ? 'active' : ''} onClick={() => setViewMode('employee')}>Theo nhân viên</button>
+          <div className="tabs" role="tablist" aria-label="Kiểu xem lịch phân ca" onKeyDown={(event) => {
+            if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return
+            event.preventDefault()
+            const tabs = [...event.currentTarget.querySelectorAll('[role="tab"]')]
+            const index = tabs.indexOf(document.activeElement)
+            const next = event.key === 'Home' ? 0 : event.key === 'End' ? tabs.length - 1
+              : (index + (event.key === 'ArrowRight' ? 1 : -1) + tabs.length) % tabs.length
+            tabs[next]?.focus(); tabs[next]?.click()
+          }}>
+            {[['day', 'Theo ngày'], ['week', 'Theo tuần'], ['month', 'Theo tháng'], ['employee', 'Theo nhân viên'],
+              ...(canSwapShifts ? [['swap', 'Đổi ca']] : [])].map(([mode, label]) => <button key={mode} type="button" role="tab"
+              id={`schedule-${mode}-tab`} aria-selected={viewMode === mode} tabIndex={viewMode === mode ? 0 : -1}
+              aria-controls={mode === 'swap' ? 'schedule-swap-panel' : undefined}
+              className={viewMode === mode ? 'active' : ''} onClick={() => setViewMode(mode)}>{label}</button>)}
           </div>
           <div className="row-actions">
             <Button variant="outline" icon={ChevronLeft} onClick={() => setDate((current) => moveStoreScheduleDate(current, viewMode, -1) || vietnamScheduleDate())} aria-label="Lùi thời gian" />
@@ -735,6 +746,7 @@ export function UnifiedSchedule() {
             })}</tr>
           })}</tbody>
         </TableWrap> : <EmptyState title="Chưa có ca trong ngày" description="Tạo ca làm việc hoặc chọn ngày có lịch đã lưu." />)}
+        {viewMode === 'swap' && canSwapShifts && <ScheduleSwapPanel key={`${storeId}:${date}`} app={app} storeId={storeId} date={date} employees={employees} />}
         {viewMode === 'week' && renderPeriodSchedule(datesOfWeek, 'week')}
         {viewMode === 'month' && renderPeriodSchedule(datesOfMonth, 'month')}
         {viewMode === 'employee' && <>

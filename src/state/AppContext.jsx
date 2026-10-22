@@ -2174,9 +2174,10 @@ export function AppProvider({ children }) {
     return pending.promise
   }, [])
 
-  const runRemoteDomainCommand = async (type, payload, idempotencyKey = `${type}:${crypto.randomUUID()}`) => {
+  const runRemoteDomainCommand = async (type, payload, idempotencyKey = `${type}:${crypto.randomUUID()}`, guardResult) => {
     const remote = apiRef.current
-    const partialTaskResult = type === 'task.shift.select' || type === 'task.progress.save'
+    const resultAllowed = guardResult?.(remote)
+    const partialTaskResult = type === 'task.shift.select' || type === 'task.progress.save' || Boolean(guardResult)
     const previousProjectionVersion = Number(remote.hydratedVersion || 0)
     cancelPrefetch(remote)
     const reconcileProjection = ({ blocking = false } = {}) => loadCompleteRemoteProjection(remote.user, {
@@ -2194,10 +2195,13 @@ export function AppProvider({ children }) {
         idempotencyKey,
         includeState: false,
       })
-      remote.version = Number(result.version)
-      remote.projectionWriteVersion = Number(result.version)
+      const applyResult = !resultAllowed || resultAllowed(result)
+      if (applyResult) {
+        remote.version = Number(result.version)
+        remote.projectionWriteVersion = Number(result.version)
+      }
       const { patches, replacements } = remoteCommandResultPatches(type, result)
-      if (patches.size || replacements.size || type === 'employee.delete' || type === 'store.delete') {
+      if (applyResult && (patches.size || replacements.size || type === 'employee.delete' || type === 'store.delete')) {
         setState((current) => {
           const next = { ...current }
           if (type === 'employee.delete' && result.employee) {
@@ -5634,51 +5638,14 @@ export function AppProvider({ children }) {
     return { ok: true, assignments: proposedAssignments }
   }
 
+  const swapScheduleShifts = async (payload, idempotencyKey) => {
+    const { executeScheduleSwap } = await import('./scheduleActions.js')
+    return executeScheduleSwap(state.session?.role, apiRef.current.enabled, runRemoteDomainCommand, payload, idempotencyKey)
+  }
+
   const replaceScheduleDay = async (assignments = [], details = {}) => {
-    const date = details.date || today()
-    const storeId = details.storeId || state.activeStoreId || state.session?.storeId
-    if (!storeId || !date || !Array.isArray(assignments)) {
-      return { ok: false, message: 'Dữ liệu lịch phân ca không hợp lệ.' }
-    }
-    if (apiRef.current.enabled) {
-      try {
-        const result = await runRemoteDomainCommand('schedule.replace_day', {
-          storeId,
-          date,
-          assignments: assignments.map((item) => ({
-            id: item.id,
-            employeeId: item.employeeId,
-            shiftIds: item.shiftIds,
-            note: item.note || '',
-          })),
-        })
-        notify('Đã cập nhật lịch phân ca.')
-        return { ok: true, assignments: result.assignments || [] }
-      } catch (error) {
-        notify(error.message || 'Không thể cập nhật lịch phân ca.', 'info')
-        return { ok: false, message: error.message }
-      }
-    }
-    const { buildLocalScheduleDayReplacement } = await import('../domain/supportScheduling')
-    const { schedule: next, assignments: nextDay, conflict } = buildLocalScheduleDayReplacement(state, {
-      assignments,
-      storeId,
-      date,
-      actor: actorSnapshot(state.session),
-      createId: () => uid('SCH'),
-    })
-    if (conflict) {
-      const message = conflict.code === 'SCHEDULE_TIME_OVERLAP'
-        ? 'Nhân viên đã có ca trùng thời gian trong lịch hiện có.'
-        : conflict.code === 'SUPPORT_SCHEDULE_OUTSIDE_WINDOW'
-          ? 'Ca hỗ trợ nằm ngoài khoảng ngày điều chuyển đã duyệt.'
-          : 'Khung giờ ca làm việc không hợp lệ.'
-      notify(message, 'info')
-      return { ok: false, code: conflict.code, message }
-    }
-    updateCollection('schedule', () => next)
-    notify('Đã cập nhật lịch phân ca.')
-    return { ok: true, assignments: nextDay }
+    const { executeScheduleDayReplacement } = await import('./scheduleActions.js')
+    return executeScheduleDayReplacement({ state, apiRef, runRemoteDomainCommand, notify, updateCollection, today, actorSnapshot, uid }, assignments, details)
   }
 
   const createImportVoucher = async (payload = {}) => {
@@ -6865,6 +6832,7 @@ export function AppProvider({ children }) {
     deleteShiftDefinition,
     saveScheduleMultiple,
     replaceScheduleDay,
+    swapScheduleShifts,
     createImportVoucher,
     updateImportVoucher,
     deleteImportVoucher,

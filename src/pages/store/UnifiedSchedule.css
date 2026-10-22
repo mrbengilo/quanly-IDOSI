@@ -747,3 +747,22 @@
     gap: 4px;
   }
 }
+
+.schedule-swap { padding: 20px; min-width: 0; }
+.schedule-swap > p { color: var(--text-muted); margin-bottom: 20px; }
+.schedule-swap__columns { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 20px; }
+.schedule-swap__person { min-width: 0; margin: 0; padding: 16px; border: 1px solid var(--border); border-radius: 12px; }
+.schedule-swap__person legend { padding: 0 8px; font-weight: 700; }
+.schedule-swap__person .field { margin-bottom: 14px; min-width: 0; }
+.schedule-swap__person select { width: 100%; min-width: 0; }
+.schedule-swap__shifts { padding-left: 18px; overflow-wrap: anywhere; }
+.schedule-swap__shifts li { margin: 10px 0; }
+.schedule-swap__shifts small { display: block; color: var(--text-muted); margin-top: 4px; }
+.schedule-swap__preview { margin: 20px 0; padding: 16px; border: 1px solid var(--border); border-radius: 12px; overflow-wrap: anywhere; }
+.schedule-swap [role="alert"] { color: var(--danger, #b42318); margin: 16px 0; }
+.schedule-swap [role="status"] { margin: 16px 0; }
+.schedule-swap :focus-visible { outline: 2px solid var(--primary, #2563eb); outline-offset: 3px; }
+@media (max-width: 767px) {
+  .schedule-swap { padding: 12px; }
+  .schedule-swap__columns { grid-template-columns: minmax(0, 1fr); }
+}
