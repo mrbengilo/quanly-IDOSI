@@ -83,7 +83,8 @@ try {
     assert.ok(geometry.controls.every((control) => control.width > 40 && control.left >= 0 && control.right <= width + 1), JSON.stringify(geometry))
     await page.getByLabel('Ca cần đổi của B').focus(); await page.keyboard.press('Tab')
     assert.equal(await page.getByRole('button', { name: 'Đổi ca', exact: true }).evaluate((element) => element === document.activeElement), true)
-    await page.screenshot({ path: resolve(output, `swap-${width}.png`), fullPage: true })
+    await page.getByRole('button', { name: 'Đổi ca', exact: true }).click({ trial: true })
+    await page.screenshot({ path: resolve(output, `swap-${width}.png`), fullPage: true, animations: 'disabled' })
     evidence.push({ width, geometry, keyboardSubmitFocus: true })
   }
   await page.getByRole('button', { name: 'Đổi ca', exact: true }).click()
