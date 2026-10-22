@@ -31,6 +31,7 @@ beforeEach(async () => {
   api.apiGetState.mockImplementation(read); api.apiGetSystemScreenState.mockImplementation(read)
   api.apiGetStoreWorkspaceState.mockImplementation(read); api.apiListUsers.mockResolvedValue({ users: [admin] })
   api.apiGetStateMetadata.mockImplementation(async () => ({ version: remoteVersion }))
+  api.apiLogout.mockResolvedValue({ ok: true })
   render(<AppProvider><Probe ref={appRef} /></AppProvider>)
   await act(async () => { expect((await appRef.current.login('admin', 'synthetic')).ok).toBe(true) })
 })
@@ -82,4 +83,22 @@ it('does not overwrite a newer schedule delta with a late swap receipt', async (
   await act(async () => { await appRef.current.saveScheduleMultiple(['A'], ['AM'], { storeId: 'STORE', date: '2026-10-22' }) })
   await act(async () => { finish({ version: 2, assignments: before }); await pending })
   expect(appRef.current.schedule.map((row) => row.note)).toEqual(['Newer edit', 'Newer edit'])
+})
+
+it('does not merge a prior account response after login under another account in the same scope', async () => {
+  const previous = structuredClone(appRef.current.schedule)
+  let finish
+  api.apiCommand.mockImplementation(() => new Promise((resolve) => { finish = resolve }))
+  let pending
+  await act(async () => { pending = appRef.current.swapScheduleShifts(payload(), 'previous-account') })
+  await act(async () => { appRef.current.logout() })
+  const other = { ...admin, id: 'SECOND-ADMIN', username: 'second' }
+  const read = async () => ({ user: other, state: remoteState, policies: [], version: 1 })
+  api.apiLogin.mockResolvedValue({ user: other }); api.apiBootstrapState.mockImplementation(read); api.apiGetState.mockImplementation(read)
+  await act(async () => { expect((await appRef.current.login('second', 'synthetic')).ok).toBe(true) })
+  await act(async () => {
+    finish({ version: 2, assignments: previous.map((row) => ({ ...row, note: 'Old account response' })) })
+    await pending
+  })
+  expect(appRef.current.schedule.some((row) => row.note === 'Old account response')).toBe(false)
 })

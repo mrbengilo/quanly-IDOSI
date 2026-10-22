@@ -8,7 +8,7 @@ export const executeScheduleSwap = async (role, remoteEnabled, command, payload,
   }
   try {
     const result = await command('schedule.swap', payload, idempotencyKey, (remote) => {
-      const scope = () => [remote.projection, remote.projectionStoreId, remote.projectionScreen, remote.projectionPeriod].join(':')
+      const scope = () => [remote.user?.id, remote.user?.role, remote.projection, remote.projectionStoreId, remote.projectionScreen, remote.projectionPeriod].join(':')
       const initialScope = scope()
       return (response) => Number(response.version) >= Number(remote.version) && initialScope === scope()
     })
