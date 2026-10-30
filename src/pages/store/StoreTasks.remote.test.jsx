@@ -14,7 +14,7 @@ const renderPage = () => render(<MemoryRouter><StoreTasks /></MemoryRouter>)
 beforeEach(() => {
   mocked.app = { session: { role: 'admin' }, remoteProjection: { kind: 'store' }, activeStoreId: 'S1', stores: [{ id: 'S1', name: 'Cửa hàng 1' }, { id: 'S2', name: 'Cửa hàng 2' }], employees: [{ id: 'E1', name: 'Nhân viên', storeId: 'S1', unit: 'store' }], attendance: [], tasks: [], violations: [], workCatalogItems: [], shiftDefinitions: [{ id: 'ca1', name: 'Ca sáng' }] }
   mocked.history.mockReset().mockResolvedValue(payload('A1', true))
-  mocked.violations.mockReset().mockResolvedValue({ state: { ...mocked.app, attendance: [], violations: [] } })
+  mocked.violations.mockReset().mockResolvedValue({ state: { ...mocked.app, session: null, attendance: [], violations: [] } })
 })
 afterEach(cleanup)
 it('loads exactly the first page, then requests next/back/filter pages only after interaction', async () => {
@@ -55,4 +55,6 @@ it('retries a failed page and loads violation data only after selecting the tab'
   fireEvent.click(screen.getByRole('tab', { name: /Vi phạm/ }))
   await waitFor(() => expect(mocked.violations).toHaveBeenCalledTimes(1))
   expect(mocked.violations).toHaveBeenCalledWith('S1', 'task-violations', expect.objectContaining({ period: expect.stringMatching(/^\d{4}-\d{2}$/) }))
+  await screen.findByRole('heading', { name: 'Ghi nhận vi phạm' })
+  expect(screen.queryByText(/Chỉ Admin và Nhân viên hỗ trợ KD được quản lý/)).toBeNull()
 })

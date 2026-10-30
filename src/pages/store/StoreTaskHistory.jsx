@@ -65,8 +65,10 @@ export function StoreTaskViolations({ storeId }) {
     Promise.all(periods.split(',').map((period) => apiGetStoreScreenState(storeId, 'task-violations', { period, signal: controller.signal })))
       .then((pages) => {
         if (!active) return
-        const state = { ...pages[0].state }
-        for (const collection of ['attendance', 'schedule', 'violations', 'violationPointSummaries']) {
+        // API state includes session:null and other shell fields. Only merge
+        // reporting collections; authentication belongs to AppContext.
+        const state = {}
+        for (const collection of ['attendance', 'schedule', 'violations', 'violationPointSummaries', 'employees', 'stores', 'supportTransfers', 'workCatalogItems', 'shiftDefinitions']) {
           state[collection] = [...new Map(pages.flatMap((page) => page.state[collection] || []).map((row) => [row.id, row])).values()]
         }
         setResult({ key, state })
