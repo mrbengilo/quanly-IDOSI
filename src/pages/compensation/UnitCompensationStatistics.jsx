@@ -24,12 +24,13 @@ const UNIT_LABELS = {
  * Shared read-only reporting block for Store Operations, Office Management and
  * Admin HTKD screens. Mutations remain in their dedicated workflow panels.
  */
-export function UnitCompensationStatistics({ targetUnit, storeId = '', employees, sections = 'all', rewardRows: providedRewardRows }) {
-  const app = useApp()
+export function UnitCompensationStatistics({ targetUnit, storeId = '', employees, sections = 'all', rewardRows: providedRewardRows, data, paged = false }) {
+  const context = useApp()
+  const app = data ? { ...context, ...data } : context
   const scopedEmployees = useMemo(() => (Array.isArray(employees)
     ? employees
     : employeesForTarget({ employees: app.employees, targetUnit, storeId })), [employees, app.employees, targetUnit, storeId])
-  const computedRewardRows = useMemo(() => workRewardRows({
+  const computedRewardRows = useMemo(() => Array.isArray(providedRewardRows) ? providedRewardRows : workRewardRows({
     attendance: app.attendance,
     workCatalogProgress: app.workCatalogProgress,
     compensationEntries: app.compensationEntries,
@@ -39,7 +40,7 @@ export function UnitCompensationStatistics({ targetUnit, storeId = '', employees
     employees: scopedEmployees,
     targetUnit,
     storeId,
-  }), [app.attendance, app.workCatalogProgress, app.compensationEntries, app.violations, app.violationPointSummaries, app.tasks, scopedEmployees, targetUnit, storeId])
+  }), [providedRewardRows, app.attendance, app.workCatalogProgress, app.compensationEntries, app.violations, app.violationPointSummaries, app.tasks, scopedEmployees, targetUnit, storeId])
   const rewardRows = Array.isArray(providedRewardRows) ? providedRewardRows : computedRewardRows
   const violationRows = useMemo(() => (Array.isArray(app.violations) ? app.violations : [])
     .filter((entry) => targetUnitOfViolation(entry) === targetUnit)
@@ -89,12 +90,13 @@ export function UnitCompensationStatistics({ targetUnit, storeId = '', employees
         rows={rewardRows}
         employees={scopedEmployees}
         showEmployee
-        filterable={targetUnit === 'store'}
+        filterable={targetUnit === 'store' && !paged}
+        paginate={!paged}
         filterFields={targetUnit === 'office' ? ['month', 'employee'] : undefined}
         supportTagContextForRow={supportTagContextForRewardRow}
       />
     </Card>}
-    {showReward && <Card title={`Thống kê thưởng — ${unitLabel}`}>
+    {showReward && <Card title={`Thống kê thưởng — ${unitLabel}${paged ? " — trang hiện tại" : ""}`}>
       <CompensationStatisticsGrid statistics={rewardSummary} employees={scopedEmployees} showEmployee mode="reward" supportTagContextForRow={supportTagContextForRewardSummary} />
     </Card>}
     {showViolation && <Card title={`Thống kê vi phạm và đánh giá — ${unitLabel}`}>

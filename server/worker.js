@@ -1,3 +1,4 @@
+import { readStoreTaskHistory } from './store-task-history.js'
 import { taskShiftContext, bindTaskShiftContext, mergeTaskShiftProgress, attendanceTaskShiftLock, taskShiftLockAllows, taskIsAttendanceShiftObligation, taskProgressForObligations, taskShiftLockedTaskIds, selectAttendanceTaskShift, TASK_SHIFT_LOCK_STATUS } from '../src/domain/taskShift.js'
 import { normalizeOrderItems as normalizedHistoricalOrderItems, resolveOrderItems as resolveConfiguredOrderItems, totalOrderItemQuantity, totalOrderItemWeightKg } from '../src/domain/orderItems.js'
 import { orderRevenueByType, validateOrderRevenue } from '../src/domain/orderRevenue.js'
@@ -172,6 +173,7 @@ const INITIAL_STORE_EMPLOYEE_STATE_COLLECTIONS = Object.freeze([
   'shiftDefinitions',
 ])
 const STORE_SCREEN_NAMES = new Set([
+  'task-violations',
   'overview',
   'schedule',
   'employees',
@@ -5545,8 +5547,11 @@ const requestedStoreWorkspaceScreen = (url) => {
 
 const requestedStoreWorkspacePeriod = (url, screen) => {
   const period = String(url.searchParams.get('period') || '').trim()
+  if (screen === 'task-violations' && !period) {
+    throw new ApiError(400, 'STORE_SCREEN_PERIOD_REQUIRED', 'Vui lòng chọn kỳ vi phạm.')
+  }
   if (!period) return ''
-  if (!['overview', 'payroll'].includes(screen)) {
+  if (!['overview', 'payroll', 'task-violations'].includes(screen)) {
     throw new ApiError(400, 'STORE_SCREEN_PERIOD_UNSUPPORTED', 'Màn hình này không hỗ trợ lọc theo kỳ.')
   }
   return asMonth(period, 'Kỳ dữ liệu màn hình')
@@ -6027,6 +6032,25 @@ const getCustomerLookup = async (request, env, context, url) => {
   }))
   return jsonResponse(apiPayload(context, { storeId, customer: customerPublicInfo(customer),
     records: keys.map((recordKey) => byKey.get(recordKey)).filter(Boolean), total: customer.orderCount, offset, limit }))
+}
+
+const getStoreTaskHistory = async (request, env, context, url) => {
+  const db = getDatabase(env)
+  const { user, storeId, employeeId } = await resolveHistoryReadScope(request, db, context, url)
+  if (!['admin', 'business_support', 'store_manager'].includes(user.role)) {
+    throw new ApiError(403, 'ROLE_FORBIDDEN', 'Tài khoản không có quyền xem báo cáo công việc cửa hàng.')
+  }
+  const date = String(url.searchParams.get('date') || '').trim()
+  const shiftId = String(url.searchParams.get('shiftId') || '').trim()
+  const assignmentId = String(url.searchParams.get('assignmentId') || '').trim()
+  if ((date && !/^\d{4}-\d{2}-\d{2}$/u.test(date)) || shiftId.length > 200
+    || employeeId.length > 200 || assignmentId.length > 200) {
+    throw new ApiError(400, 'TASK_HISTORY_FILTER_INVALID', 'Bộ lọc lịch sử công việc không hợp lệ.')
+  }
+  const result = await readStoreTaskHistory({ db, storeId, employeeId, date, shiftId, assignmentId,
+    cursor: decodeHistoryCursor(url.searchParams.get('cursor')), ApiError, maxEntityBytes: MAX_STATE_ENTITY_BYTES })
+  return jsonResponse(apiPayload(context, { storeId, state: sanitizeStateValue(result.state),
+    page: { ...result.page, nextCursor: result.page.hasMore ? encodeHistoryCursor(result.lastRow) : null } }))
 }
 
 const getEntityHistory = async (request, env, context, url, historyKind) => {
@@ -27036,6 +27060,10 @@ const handleApi = async (request, env, context, url) => {
   if (path === '/api/state-metadata') {
     if (request.method !== 'GET') return methodNotAllowed(['GET'])
     return getStateMetadata(request, env, context, url)
+  }
+  if (path === '/api/store-task-history') {
+    if (request.method !== 'GET') return methodNotAllowed(['GET'])
+    return getStoreTaskHistory(request, env, context, url)
   }
   const storeScreenMatch = path.match(/^\/api\/store-screens\/([^/]+)$/u)
   if (storeScreenMatch) {

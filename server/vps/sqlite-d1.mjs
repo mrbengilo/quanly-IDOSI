@@ -223,10 +223,9 @@ export const STORE_SCREEN_COLLECTIONS = Object.freeze({
   // Statistics uses /api/order-summary and only needs shift labels locally.
   statistics: ['shiftDefinitions'],
   'customer-lookup': [],
-  tasks: [
-    'tasks', 'taskAssignmentHistory', 'supportWorkAssignments', 'workCatalogProgress',
-    'compensationEntries', 'attendance', 'notifications', 'workCatalogItems', 'violations',
-  ],
+  // Reward history loads one page of attendance and its overlays separately.
+  tasks: ['workCatalogItems', 'shiftDefinitions'],
+  'task-violations': ['attendance', 'schedule', 'violations', 'workCatalogItems', 'shiftDefinitions'],
   imports: ['importVouchers', 'imports'],
   expenses: ['fixedExpenses', 'expenseEntries', 'cashTransactions', 'attendance'],
   attendance: ['attendance', 'schedule', 'expenseEntries'],
@@ -442,6 +441,7 @@ const STORE_OPERATIONAL_WINDOW_COLLECTIONS = Object.freeze([...STORE_OPERATIONAL
 const OPERATIONAL_WINDOW_DISABLED = '0000-01-01'
 
 const STORE_SCREEN_PERIOD_COLLECTIONS = Object.freeze({
+  'task-violations': ['attendance', 'schedule', 'violations'],
   overview: ['orders', 'schedule', 'expenseEntries', 'violationRefunds'],
   'command-task': ['tasks', 'taskAssignmentHistory', 'notifications'],
   payroll: [

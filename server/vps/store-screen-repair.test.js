@@ -60,8 +60,7 @@ it('does not reload global history when a store screen omits already persisted c
       expect(payload.version).toBe(initialVersion)
       expect(globalReads, screen).toBe(0)
     }
-    // A complete task screen must still detect genuinely missing task rows;
-    // the optimization only changes preflights for intentionally partial data.
+    // The compact reporting shell must not repair or hydrate historical tasks.
     const task = database.prepare("SELECT entity_key FROM state_entities WHERE collection_key='tasks' LIMIT 1").get()
     expect(task).toBeDefined()
     database.prepare("DELETE FROM state_entities WHERE collection_key='tasks' AND entity_key=?").run(task.entity_key)
@@ -71,8 +70,8 @@ it('does not reload global history when a store screen omits already persisted c
     })
     expect(tasks.status).toBe(200)
     await tasks.arrayBuffer()
-    expect(globalReads).toBeGreaterThan(0)
-    expect(database.prepare("SELECT version FROM app_state WHERE scope_key='global'").get().version).toBe(initialVersion + 2)
+    expect(globalReads).toBe(0)
+    expect(database.prepare("SELECT version FROM app_state WHERE scope_key='global'").get().version).toBe(initialVersion + 1)
   } finally {
     await new Promise((done) => server.close(done))
     await rm(directory, { recursive: true, force: true })
