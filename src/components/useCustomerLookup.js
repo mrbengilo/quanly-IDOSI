@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { apiGetCustomerLookup } from '../services/idosiApi'
 import { customerDirectory, customerPublicInfo, customerSuggestions, customerPurchaseStatus, customerHistoryForStore, customerOrderDetails } from '../domain/customerLookup'
 
@@ -7,7 +7,11 @@ export function useCustomerLookup({ app, storeId, scope = 'store', mode = 'list'
   const allowed = scope !== 'global' || ['admin', 'business_support', 'store_manager'].includes(app.session?.role)
   const ready = enabled && allowed && (scope === 'global' || Boolean(storeId))
   const options = { storeId, scope, mode, field, query, customerKey, offset }
-  const identity = JSON.stringify([options, app.stateVersion, revision])
+  const queryKey = JSON.stringify([options, app.stateVersion, revision])
+  // Command deltas replace orders before the deferred authoritative refresh
+  // advances stateVersion. Invalidate every customer read on that delta too,
+  // without serializing order history into the request/cache identity.
+  const identity = useMemo(() => ({ queryKey, orders: app.orders }), [queryKey, app.orders])
   const [result, setResult] = useState({ identity: '', value: null, error: '' })
   useEffect(() => {
     if (!remote || !ready) return undefined

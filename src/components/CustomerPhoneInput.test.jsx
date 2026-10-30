@@ -13,6 +13,26 @@ beforeEach(() => {
 })
 afterEach(cleanup)
 
+it('refreshes an open suggestion after order creation, customer edits and deletion without changing the typed phone or stateVersion', async () => {
+  const first = { id: 'FIRST', storeId: 'S1', customerPhone: '0901234567' }
+  let app = { ...mocked.app, apiStatus: 'connected', stateVersion: 1, orders: [first] }
+  let count = 1
+  mocked.read.mockImplementation(async () => ({ suggestions: [{ key: 'phone:0901234567',
+    customerName: 'Nguyễn Ánh', customerPhone: '0901234567', hasPurchaseHistory: true, isReturningCustomer: count >= 2 }] }))
+  const view = render(<CustomerPhoneInput app={app} storeId="S1" value="0901234567" onChange={vi.fn()} />)
+  fireEvent.focus(screen.getByRole('combobox'))
+  await screen.findByRole('option', { name: /Nguyễn Ánh.*KH mới/ })
+  const second = { ...first, id: 'SECOND', storeId: 'S2' }
+  for (const [nextCount, orders] of [[2, [first, second]], [1, [first, { ...second, customerPhone: '0999999999' }]],
+    [2, [first, second]], [1, [first, { ...second, deletedAt: '2026-10-30' }]]]) {
+    count = nextCount
+    app = { ...app, orders }
+    view.rerender(<CustomerPhoneInput app={app} storeId="S1" value="0901234567" onChange={vi.fn()} />)
+    await screen.findByRole('option', { name: nextCount >= 2 ? /Nguyễn Ánh.*KH cũ/ : /Nguyễn Ánh.*KH mới/ })
+  }
+  expect(mocked.read).toHaveBeenCalledTimes(5)
+})
+
 it.each([0, 1, 2, 3])('uses the same tag for %i purchases in order entry and suggestions', (count) => {
   const app = { ...mocked.app, orders: Array.from({ length: count }, (_, i) => ({
     id: `O${i}`, storeId: `S${i}`, customerName: 'Đặng Ánh', customerPhone: '0901234567',

@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import { CustomerLookupPage } from './CustomerLookupPage'
 
@@ -16,6 +16,30 @@ beforeEach(() => {
       storeName: 'Cửa hàng Hai', employeeName: 'Nhân viên Hai' }] }
 })
 afterEach(cleanup)
+
+it('discards an older two-order response after a deletion refresh at the same stateVersion', async () => {
+  const single = { ...customer, orderCount: 1, isReturningCustomer: false }
+  mocked.app = { ...mocked.app, apiStatus: 'connected', stateVersion: 1, orders: [order] }
+  let resolveCreate
+  mocked.read.mockResolvedValueOnce({ customers: [single], total: 1, limit: 20 })
+    .mockImplementationOnce(() => new Promise((resolve) => { resolveCreate = resolve }))
+    .mockResolvedValue({ customers: [single], total: 1, limit: 20 })
+  const view = render(<CustomerLookupPage />)
+  await screen.findByText('KH mới')
+  const second = { ...order, id: 'SECOND', storeId: 'S2' }
+  mocked.app = { ...mocked.app, orders: [order, second] }
+  view.rerender(<CustomerLookupPage />)
+  await waitFor(() => expect(resolveCreate).toBeTypeOf('function'))
+  const createSignal = mocked.read.mock.calls.at(-1)[0].signal
+  expect(screen.queryByText('KH mới')).toBeNull()
+  mocked.app = { ...mocked.app, orders: [order, { ...second, deletedAt: '2026-10-30' }] }
+  view.rerender(<CustomerLookupPage />)
+  await screen.findByText('KH mới')
+  await act(async () => resolveCreate({ customers: [customer], total: 1, limit: 20 }))
+  expect(createSignal.aborted).toBe(true)
+  expect(screen.queryByText('KH cũ')).toBeNull()
+  expect(screen.getByRole('button', { name: 'Lịch sử mua hàng (1)' })).toBeTruthy()
+})
 
 it.each(['admin', 'business_support', 'store_manager'])('updates the %s directory, suggestion and history tag after the second global purchase', (role) => {
   mocked.app = { ...mocked.app, session: { role }, orders: [order] }
