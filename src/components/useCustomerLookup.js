@@ -4,7 +4,7 @@ import { customerDirectory, customerPublicInfo, customerSuggestions, customerHas
 
 export function useCustomerLookup({ app, storeId, scope = 'store', mode = 'list', field = 'phone', query = '', customerKey = '', offset = 0, enabled = true, revision = 0 }) {
   const remote = ['connected', 'connecting', 'syncing', 'error'].includes(app.apiStatus)
-  const allowed = scope !== 'global' || ['admin', 'business_support'].includes(app.session?.role)
+  const allowed = scope !== 'global' || ['admin', 'business_support', 'store_manager'].includes(app.session?.role)
   const ready = enabled && allowed && (scope === 'global' || Boolean(storeId))
   const options = { storeId, scope, mode, field, query, customerKey, offset }
   const identity = JSON.stringify([options, app.stateVersion, revision])
