@@ -86,6 +86,7 @@ const officeOperation = { label: 'Khối văn phòng', path: '/office', icon: Bu
 const businessSupportDirectoryOperation = { label: 'Nhân viên hỗ trợ KD', path: '/admin/business-support', icon: Users }
 const businessSupportScheduleOperation = { label: 'Phân lịch làm việc', path: '/admin/business-support-schedule', icon: CalendarClock }
 const customerSurveyOperation = { label: 'Khảo sát thông tin KH', path: '/admin/customer-survey', icon: ClipboardList }
+const customerLookupOperation = { label: 'Tra cứu', path: '/admin/customer-lookup', icon: Search }
 const orderInformationSettingsOperation = { label: 'Cài đặt thông tin đơn hàng', path: '/admin/order-information-settings', icon: Settings }
 const workCatalogSettingsOperation = { label: 'Danh mục công việc & vi phạm', path: '/admin/work-catalog', icon: ClipboardList }
 const revenueBonusSettingsOperation = { label: 'Cấu hình thưởng doanh thu ngày', path: '/admin/revenue-bonus-settings', icon: Percent }
@@ -123,6 +124,7 @@ const businessSupportMenu = [
   orderInformationSettingsOperation,
   workCatalogSettingsOperation,
   customerSurveyOperation,
+  customerLookupOperation,
   { label: 'Thưởng và phụ cấp quản lý', path: '/admin/compensation/managers', icon: Award },
   { label: 'Lịch sử chỉnh sửa đơn hàng', path: '/admin/order-audit', icon: CalendarClock },
   { label: 'Điều chuyển nhân sự', path: '/admin/support-transfers', icon: Users },
@@ -141,6 +143,7 @@ const systemMenus = {
     { label: 'Nhân viên quản lý cửa hàng', path: '/admin/store-managers', icon: Store },
     officeOperation,
     customerSurveyOperation,
+    customerLookupOperation,
     { label: 'Thưởng và phụ cấp quản lý', path: '/admin/compensation/managers', icon: Award },
     { label: 'Điều chuyển nhân sự', path: '/admin/support-transfers', icon: Users },
     ...systemOperations.slice(2, 4),

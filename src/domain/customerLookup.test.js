@@ -1,5 +1,5 @@
 import { expect, it } from 'vitest'
-import { customerDirectory, customerHasPurchaseHistory, customerPublicInfo, customerSuggestions, customerHistoryForStore } from './customerLookup'
+import { customerDirectory, customerHasPurchaseHistory, customerPublicInfo, customerSuggestions, customerHistoryForStore, customerOrderDetails } from './customerLookup'
 
 const order = (id, overrides = {}) => ({ id, storeId: 'S1', customerName: 'Nguyễn Ánh', customerPhone: '090 123 4567', ...overrides })
 const directory = () => customerDirectory([
@@ -51,4 +51,28 @@ it('recognizes purchases across stores while exposing only the selected store hi
   expect(ownStore.orders.map((row) => row.id)).toEqual(['S1-ORDER'])
   expect(customerPublicInfo(ownStore)).toMatchObject({ hasPurchaseHistory: true, orderCount: 1 })
   expect(customerHistoryForStore(customer).orderCount).toBe(2)
+})
+
+it('groups the same phone across stores while preserving distinct contacts and missing phones', () => {
+  const orders = [order('A'), order('B', { storeId: 'S2', customerPhone: '0901234567' }),
+    order('C', { customerPhone: '0999999999' }), order('D', { customerPhone: '' }),
+    order('E', { storeId: 'S2', customerPhone: '' }), order('DELETED', { deletedAt: '2026-10-30' }),
+    order('BALANCE', { source: 'legacy-opening-balance' })]
+  const customers = customerDirectory(orders)
+  expect(customers).toHaveLength(4)
+  expect(customers.find((row) => row.key === 'phone:0901234567').orderCount).toBe(2)
+  expect(customerDirectory(orders, { storeId: 'S1' }).find((row) => row.key === 'phone:0901234567').orderCount).toBe(1)
+})
+
+it('resolves directory names and archived seller codes, preserves sale snapshots and handles missing profiles', () => {
+  const directories = { stores: [{ id: 'S1', name: 'Cửa hàng Một' }],
+    employees: [], deletedEmployees: [{ id: 'E1', code: 'OLD', name: 'Nhân viên cũ', salary: 999 }] }
+  expect(customerOrderDetails(order('O', { employeeId: 'old' }), directories)).toMatchObject({
+    storeName: 'Cửa hàng Một', employeeName: 'Nhân viên cũ',
+  })
+  expect(customerOrderDetails(order('O', { employeeId: 'OLD', storeName: 'Tên lúc mua', employeeName: 'Tên lúc bán' }), directories))
+    .toMatchObject({ storeName: 'Tên lúc mua', employeeName: 'Tên lúc bán' })
+  expect(customerOrderDetails(order('O', { employeeId: 'UNKNOWN', storeId: 'UNKNOWN' }), directories))
+    .toMatchObject({ storeName: '', employeeName: '' })
+  expect(customerOrderDetails(order('O'), directories).salary).toBeUndefined()
 })
