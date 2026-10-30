@@ -5,7 +5,7 @@ import {
   isHourlyStoreEmploymentType,
   normalizeStoreEmploymentType,
   STORE_SALARY_CONFIG_IDENTIFIER_COLLISION,
-} from './domain/storeTieredPayroll'
+} from './domain/storeTieredPayroll.js'
 
 const normalizeOperationalIdentifier = (value) => String(value ?? '').trim().toLocaleLowerCase('en-US')
 

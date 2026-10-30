@@ -8,27 +8,12 @@ export async function readStoreTaskHistory({ db, storeId, employeeId = '', date 
   const version = Number((await head())?.version || 0)
   const { beforeOccurredOn, beforeOrder, beforeKey } = cursor
   const limit = 10
-  const filterEmployees = employeeId ? await all(`SELECT value_json FROM state_entities
-    WHERE scope_key = 'global' AND collection_key = 'employees'
-      AND EXISTS (SELECT 1 FROM json_each(json_array(json_extract(value_json, '$.id'), json_extract(value_json, '$.code'), json_extract(value_json, '$.employeeId'))) AS identifier
-        WHERE CAST(identifier.value AS TEXT) = ? COLLATE NOCASE)`, employeeId) : []
-  const exact = filterEmployees.filter(({ value_json }) => {
-    const row = JSON.parse(value_json)
-    return [row.id, row.code, row.employeeId].includes(employeeId)
-  })
-  const matches = exact.length ? exact : filterEmployees
-  if (matches.length > 1) throw new ApiError(409, 'TASK_EMPLOYEE_AMBIGUOUS', 'Không xác định được duy nhất nhân viên cần lọc.')
-  const filterEmployee = matches.length ? JSON.parse(matches[0].value_json) : {}
-  const filterIds = [employeeId, filterEmployee.id, filterEmployee.code, filterEmployee.employeeId].filter(Boolean)
+  const filterIds = await storeTaskHistoryEmployeeIds({ db, employeeId, ApiError })
   const rows = await all(`
     SELECT entity_key, entity_order, value_json, value_bytes, COALESCE(occurred_on, '') AS occurred_on
     FROM state_entities
     WHERE scope_key = 'global' AND collection_key = 'attendance'
-      AND store_id = ? COLLATE NOCASE
-      AND json_extract(value_json, '$.deletedAt') IS NULL
-      AND (? = '' OR employee_id IN (SELECT value COLLATE NOCASE FROM json_each(?)))
-      AND (? = '' OR substr(COALESCE(json_extract(value_json, '$.workDate'), json_extract(value_json, '$.attendanceDate'), json_extract(value_json, '$.date'), json_extract(value_json, '$.checkInAt'), ''), 1, 10) = ?)
-      AND (? = '' OR COALESCE(json_extract(value_json, '$.shiftId'), json_extract(value_json, '$.shift'), '') = ? COLLATE NOCASE)
+      AND ${STORE_TASK_ATTENDANCE_FILTER_SQL}
       AND (? IS NULL OR COALESCE(occurred_on, '') < ?
         OR (COALESCE(occurred_on, '') = ? AND entity_order < ?)
         OR (COALESCE(occurred_on, '') = ? AND entity_order = ? AND entity_key < ?))
@@ -94,4 +79,28 @@ export async function readStoreTaskHistory({ db, storeId, employeeId = '', date 
     throw new ApiError(409, 'STATE_READ_CONFLICT', 'Dữ liệu vừa được cập nhật; vui lòng thử lại.')
   }
   return { state, page: { limit, hasMore: rows.length > limit }, lastRow: page.at(-1) }
+}
+
+// Both list and summary must apply exactly the same employee/date/shift filters.
+export const STORE_TASK_ATTENDANCE_FILTER_SQL = `store_id = ? COLLATE NOCASE
+      AND json_extract(value_json, '$.deletedAt') IS NULL
+      AND (? = '' OR employee_id IN (SELECT value COLLATE NOCASE FROM json_each(?)))
+      AND (? = '' OR substr(COALESCE(NULLIF(json_extract(value_json, '$.workDate'), ''), NULLIF(json_extract(value_json, '$.attendanceDate'), ''), NULLIF(json_extract(value_json, '$.date'), ''), NULLIF(json_extract(value_json, '$.checkInAt'), ''), ''), 1, 10) = ?)
+      AND (? = '' OR COALESCE(NULLIF(json_extract(value_json, '$.shiftId'), ''), json_extract(value_json, '$.shift'), '') = ? COLLATE NOCASE)`
+
+export async function storeTaskHistoryEmployeeIds({ db, employeeId = '', ApiError }) {
+  const all = async (sql, ...values) => (await db.prepare(sql).bind(...values).all()).results
+  const filterEmployees = employeeId ? await all(`SELECT value_json FROM state_entities
+    WHERE scope_key = 'global' AND collection_key = 'employees'
+      AND EXISTS (SELECT 1 FROM json_each(json_array(json_extract(value_json, '$.id'), json_extract(value_json, '$.code'), json_extract(value_json, '$.employeeId'))) AS identifier
+        WHERE CAST(identifier.value AS TEXT) = ? COLLATE NOCASE)`, employeeId) : []
+  const exact = filterEmployees.filter(({ value_json }) => {
+    const row = JSON.parse(value_json)
+    return [row.id, row.code, row.employeeId].includes(employeeId)
+  })
+  const matches = exact.length ? exact : filterEmployees
+  if (matches.length > 1) throw new ApiError(409, 'TASK_EMPLOYEE_AMBIGUOUS', 'Không xác định được duy nhất nhân viên cần lọc.')
+  const filterEmployee = matches.length ? JSON.parse(matches[0].value_json) : {}
+  const filterIds = [employeeId, filterEmployee.id, filterEmployee.code, filterEmployee.employeeId].filter(Boolean)
+  return filterIds
 }

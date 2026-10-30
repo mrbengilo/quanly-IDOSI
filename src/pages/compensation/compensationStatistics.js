@@ -5,11 +5,11 @@ import {
   entryDate,
   entryEmployeeId,
   isVoided,
-} from './compensationViewModel'
+} from './compensationViewModel.js'
 import {
   operationalIdentifierEntry,
   sameOperationalIdentifier,
-} from '../../utils'
+} from '../../utils.js'
 
 const monthLabel = (period) => {
   const [year, month] = String(period || '').split('-')

@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os'
 import { resolve } from 'node:path'
 import { afterEach, expect, it } from 'vitest'
 import { createIdosiServer } from './server.mjs'
+import { workRewardRows, rewardStatistics } from '../../src/pages/compensation/compensationStatistics.js'
 
 let cleanup = async () => {}
 afterEach(async () => cleanup())
@@ -40,7 +41,7 @@ it('bounds reward history in SQL, preserves overlays and paging, and enforces st
     insert.run(collection, row.id, order, json, Buffer.byteLength(json), row.storeId || null, row.employeeId || null, row.id, row.workDate || row.occurredOn || '2026-09-30')
   }
   for (let i = 1; i <= 31; i++) {
-    add('attendance', { id: `A${i}`, storeId: 'S1', employeeId: 'E1', workDate: '2026-09-30', shiftId: i === 1 ? 'old-shift' : 'ca1', checkOut: '18:00',
+    add('attendance', { id: `A${i}`, storeId: 'S1', employeeId: 'E1', workDate: '2026-09-30', shiftId: i === 1 ? 'old-shift' : 'ca1', checkOut: '18:00', ignoredEvidence: 'LARGE-UNUSED-EVIDENCE'.repeat(500),
       checklistSnapshot: { tasks: [{ id: 'R1', kind: 'REWARD_TASK', name: 'Reward', amountVnd: 3000 }] } }, i)
     add('tasks', { id: `T${i}`, storeId: 'S1', checklistAttendanceId: `A${i}`, catalogItemId: 'R1', completed: true }, i)
     add('workCatalogProgress', { id: `P${i}`, storeId: 'S1', attendanceId: `A${i}`, catalogItemId: 'R1', checked: true, compensationEntryId: `C${i}` }, i)
@@ -85,4 +86,48 @@ it('bounds reward history in SQL, preserves overlays and paging, and enforces st
   expect((await read('/api/store-task-history?storeId=S1', employee.token)).status).toBe(403)
   expect((await read('/api/store-task-history?storeId=S1&cursor=bad')).status).toBe(400)
   expect((await read('/api/store-screens/task-violations?storeId=S1')).status).toBe(400)
+  expect((await read('/api/store-task-summary?storeId=S2')).status).toBe(403)
+  expect((await read('/api/store-task-summary?storeId=S1', employee.token)).status).toBe(403)
+  const summaryRead = async (query = '') => {
+    const result = await read('/api/store-task-summary?storeId=S1' + query)
+    expect(result.status, JSON.stringify(result.body)).toBe(200)
+    expect(result.body.state).toBeUndefined()
+    expect(result.body.records).toBeUndefined()
+    expect(JSON.stringify(result.body).length).toBeLessThan(6000)
+    expect(JSON.stringify(result.body)).not.toMatch(/FOREIGN_SECRET|SUPPORT_PRIVATE_DETAIL|LARGE-UNUSED-EVIDENCE/)
+    return result.body.summary
+  }
+  const update = (collection, id, patch) => {
+    const stored = database.prepare('SELECT value_json FROM state_entities WHERE collection_key=? AND record_id=?').get(collection, id)
+    const json = JSON.stringify({ ...JSON.parse(stored.value_json), ...patch })
+    database.prepare('UPDATE state_entities SET value_json=?, value_bytes=? WHERE collection_key=? AND record_id=?').run(json, Buffer.byteLength(json), collection, id)
+    database.prepare("UPDATE app_state SET version=version+1 WHERE scope_key='global'").run()
+  }
+  expect(await summaryRead()).toMatchObject({ count: 31, totalAmountVnd: 0, statistics: { byEmployee: [{ count: 30, amountVnd: 0 }] } })
+  update('violations', 'SUPPORT', { status: 'VOID' })
+  const allSummary = await summaryRead()
+  expect(allSummary).toMatchObject({ count: 31, totalAmountVnd: 93000, statistics: { byEmployee: [{ count: 30, amountVnd: 90000 }] } })
+  expect(await summaryRead('&cursor=not-a-page-cursor')).toEqual(allSummary)
+  expect(await summaryRead('&employeeId=ALIAS1')).toEqual(allSummary)
+  expect(await summaryRead('&shiftId=old-shift')).toMatchObject({ count: 1, totalAmountVnd: 3000 })
+  expect(await summaryRead('&date=2026-09-01')).toMatchObject({ count: 0, totalAmountVnd: 0 })
+  expect(await summaryRead('&employeeId=missing')).toMatchObject({ count: 0, totalAmountVnd: 0 })
+  update('compensationEntries', 'C31', { status: 'approved' })
+  expect(await summaryRead()).toMatchObject({ totalAmountVnd: 93000, statistics: { byEmployee: [{ count: 31, amountVnd: 93000 }] } })
+  update('workCatalogProgress', 'P2', { status: 'VOID' })
+  expect(await summaryRead()).toMatchObject({ count: 30, totalAmountVnd: 90000 })
+  add('employees', { id: 'E2', code: 'ALT2', storeId: 'S1', unit: 'store', name: 'Former Employee', status: 'Đã nghỉ việc' })
+  add('attendance', { id: 'OLD', storeId: 'S1', employeeId: 'ALT2', workDate: '', date: '2026-08-20', shiftId: 'old-shift', checklistSnapshot: { tasks: [{ id: 'R1', kind: 'reward_task', amountVnd: 7000 }] } })
+  add('tasks', { id: 'OLD-TASK', storeId: 'S1', checklistAttendanceId: 'OLD', catalogItemId: 'R1', completedBy: { ALT2: true } })
+  add('attendance', { id: 'OCT', storeId: 'S1', employeeId: 'E1', workDate: '2026-10-15', shiftId: 'ca1', checklistSnapshot: { tasks: [{ id: 'R1', rewardEligible: true, amountVnd: 12000 }] } })
+  add('workCatalogProgress', { id: 'OCT-P', storeId: 'S1', attendanceId: 'OCT', catalogItemId: 'R1', checked: true, status: 'CLAIMED' })
+  add('violations', { id: 'OCT-POINT', storeId: 'S2', employeeId: 'ALIAS1', occurredOn: '2026-10-29', period: '2026-10', violationPoints: 5, status: 'ACTIVE' })
+  database.prepare("UPDATE app_state SET version=version+1 WHERE scope_key='global'").run()
+  expect(await summaryRead('&date=2026-08-20&employeeId=E2&shiftId=old-shift')).toMatchObject({ count: 1, totalAmountVnd: 7000 })
+  expect(await summaryRead('&date=2026-10-15&employeeId=E1')).toMatchObject({ count: 1, totalAmountVnd: 0 })
+  const rawState = Object.fromEntries(['attendance', 'tasks', 'workCatalogProgress', 'compensationEntries', 'violations', 'employees'].map((collection) => [collection,
+    database.prepare('SELECT value_json FROM state_entities WHERE collection_key=? ORDER BY entity_order, entity_key').all(collection).map((row) => JSON.parse(row.value_json))]))
+  const canonical = workRewardRows({ ...rawState, targetUnit: 'store', storeId: 'S1' })
+  const canonicalHistory = canonical.filter((row) => row.completed && row.payoutStatus !== 'void')
+  expect(await summaryRead()).toEqual({ count: canonicalHistory.length, totalAmountVnd: canonicalHistory.reduce((sum, row) => sum + row.amountVnd, 0), statistics: rewardStatistics(canonical) })
 }, 30000)
