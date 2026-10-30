@@ -2231,6 +2231,10 @@ export function AppProvider({ children }) {
         })
       }
       // The POST is already durable and its delta is rendered immediately.
+      if (applyResult && ['order.create', 'order.update', 'order.delete'].includes(type)) {
+        void import('../services/customerLookupSync').then(({ publishCustomerOrderChange }) => publishCustomerOrderChange())
+          .catch(() => { /* Hints are best-effort; visible customer views also poll the authoritative token. */ })
+      }
       // Coalesce authoritative refreshes so a burst of Save actions produces
       // one small screen projection instead of one full download per click.
       window.clearTimeout(remote.reconcileTimer)

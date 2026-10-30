@@ -4802,6 +4802,10 @@ const changePartitionUpsertSql = (dimensionSql) => `
     SELECT 'employee:' || dimension.employee_key
     FROM dimension
     WHERE dimension.employee_key <> ''
+    UNION
+    SELECT 'collection:orders'
+    FROM dimension
+    WHERE dimension.collection_key = 'orders'
   ) AS changed
   WHERE EXISTS (${stateSuccessSql})
   ON CONFLICT(scope_key, partition_key) DO UPDATE SET
@@ -5703,10 +5707,25 @@ const getStateMetadata = async (request, env, context, url) => {
   const scopeVersion = changeStoreAllowed && scope === 'global' && typeof db?.readStoreChangeVersion === 'function'
     ? await db.readStoreChangeVersion(scope, changeStoreId, String(user.active_employee_id || user.employee_id || ''))
     : null
+  // Customer identity/counts span stores. Read only indexed partition heads;
+  // unrelated store activity must not force every customer view to reload.
+  const customerHead = scope === 'global' && url.searchParams.get('customers') === '1'
+    ? await first(db, `SELECT app.version AS head_version,
+        (SELECT version FROM state_change_partitions WHERE scope_key = app.scope_key AND partition_key = '#attributed') AS attributed_version,
+        (SELECT max(version) FROM state_change_partitions WHERE scope_key = app.scope_key
+          AND partition_key IN ('*', 'collection:orders')) AS customer_version
+      FROM app_state AS app WHERE app.scope_key = ?`, scope)
+    : null
+  const customerVersion = customerHead
+    ? customerHead.attributed_version == null || Number(customerHead.head_version) > Number(customerHead.attributed_version)
+      ? Number(customerHead.head_version)
+      : Number(customerHead.customer_version ?? customerHead.head_version)
+    : null
   return jsonResponse(apiPayload(context, {
     scope,
     version: Number(row?.version || 0),
     ...(Number.isSafeInteger(scopeVersion) ? { scopeVersion } : {}),
+    ...(Number.isSafeInteger(customerVersion) ? { customerVersion } : {}),
     updatedAt: row?.updated_at || null,
     userVersion: Number(user.version || 0),
     ...(restore ? { user: publicUser(user) } : {}),
