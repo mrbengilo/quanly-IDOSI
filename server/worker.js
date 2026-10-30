@@ -3,7 +3,7 @@ import { taskShiftContext, bindTaskShiftContext, mergeTaskShiftProgress, attenda
 import { normalizeOrderItems as normalizedHistoricalOrderItems, resolveOrderItems as resolveConfiguredOrderItems, totalOrderItemQuantity, totalOrderItemWeightKg } from '../src/domain/orderItems.js'
 import { orderRevenueByType, validateOrderRevenue } from '../src/domain/orderRevenue.js'
 import { salesOverviewFromSummary } from '../src/domain/salesOverview.js'
-import { customerDirectory, customerPublicInfo, customerSuggestions, customerHasPurchaseHistory } from '../src/domain/customerLookup.js'
+import { customerDirectory, customerPublicInfo, customerSuggestions, customerHasPurchaseHistory, customerOrderDetails } from '../src/domain/customerLookup.js'
 import { applyRevenueSnapshotPointPolicy, normalizeViolationPointInput, restorePointBonusRecord, restorePointRevenueSnapshot, storeViolationPointAssessment, violationPointsOf, isActivePointViolation, violationPointPeriod, formatViolationPoints } from '../src/domain/violationPoints.js'
 import { attendanceMatchesWindow, scheduleAssignmentIsUsable, scheduleConflict, scheduleWindows, scheduledCheckInChoices, shiftWindow, supportAllowsScheduling, supportForScheduledWindow } from '../src/domain/supportScheduling.js'
 import {
@@ -213,6 +213,7 @@ const SYSTEM_SCREEN_COLLECTIONS = Object.freeze({
   policies: [],
   'order-audit': ['stores', 'orderAudit'],
   'customer-survey': ['stores', 'orders', 'orderInformationOptions'],
+  'customer-lookup': [],
   'support-transfers': ['stores', 'employees', 'supportTransfers', 'attendance', 'schedule', 'shiftDefinitions', 'notifications'],
   'order-information-settings': ['orderInformationOptions'],
   // Catalog editing sends explicit commands; attendance/checklist repair stays
@@ -5973,7 +5974,21 @@ const resolveHistoryReadScope = async (request, db, context, url) => {
 
 const getCustomerLookup = async (request, env, context, url) => {
   const db = getDatabase(env)
-  const { user, storeId } = await resolveHistoryReadScope(request, db, context, url)
+  const scope = url.searchParams.get('scope') || 'store'
+  if (!['store', 'global'].includes(scope)) {
+    throw new ApiError(400, 'CUSTOMER_SCOPE_INVALID', 'Phạm vi tra cứu khách hàng không hợp lệ.')
+  }
+  let user, storeId = ''
+  if (scope === 'global') {
+    user = await requireStateReadSession(request, db, context)
+    if (!['admin', 'business_support'].includes(user.role)) {
+      throw new ApiError(403, 'ROLE_FORBIDDEN', 'Chỉ Admin và Hỗ trợ KD được tra cứu khách hàng toàn hệ thống.')
+    }
+  } else {
+    ;({ user, storeId } = await resolveHistoryReadScope(request, db, context, url))
+  }
+  const storeFilter = scope === 'store' ? 'AND store_id = ? COLLATE NOCASE' : ''
+  const storeParameters = scope === 'store' ? [storeId] : []
   const mode = url.searchParams.get('mode') || 'list'
   const field = url.searchParams.get('field') || 'phone'
   const query = String(url.searchParams.get('query') || '').trim()
@@ -6003,7 +6018,7 @@ const getCustomerLookup = async (request, env, context, url) => {
     'deletedAt', json_extract(value_json, '$.deletedAt'), 'status', json_extract(value_json, '$.status'),
     'source', json_extract(value_json, '$.source')) AS contact_json
     FROM state_entities WHERE scope_key = 'global' AND collection_key = 'orders'
-    AND store_id = ? COLLATE NOCASE ORDER BY entity_order DESC, entity_key DESC`, storeId)
+    ${storeFilter} ORDER BY entity_order DESC, entity_key DESC`, ...storeParameters)
   const orders = contacts.map((row) => ({ ...parseStoredJson(row.contact_json, {}), entityKey: row.entity_key }))
   const customers = customerDirectory(orders, { storeId, query: mode === 'list' ? query : '' })
   if (mode === 'suggest') {
@@ -6019,19 +6034,32 @@ const getCustomerLookup = async (request, env, context, url) => {
       total: customers.length, offset, limit }))
   }
   const customer = customers.find((candidate) => candidate.key === key)
-  if (!customer) throw new ApiError(404, 'CUSTOMER_NOT_FOUND', 'Không tìm thấy khách hàng trong cửa hàng này.')
+  if (!customer) throw new ApiError(404, 'CUSTOMER_NOT_FOUND', scope === 'global'
+    ? 'Không tìm thấy khách hàng trong hệ thống.' : 'Không tìm thấy khách hàng trong cửa hàng này.')
   const keys = customer.orders.slice(offset, offset + limit).map((order) => order.entityKey)
   const rows = keys.length ? await all(db, `SELECT entity_key, value_json, value_bytes FROM state_entities
-    WHERE scope_key = 'global' AND collection_key = 'orders' AND store_id = ? COLLATE NOCASE
-    AND entity_key IN (${keys.map(() => '?').join(',')})`, storeId, ...keys) : []
+    WHERE scope_key = 'global' AND collection_key = 'orders' ${storeFilter}
+    AND entity_key IN (${keys.map(() => '?').join(',')})`, ...storeParameters, ...keys) : []
   const byKey = new Map(rows.map((row) => {
     if (jsonByteLength(String(row.value_json)) !== Number(row.value_bytes) || Number(row.value_bytes) > MAX_STATE_ENTITY_BYTES) {
       throw new ApiError(500, 'STATE_ENTITY_CORRUPT', 'Bản ghi lịch sử không hợp lệ.')
     }
     return [row.entity_key, sanitizeStateValue(parseStoredJson(row.value_json, null))]
   }))
+  const records = keys.map((recordKey) => byKey.get(recordKey)).filter(Boolean)
+  const identifiers = [...new Set(records.flatMap((order) => [order.storeId, order.employeeId])
+    .filter(Boolean).map((id) => String(id).trim().toLowerCase()))]
+  const placeholders = identifiers.map(() => '?').join(',')
+  const names = identifiers.length ? await all(db, `SELECT collection_key,
+    json_extract(value_json, '$.id') AS id, json_extract(value_json, '$.code') AS code,
+    json_extract(value_json, '$.name') AS name FROM state_entities
+    WHERE scope_key = 'global' AND collection_key IN ('stores', 'employees', 'deletedEmployees')
+    AND (lower(trim(json_extract(value_json, '$.id'))) IN (${placeholders})
+      OR lower(trim(json_extract(value_json, '$.code'))) IN (${placeholders}))`, ...identifiers, ...identifiers) : []
+  const directory = Object.fromEntries(['stores', 'employees', 'deletedEmployees']
+    .map((collection) => [collection, names.filter((row) => row.collection_key === collection)]))
   return jsonResponse(apiPayload(context, { storeId, customer: customerPublicInfo(customer),
-    records: keys.map((recordKey) => byKey.get(recordKey)).filter(Boolean), total: customer.orderCount, offset, limit }))
+    records: records.map((order) => customerOrderDetails(order, directory)), total: customer.orderCount, offset, limit }))
 }
 
 const getStoreTaskHistory = async (request, env, context, url) => {

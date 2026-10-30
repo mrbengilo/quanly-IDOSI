@@ -53,6 +53,14 @@ describe('AppShell workspace loading states', () => {
     app.session.role = 'admin'
   })
 
+  it.each(['admin', 'business_support'])('shows the main system-wide lookup menu for %s', (role) => {
+    app.session.role = role
+    renderShell({ path: '/admin/customer-lookup' })
+    const link = screen.getByRole('link', { name: 'Tra cứu' })
+    expect(link.getAttribute('href')).toBe('/admin/customer-lookup')
+    expect(link.getAttribute('aria-current')).toBe('page')
+  })
+
   it.each([
     ['admin', '/admin/cashflow'], ['admin', '/store/overview'],
     ['store_manager', '/store/overview'], ['employee', '/employee/home'],
