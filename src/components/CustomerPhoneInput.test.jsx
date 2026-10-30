@@ -1,17 +1,45 @@
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import { MemoryRouter } from 'react-router-dom'
 import { CustomerNameInput, CustomerPhoneInput, CustomerPurchaseStatus } from './CustomerPhoneInput'
 import { EmployeeOrdersPage } from '../pages/employee/EmployeeV2Pages'
+import { CUSTOMER_SYNC_INTERVAL_MS } from '../services/customerLookupSync'
 
-const mocked = vi.hoisted(() => ({ app: {}, read: vi.fn() }))
+const mocked = vi.hoisted(() => ({ app: {}, read: vi.fn(), metadata: vi.fn() }))
 vi.mock('../state/AppContext', () => ({ useApp: () => mocked.app }))
-vi.mock('../services/idosiApi', () => ({ apiGetCustomerLookup: (...args) => mocked.read(...args) }))
+vi.mock('../services/idosiApi', () => ({ apiGetCustomerLookup: (...args) => mocked.read(...args), apiGetStateMetadata: (...args) => mocked.metadata(...args) }))
 beforeEach(() => {
   mocked.read.mockReset()
+  mocked.metadata.mockReset()
   mocked.app = { apiStatus: 'local', session: { role: 'employee', storeId: 'S1' }, orders: [] }
 })
-afterEach(cleanup)
+afterEach(() => { cleanup(); vi.useRealTimers(); vi.restoreAllMocks() })
+
+it('refreshes employee purchase tags on remote-store changes and immediately when a background tab becomes visible', async () => {
+  vi.useFakeTimers()
+  let count = 1, version = 1
+  mocked.app = { ...mocked.app, apiStatus: 'connected', stateVersion: 1, orders: [] }
+  mocked.metadata.mockImplementation(async () => ({ version, scopeVersion: 1, customerVersion: version }))
+  mocked.read.mockImplementation(async () => ({ hasPurchaseHistory: true, isReturningCustomer: count >= 2 }))
+  const settle = async (duration = 0) => {
+    await act(async () => { await vi.advanceTimersByTimeAsync(duration) })
+    await act(async () => { await vi.advanceTimersByTimeAsync(300) })
+  }
+  render(<CustomerPurchaseStatus app={mocked.app} storeId="S1" phone="0901234567" />)
+  await settle(300)
+  expect(screen.getByText('KH mới')).toBeTruthy()
+  count = 2; version += 1
+  await settle(CUSTOMER_SYNC_INTERVAL_MS)
+  expect(screen.getByText('KH cũ')).toBeTruthy()
+  const hidden = vi.spyOn(document, 'hidden', 'get').mockReturnValue(true)
+  count = 1; version += 1
+  await settle(CUSTOMER_SYNC_INTERVAL_MS)
+  expect(screen.getByText('KH cũ')).toBeTruthy()
+  hidden.mockReturnValue(false)
+  await act(async () => document.dispatchEvent(new Event('visibilitychange')))
+  await settle(300)
+  expect(screen.getByText('KH mới')).toBeTruthy()
+})
 
 it('refreshes an open suggestion after order creation, customer edits and deletion without changing the typed phone or stateVersion', async () => {
   const first = { id: 'FIRST', storeId: 'S1', customerPhone: '0901234567' }

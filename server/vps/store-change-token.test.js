@@ -66,7 +66,7 @@ it('moves a store change token only for its own store, shared data and unattribu
     }
     const e1 = (await call('POST', '/api/login', { username: 'token.e1', password })).payload.token
     const e2 = (await call('POST', '/api/login', { username: 'token.e2', password })).payload.token
-    const metadata = async (token, storeId) => (await call('GET', `/api/state-metadata?scope=global&storeId=${storeId}`, null, token)).payload
+    const metadata = async (token, storeId) => (await call('GET', `/api/state-metadata?scope=global&storeId=${storeId}&customers=1`, null, token)).payload
 
     // The employee screen names the store its projection was read for.
     const home = await call('GET', '/api/system-screens/employee-home', null, e1)
@@ -83,23 +83,27 @@ it('moves a store change token only for its own store, shared data and unattribu
     const afterOtherStore = await metadata(e1, 'S1')
     expect(afterOtherStore.version).toBeGreaterThan(before.version)
     expect(afterOtherStore.scopeVersion).toBe(before.scopeVersion)
+    expect(afterOtherStore.customerVersion).toBe(before.customerVersion)
     expect((await metadata(e2, 'S2')).scopeVersion).toBe(afterOtherStore.version)
 
     // This store's check-in moves its token to the head version.
     await command(e1, 'attendance.check_in', { shiftId: 'CA1', location })
     const afterOwnStore = await metadata(e1, 'S1')
     expect(afterOwnStore.scopeVersion).toBe(afterOwnStore.version)
+    expect(afterOwnStore.customerVersion).toBe(before.customerVersion)
 
     // Shared directory data (stores) reaches every store's token.
     await command(admin, 'store.update', { storeId: 'S2', name: 'Cửa hàng 2', short: 'CH2', phone: '0901234567' })
     const afterDirectory = await metadata(e1, 'S1')
     expect(afterDirectory.scopeVersion).toBe(afterDirectory.version)
+    expect(afterDirectory.customerVersion).toBe(afterDirectory.version)
 
     // A version bumped outside the commit bookkeeping (a data fix or a
     // migration) makes every token fall back to the global version.
     database.prepare("UPDATE app_state SET version = version + 1 WHERE scope_key = 'global'").run()
     const afterUnattributed = await metadata(e1, 'S1')
     expect(afterUnattributed.scopeVersion).toBe(afterUnattributed.version)
+    expect(afterUnattributed.customerVersion).toBe(afterUnattributed.version)
 
     // Store staff only get their own store's token; admins any store's.
     expect((await metadata(e1, 'S2')).scopeVersion).toBeUndefined()
