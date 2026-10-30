@@ -12,11 +12,20 @@ beforeEach(() => {
   mocked.read.mockReset()
   mocked.app = { apiStatus: 'local', activeStoreId: 'S1', session: { role: 'store_manager', storeId: 'S1' }, orders: [order,
     { ...order, id: 'O2', createdAt: '2024-01-01T08:00:00+07:00' },
-    { ...order, id: 'OTHER', storeId: 'S2', customerName: 'Khách cửa hàng khác', customerPhone: '0999999999', amount: 999999 }] }
+    { ...order, id: 'OTHER', storeId: 'S2', customerName: 'Khách cửa hàng khác', customerPhone: '0999999999', amount: 999999,
+      storeName: 'Cửa hàng Hai', employeeName: 'Nhân viên Hai' }] }
 })
 afterEach(cleanup)
 
-it('shows global customer contacts and tags but only authorized store purchase details', () => {
+it('does not request or display global history for an employee', () => {
+  mocked.app = { ...mocked.app, apiStatus: 'connected', session: { role: 'employee', storeId: 'S1' } }
+  render(<CustomerLookupPage systemWide />)
+  expect(screen.getByRole('alert').textContent).toContain('không có quyền tra cứu toàn hệ thống')
+  expect(mocked.read).not.toHaveBeenCalled()
+  expect(screen.queryByRole('table')).toBeNull()
+})
+
+it('lets a store manager see all-store purchase details including store and seller from the existing lookup page', () => {
   render(<CustomerLookupPage />)
   expect(screen.getByRole('table', { name: 'Danh sách khách hàng' })).toBeTruthy()
   expect(screen.getByText('Khách cửa hàng khác')).toBeTruthy()
@@ -24,7 +33,7 @@ it('shows global customer contacts and tags but only authorized store purchase d
   fireEvent.change(screen.getByRole('combobox', { name: 'Tìm theo tên khách hàng hoặc SĐT' }), { target: { value: 'nguyen anh' } })
   fireEvent.click(screen.getByRole('button', { name: 'Lịch sử mua hàng (2)' }))
   const dialog = screen.getByRole('dialog', { name: 'Lịch sử mua hàng' })
-  expect(within(dialog).getByText('2 đơn hàng tại cửa hàng')).toBeTruthy()
+  expect(within(dialog).getByText('2 đơn hàng')).toBeTruthy()
   expect(within(dialog).getByText('KH cũ')).toBeTruthy()
   expect(within(dialog).getAllByText('Áo')).toHaveLength(2)
   expect(within(dialog).getAllByText('2 cái')).toHaveLength(2)
@@ -34,36 +43,38 @@ it('shows global customer contacts and tags but only authorized store purchase d
   fireEvent.change(screen.getByRole('combobox', { name: 'Tìm theo tên khách hàng hoặc SĐT' }), { target: { value: '0999' } })
   expect(screen.getByText('KH cũ')).toBeTruthy()
   expect(screen.queryByText('KH mới')).toBeNull()
-  fireEvent.click(screen.getByRole('button', { name: 'Lịch sử mua hàng (0)' }))
+  fireEvent.click(screen.getByRole('button', { name: 'Lịch sử mua hàng (1)' }))
   const outside = screen.getByRole('dialog', { name: 'Lịch sử mua hàng' })
   expect(within(outside).getByText('KH cũ')).toBeTruthy()
-  expect(within(outside).getByText('Chưa có đơn hàng tại cửa hàng này')).toBeTruthy()
-  expect(within(outside).queryByRole('table')).toBeNull()
-  expect(within(outside).queryByText(/999[.,]999/)).toBeNull()
+  expect(within(outside).queryByText('Chưa có đơn hàng tại cửa hàng này')).toBeNull()
+  expect(within(outside).getByRole('table')).toBeTruthy()
+  expect(within(outside).getByText(/999[.,]999/)).toBeTruthy()
+  expect(within(outside).getByText('Cửa hàng Hai')).toBeTruthy()
+  expect(within(outside).getByText('Nhân viên Hai')).toBeTruthy()
   fireEvent.click(within(outside).getByRole('button', { name: 'Đóng' }))
   fireEvent.change(screen.getByRole('combobox', { name: 'Tìm theo tên khách hàng hoặc SĐT' }), { target: { value: '0777777777' } })
   expect(screen.getByText('Không tìm thấy khách hàng')).toBeTruthy()
   expect(screen.getByText('KH mới')).toBeTruthy()
 })
 
-it('discards stale remote responses when the store changes and retries errors', async () => {
+it('uses global scope for a manager, discards stale search responses and retries errors', async () => {
   mocked.app.apiStatus = 'connected'
   let resolveOld
   mocked.read.mockImplementationOnce(() => new Promise((resolve) => { resolveOld = resolve }))
     .mockRejectedValueOnce(new Error('Không thể tải fixture'))
     .mockResolvedValue({ customers: [], total: 0, limit: 20 })
-  const view = render(<CustomerLookupPage />)
+  render(<CustomerLookupPage />)
   await waitFor(() => expect(mocked.read).toHaveBeenCalledTimes(1))
-  mocked.app = { ...mocked.app, activeStoreId: 'S2' }
-  view.rerender(<CustomerLookupPage />)
+  expect(mocked.read).toHaveBeenCalledWith(expect.objectContaining({ scope: 'global', storeId: '' }))
+  fireEvent.change(screen.getByRole('combobox', { name: 'Tìm theo tên khách hàng hoặc SĐT' }), { target: { value: 'khach khac' } })
   await screen.findByText('Không thể tải fixture')
   resolveOld({ customers: [customer], total: 1, limit: 20 })
   expect(screen.queryByText('Nguyễn Ánh')).toBeNull()
   fireEvent.click(screen.getByRole('button', { name: 'Làm mới' }))
-  await screen.findByText('Chưa có khách hàng')
+  await screen.findByText('Không tìm thấy khách hàng')
 })
 
-it.each(['admin', 'business_support'])('shows the system-wide directory, suggestions and stores/sellers without choosing a store for %s', (role) => {
+it.each(['admin', 'business_support', 'store_manager'])('shows the system-wide directory, suggestions and stores/sellers without choosing a store for %s', (role) => {
   mocked.app = { ...mocked.app, activeStoreId: '', session: { role },
     stores: [{ id: 'S1', name: 'Cửa hàng Một' }, { id: 'S2', name: 'Cửa hàng Hai' }],
     employees: [{ id: 'E1', name: 'Nhân viên Một' }],
@@ -87,8 +98,8 @@ it.each(['admin', 'business_support'])('shows the system-wide directory, suggest
   expect(within(dialog).getAllByText(/120.000/)).toHaveLength(2)
 })
 
-it('uses the remote global API and ignores active-store changes, with history retry and search cancellation', async () => {
-  mocked.app = { ...mocked.app, apiStatus: 'connected', session: { role: 'business_support' } }
+it.each(['business_support', 'store_manager'])('uses global API for %s and ignores store changes, with history retry and search cancellation', async (role) => {
+  mocked.app = { ...mocked.app, apiStatus: 'connected', session: { role } }
   mocked.read.mockImplementation((options) => options.mode === 'history'
     ? Promise.reject(new Error('Lỗi lịch sử kiểm thử'))
     : Promise.resolve({ customers: [customer], total: 1, limit: 20 }))
@@ -119,8 +130,8 @@ it('uses the remote global API and ignores active-store changes, with history re
   expect(screen.queryByRole('button', { name: 'Lịch sử mua hàng (2)' })).toBeNull()
 })
 
-it('paginates system customers and all-store purchase history', () => {
-  mocked.app = { ...mocked.app, session: { role: 'admin' }, orders: [
+it.each(['admin', 'store_manager'])('paginates system customers and all-store purchase history for %s', (role) => {
+  mocked.app = { ...mocked.app, session: { role }, orders: [
     ...Array.from({ length: 23 }, (_, i) => ({ ...order, id: `O${i}`, storeId: i % 2 ? 'S1' : 'S2' })),
     ...Array.from({ length: 22 }, (_, i) => ({ ...order, id: `C${i}`, customerPhone: `08888888${String(i).padStart(2, '0')}` })),
   ] }
