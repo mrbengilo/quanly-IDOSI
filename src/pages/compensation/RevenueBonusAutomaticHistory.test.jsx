@@ -83,4 +83,74 @@ describe('RevenueBonusPage server-authoritative automatic history', () => {
     expect(screen.getByText('25.00%')).toBeTruthy()
     expect(screen.queryByRole('button', { name: /tính thưởng ngày/i })).toBeNull()
   })
+
+  it.each(['violations', 'violationPointSummaries'])(
+    'refreshes live and month amounts after adding and voiding a violation through %s',
+    async (collection) => {
+      const view = render(<RevenueBonusPage storeScoped />)
+      await screen.findAllByText('123,456 đ')
+      const live = await mocked.liveRevenue.mock.results[0].value
+      const history = await mocked.periodRevenue.mock.results[0].value
+      mocked.liveRevenue.mockResolvedValue({ snapshot: {
+        ...live.snapshot, allocations: live.snapshot.allocations.map((row) => ({ ...row, amountVnd: 0 })),
+      } })
+      mocked.periodRevenue.mockResolvedValue({ period: {
+        ...history.period, allocations: history.period.allocations.map((row) => ({ ...row, amountVnd: 0 })),
+      } })
+      mocked.app = { ...mocked.app, [collection]: [{ id: 'POINTS', employeeId: 'E01', points: 5 }] }
+      view.rerender(<RevenueBonusPage storeScoped />)
+      await waitFor(() => {
+        expect(mocked.periodRevenue).toHaveBeenCalledTimes(2)
+        expect(mocked.liveRevenue).toHaveBeenCalledTimes(2)
+        expect(screen.queryByText('123,456 đ')).toBeNull()
+        expect(screen.getByText('THƯỞNG DOANH THU CỦA TÔI').parentElement.querySelector('strong').textContent).toBe('0 đ')
+      })
+
+      mocked.liveRevenue.mockResolvedValue(live)
+      mocked.periodRevenue.mockResolvedValue(history)
+      mocked.app = { ...mocked.app, [collection]: [] }
+      view.rerender(<RevenueBonusPage storeScoped />)
+      await screen.findAllByText('123,456 đ')
+      expect(mocked.periodRevenue).toHaveBeenCalledTimes(3)
+      expect(mocked.liveRevenue).toHaveBeenCalledTimes(3)
+    },
+  )
+
+  it('uses authoritative month history over stale persisted allocations, including an empty response', async () => {
+    mocked.app.revenueBonusDaily = [{
+      id: 'DAY', storeId: 'S01', businessDate: '2026-09-03', period: '2026-09', status: 'FINALIZED',
+      allocations: [{ id: 'STALE', employeeId: 'E01', amountVnd: 999_999, status: 'APPROVED' }],
+    }]
+    const view = render(<RevenueBonusPage storeScoped />)
+    await screen.findAllByText('123,456 đ')
+    expect(screen.queryByText('999,999 đ')).toBeNull()
+
+    mocked.periodRevenue.mockResolvedValue({ period: { storeId: 'S01', period: '2026-09', days: [], allocations: [] } })
+    mocked.app = { ...mocked.app, violations: [{ id: 'CHANGED' }] }
+    view.rerender(<RevenueBonusPage storeScoped />)
+    await waitFor(() => expect(screen.queryByText('123,456 đ')).toBeNull())
+    expect(screen.queryByText('999,999 đ')).toBeNull()
+  })
+
+  it('ignores a response started before a violation change and never fills an API failure with cached awards', async () => {
+    let resolveOldPeriod
+    mocked.periodRevenue.mockImplementationOnce(() => new Promise((resolve) => { resolveOldPeriod = resolve }))
+    mocked.app.revenueBonusDaily = [{
+      id: 'DAY', storeId: 'S01', businessDate: '2026-09-03', period: '2026-09', status: 'FINALIZED',
+      allocations: [{ id: 'STALE', employeeId: 'E01', amountVnd: 999_999, status: 'APPROVED' }],
+    }]
+    const view = render(<RevenueBonusPage storeScoped />)
+    await waitFor(() => expect(mocked.periodRevenue).toHaveBeenCalledTimes(1))
+    mocked.app = { ...mocked.app, violations: [{ id: 'CHANGED' }] }
+    view.rerender(<RevenueBonusPage storeScoped />)
+    await screen.findAllByText('123,456 đ')
+    resolveOldPeriod({ period: { storeId: 'S01', period: '2026-09', days: [], allocations: [] } })
+    await waitFor(() => expect(screen.getAllByText('123,456 đ').length).toBeGreaterThan(0))
+
+    mocked.periodRevenue.mockRejectedValueOnce(new Error('offline'))
+    mocked.app = { ...mocked.app, violations: [] }
+    view.rerender(<RevenueBonusPage storeScoped />)
+    await screen.findByText(/Không thể cập nhật lịch sử thưởng tự động từ máy chủ/)
+    expect(screen.queryByText('999,999 đ')).toBeNull()
+  })
 })

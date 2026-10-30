@@ -472,7 +472,11 @@ export function RevenueBonusPage({ storeScoped = false }) {
     }
     void refresh()
     return () => { active = false }
-  }, [automaticMode, businessDate, remoteRefreshVersion, selectedStoreId, serverBacked])
+  }, [
+    app.violations, app.violationPointSummaries, app.revenueBonusDaily,
+    app.revenueBonusAllocations, app.revenueBonusOverrides,
+    automaticMode, businessDate, remoteRefreshVersion, selectedStoreId, serverBacked,
+  ])
 
   useEffect(() => {
     const automaticHistoryMonth = historyMonth >= AUTOMATIC_REVENUE_BONUS_EFFECTIVE_DATE.slice(0, 7)
@@ -492,7 +496,11 @@ export function RevenueBonusPage({ storeScoped = false }) {
     }
     void refresh()
     return () => { active = false }
-  }, [historyMonth, remoteRefreshVersion, selectedStoreId, serverBacked])
+  }, [
+    app.violations, app.violationPointSummaries, app.revenueBonusDaily,
+    app.revenueBonusAllocations, app.revenueBonusOverrides,
+    historyMonth, remoteRefreshVersion, selectedStoreId, serverBacked,
+  ])
 
   const liveScope = `${identifierKey(selectedStoreId)}:${businessDate}`
   const matchingRemoteSnapshot = automaticMode && serverBacked && remoteLiveSnapshot
@@ -639,11 +647,19 @@ export function RevenueBonusPage({ storeScoped = false }) {
       .find((day) => day.businessDate === allocation.businessDate)?.projectedAt || '',
   })), [automaticHistory])
   const historyRows = useMemo(() => {
-    const persistedKeys = new Set(legacyHistoryProjection.rows.map((row) => (
+    // The period API applies current violations and admin overrides to saved
+    // awards. A cached persisted row must never shadow that effective amount,
+    // or fill an empty/error response with an obsolete award.
+    const persistedRows = legacyHistoryProjection.rows.filter((row) => !(
+      serverBacked && automaticHistoryMonth
+      && row.businessDate >= AUTOMATIC_REVENUE_BONUS_EFFECTIVE_DATE
+      && row.month === historyMonth
+    ))
+    const persistedKeys = new Set(persistedRows.map((row) => (
       `${identifierKey(entryStoreId(row))}:${row.businessDate}:${identifierKey(row.employeeId)}`
     )))
     const combined = [
-      ...legacyHistoryProjection.rows,
+      ...persistedRows,
       ...automaticHistoryRows.filter((row) => !persistedKeys.has(
         `${identifierKey(entryStoreId(row))}:${row.businessDate}:${identifierKey(row.employeeId)}`,
       )),
@@ -652,7 +668,7 @@ export function RevenueBonusPage({ storeScoped = false }) {
     return privateAllocationView
       ? combined.filter((row) => sameOperationalIdentifier(row.employeeId, currentEmployeeId))
       : combined
-  }, [automaticHistoryRows, currentEmployeeId, legacyHistoryProjection.rows, privateAllocationView])
+  }, [automaticHistoryMonth, automaticHistoryRows, currentEmployeeId, historyMonth, legacyHistoryProjection.rows, privateAllocationView, serverBacked])
   const historyEmployeeOptions = useMemo(() => [...historyRows.reduce((options, row) => {
     const employeeId = String(row.employeeId || '').trim()
     if (!employeeId) return options
