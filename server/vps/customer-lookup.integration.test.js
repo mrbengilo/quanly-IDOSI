@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os'
 import { resolve } from 'node:path'
 import { afterAll, beforeAll, expect, it } from 'vitest'
 import { createIdosiServer } from './server.mjs'
+import { DEFAULT_ORDER_INFORMATION_OPTIONS } from '../../src/domain/orderInformationSettings.js'
 
 let server, runtime, directory, origin, token, manager, employee, support
 const password = 'Synthetic-customer-password-2026'
@@ -30,6 +31,7 @@ beforeAll(async () => {
       { id: 'M1', name: 'Manager', storeId: 'S1', unit: 'store_manager' },
       { id: 'H1', name: 'Support', unit: 'business_support', storeId: 'BUSINESS_SUPPORT' }],
     deletedEmployees: [{ id: 'E-OLD', code: 'OLD-STAFF', name: 'Former employee', salary: 8888888 }],
+    orderInformationOptions: DEFAULT_ORDER_INFORMATION_OPTIONS,
     orders: [order('OLD'), order('NEW', { customerName: 'Ánh Nguyễn', customerPhone: '0901234567', createdAt: '2026-10-30T09:00:00+07:00' }),
       order('OTHER', { storeId: 'S2', customerName: 'Trần Khách Liên Cửa Hàng', customerPhone: '0999999999' }),
       order('CROSS-STORE', { storeId: 'S2', employeeId: 'OLD-STAFF', createdAt: '2025-01-01T01:00:00Z' }),
@@ -189,4 +191,78 @@ it('denies global lookup to employees and keeps the Admin workspace inaccessible
   expect((await lookup({ scope: 'global', storeId: '' }, '')).status).toBe(401)
   expect((await lookup({ scope: 'all' })).status).toBe(400)
   expect((await lookup({ scope: 'global', offset: '0.1' })).status).toBe(400)
+})
+
+it.each(['S1', 'S2'])('recomputes tags from persisted orders through create, customer edits, retries and soft deletion in %s', async (secondStore) => {
+  const phoneA = secondStore === 'S1' ? '0917000101' : '0918000101'
+  const phoneB = secondStore === 'S1' ? '0917000202' : '0918000202'
+  const versions = new Map()
+  const command = (type, payload, key = crypto.randomUUID(), authorization = token) => {
+    if (!versions.has(key)) versions.set(key, runtime.database.database.prepare("SELECT version FROM app_state WHERE scope_key='global'").get().version)
+    return request('/api/command', authorization, { type, payload, expectedVersion: versions.get(key) }, { 'idempotency-key': key })
+  }
+  const create = (phone, storeId, key) => command('order.create', { storeId, customerName: `Fixture ${phone === phoneA ? 'A' : 'B'}`,
+    customerPhone: phone, gender: 'Nam', occupation: 'Kỹ sư', acquisitionChannel: 'Facebook',
+    paymentMethod: 'Tiền mặt', amount: 100000, items: [{ productId: 'order-product-001', quantity: 1 }] }, key)
+  const assertContact = async (phone, count, storeCounts) => {
+    const expected = { isReturningCustomer: count >= 2, hasPurchaseHistory: count > 0 }
+    const global = await lookup({ scope: 'global', query: phone })
+    expect(global.status).toBe(200)
+    expect(global.body.customers).toHaveLength(count ? 1 : 0)
+    const status = await lookup({ mode: 'status', query: phone }, employee)
+    expect(status.body).toMatchObject(expected)
+    const suggestions = await lookup({ mode: 'suggest', query: phone }, employee)
+    expect(suggestions.body.suggestions).toHaveLength(count ? 1 : 0)
+    if (!count) return
+    expect(global.body.customers[0]).toMatchObject({ ...expected, orderCount: count })
+    expect(suggestions.body.suggestions[0]).toMatchObject(expected)
+    for (const storeId of ['S1', 'S2']) {
+      const list = await lookup({ storeId, query: phone })
+      expect(list.body.customers[0]).toMatchObject({ ...expected, orderCount: storeCounts[storeId] || 0 })
+      const history = await lookup({ storeId, mode: 'history', customerKey: `phone:${phone}` })
+      expect(history.body).toMatchObject({ total: storeCounts[storeId] || 0, customer: { ...expected, orderCount: storeCounts[storeId] || 0 } })
+      expect(history.body.records).toHaveLength(storeCounts[storeId] || 0)
+    }
+  }
+  await assertContact(phoneA, 0)
+  const firstA = await create(phoneA, 'S1')
+  const firstB = await create(phoneB, 'S2')
+  expect(firstA.status, JSON.stringify(firstA.body)).toBe(201)
+  expect(firstB.status, JSON.stringify(firstB.body)).toBe(201)
+  await assertContact(phoneA, 1, { S1: 1 })
+  await assertContact(phoneB, 1, { S2: 1 })
+  const createKey = crypto.randomUUID()
+  const second = await create(phoneA, secondStore, createKey)
+  expect(second.status, JSON.stringify(second.body)).toBe(201)
+  const twoA = { S1: 1 + Number(secondStore === 'S1'), S2: Number(secondStore === 'S2') }
+  await assertContact(phoneA, 2, twoA)
+  const replay = await create(phoneA, secondStore, createKey)
+  expect(replay.body.order.id).toBe(second.body.order.id)
+  await assertContact(phoneA, 2, twoA)
+  const moved = await command('order.update', { orderId: second.body.order.id, customerName: 'Fixture B', customerPhone: phoneB, reason: 'Correct customer identity' })
+  expect(moved.status, JSON.stringify(moved.body)).toBe(200)
+  await assertContact(phoneA, 1, { S1: 1 })
+  await assertContact(phoneB, 2, { S1: Number(secondStore === 'S1'), S2: 1 + Number(secondStore === 'S2') })
+  const restored = await command('order.update', { orderId: second.body.order.id, customerName: 'Fixture A', customerPhone: phoneA.replace(/(\d{3})(\d{3})(\d+)/u, '$1 $2 $3'), reason: 'Restore normalized contact' })
+  expect(restored.status, JSON.stringify(restored.body)).toBe(200)
+  await assertContact(phoneA, 2, twoA)
+  await assertContact(phoneB, 1, { S2: 1 })
+  const nameOnly = await command('order.update', { orderId: second.body.order.id, customerName: 'Fixture A renamed', reason: 'Name correction only' })
+  expect(nameOnly.status).toBe(200)
+  await assertContact(phoneA, 2, twoA)
+  expect((await command('order.update', { orderId: second.body.order.id, customerPhone: phoneB, reason: '' })).status).toBe(400)
+  expect((await command('order.delete', { orderId: second.body.order.id, reason: 'Denied manager deletion' }, crypto.randomUUID(), manager)).status).toBe(403)
+  await assertContact(phoneA, 2, twoA)
+  const deleteKey = crypto.randomUUID()
+  const removed = await command('order.delete', { orderId: second.body.order.id, reason: 'Remove duplicate test sale' }, deleteKey)
+  expect(removed.status, JSON.stringify(removed.body)).toBe(200)
+  await assertContact(phoneA, 1, { S1: 1 })
+  expect((await command('order.delete', { orderId: second.body.order.id, reason: 'Remove duplicate test sale' }, deleteKey)).status).toBe(200)
+  await assertContact(phoneA, 1, { S1: 1 })
+  const persisted = runtime.database.database.prepare("SELECT value_json FROM state_entities WHERE collection_key='orders' AND record_id=?").get(second.body.order.id)
+  expect(JSON.parse(persisted.value_json)).toMatchObject({ status: 'Đã xóa', deletedAt: expect.any(String) })
+  expect((await command('order.delete', { orderId: firstA.body.order.id, reason: 'Remove last fixture sale' })).status).toBe(200)
+  await assertContact(phoneA, 0)
+  expect((await command('order.delete', { orderId: firstB.body.order.id, reason: 'Remove remaining fixture sale' })).status).toBe(200)
+  await assertContact(phoneB, 0)
 })
