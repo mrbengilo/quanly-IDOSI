@@ -1,9 +1,9 @@
-import { storeViolationPointAssessment } from '../../domain/violationPoints'
+import { storeViolationPointAssessment } from '../../domain/violationPoints.js'
 import {
   operationalIdentifierRecordMatch,
   operationalIdentifierReferenceMatchesRecord,
   sameOperationalIdentifier,
-} from '../../utils'
+} from '../../utils.js'
 
 export { sameOperationalIdentifier }
 

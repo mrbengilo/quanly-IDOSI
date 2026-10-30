@@ -856,9 +856,9 @@ export function StoreTasks() {
     targetUnit: 'store',
     storeId,
   }), [attendance, workCatalogProgress, violations, violationPointSummaries, compensationEntries, tasks, storeEmployees, storeId])
-  const rewardCount = useMemo(() => rewardRows.filter((row) => (
+  const rewardCount = useMemo(() => remote ? history.summary?.count ?? '…' : rewardRows.filter((row) => (
     row.completed && row.payoutStatus !== 'void'
-  )).length, [rewardRows])
+  )).length, [rewardRows, remote, history.summary])
   const violationCount = useMemo(() => activeWorkCatalogItems(workCatalogItems, {
     targetGroup: WORK_CATALOG_TARGET.STORE,
     storeId,
@@ -971,7 +971,7 @@ export function StoreTasks() {
         </Card>}
         <InfoNote>Danh sách thưởng do nhân viên tự tick và lưu trong mục <strong>“Công việc tính thưởng”</strong> sau khi điểm danh. Trang cửa hàng chỉ theo dõi lịch sử và thống kê.</InfoNote>
         {remote && history.controls}
-        {(!remote || history.ready) && <UnitCompensationStatistics targetUnit="store" storeId={storeId} employees={storeEmployees} sections="reward" rewardRows={rewardRows} data={remote ? history.state : undefined} paged={Boolean(remote)} />}
+        <UnitCompensationStatistics targetUnit="store" storeId={storeId} employees={storeEmployees} sections="reward" rewardRows={rewardRows} data={remote ? history.state : undefined} paged={Boolean(remote)} filteredSummary={history.summary} historyLoading={remote && !history.ready} />
         {remote && history.pagination}
       </section>}
 

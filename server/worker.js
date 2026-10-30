@@ -1,3 +1,4 @@
+import { readStoreTaskSummary } from './store-task-summary.js'
 import { readStoreTaskHistory } from './store-task-history.js'
 import { taskShiftContext, bindTaskShiftContext, mergeTaskShiftProgress, attendanceTaskShiftLock, taskShiftLockAllows, taskIsAttendanceShiftObligation, taskProgressForObligations, taskShiftLockedTaskIds, selectAttendanceTaskShift, TASK_SHIFT_LOCK_STATUS } from '../src/domain/taskShift.js'
 import { normalizeOrderItems as normalizedHistoricalOrderItems, resolveOrderItems as resolveConfiguredOrderItems, totalOrderItemQuantity, totalOrderItemWeightKg } from '../src/domain/orderItems.js'
@@ -6063,7 +6064,7 @@ const getCustomerLookup = async (request, env, context, url) => {
     records: records.map((order) => customerOrderDetails(order, directory)), total: customer.orderCount, offset, limit }))
 }
 
-const getStoreTaskHistory = async (request, env, context, url) => {
+const getStoreTaskHistory = async (request, env, context, url, summaryOnly = false) => {
   const db = getDatabase(env)
   const { user, storeId, employeeId } = await resolveHistoryReadScope(request, db, context, url)
   if (!['admin', 'business_support', 'store_manager'].includes(user.role)) {
@@ -6075,6 +6076,10 @@ const getStoreTaskHistory = async (request, env, context, url) => {
   if ((date && !/^\d{4}-\d{2}-\d{2}$/u.test(date)) || shiftId.length > 200
     || employeeId.length > 200 || assignmentId.length > 200) {
     throw new ApiError(400, 'TASK_HISTORY_FILTER_INVALID', 'Bộ lọc lịch sử công việc không hợp lệ.')
+  }
+  if (summaryOnly) {
+    const result = await readStoreTaskSummary({ db, storeId, employeeId, date, shiftId, ApiError, maxEntityBytes: MAX_STATE_ENTITY_BYTES })
+    return jsonResponse(apiPayload(context, { storeId, ...result }))
   }
   const result = await readStoreTaskHistory({ db, storeId, employeeId, date, shiftId, assignmentId,
     cursor: decodeHistoryCursor(url.searchParams.get('cursor')), ApiError, maxEntityBytes: MAX_STATE_ENTITY_BYTES })
@@ -27089,6 +27094,10 @@ const handleApi = async (request, env, context, url) => {
   if (path === '/api/state-metadata') {
     if (request.method !== 'GET') return methodNotAllowed(['GET'])
     return getStateMetadata(request, env, context, url)
+  }
+  if (path === '/api/store-task-summary') {
+    if (request.method !== 'GET') return methodNotAllowed(['GET'])
+    return getStoreTaskHistory(request, env, context, url, true)
   }
   if (path === '/api/store-task-history') {
     if (request.method !== 'GET') return methodNotAllowed(['GET'])

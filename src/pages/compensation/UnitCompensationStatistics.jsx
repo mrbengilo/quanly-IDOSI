@@ -24,7 +24,7 @@ const UNIT_LABELS = {
  * Shared read-only reporting block for Store Operations, Office Management and
  * Admin HTKD screens. Mutations remain in their dedicated workflow panels.
  */
-export function UnitCompensationStatistics({ targetUnit, storeId = '', employees, sections = 'all', rewardRows: providedRewardRows, data, paged = false }) {
+export function UnitCompensationStatistics({ targetUnit, storeId = '', employees, sections = 'all', rewardRows: providedRewardRows, data, paged = false, filteredSummary, historyLoading = false }) {
   const context = useApp()
   const app = data ? { ...context, ...data } : context
   const scopedEmployees = useMemo(() => (Array.isArray(employees)
@@ -45,7 +45,7 @@ export function UnitCompensationStatistics({ targetUnit, storeId = '', employees
   const violationRows = useMemo(() => (Array.isArray(app.violations) ? app.violations : [])
     .filter((entry) => targetUnitOfViolation(entry) === targetUnit)
     .filter((entry) => !storeId || entryStoreId(entry) === String(storeId)), [app.violations, targetUnit, storeId])
-  const rewardSummary = useMemo(() => rewardStatistics(rewardRows), [rewardRows])
+  const rewardSummary = useMemo(() => paged ? filteredSummary?.statistics : rewardStatistics(rewardRows), [rewardRows, paged, filteredSummary])
   const violationSummary = useMemo(() => violationStatistics(violationRows), [violationRows])
   const unitLabel = UNIT_LABELS[targetUnit] || 'đơn vị'
   const supportTagContextForRewardRow = useCallback((row) => targetUnit === 'store'
@@ -92,11 +92,13 @@ export function UnitCompensationStatistics({ targetUnit, storeId = '', employees
         showEmployee
         filterable={targetUnit === 'store' && !paged}
         paginate={!paged}
+        totalAmountVnd={paged ? filteredSummary?.totalAmountVnd ?? null : undefined}
+        loading={historyLoading}
         filterFields={targetUnit === 'office' ? ['month', 'employee'] : undefined}
         supportTagContextForRow={supportTagContextForRewardRow}
       />
     </Card>}
-    {showReward && <Card title={`Thống kê thưởng — ${unitLabel}${paged ? " — trang hiện tại" : ""}`}>
+    {showReward && (!paged || filteredSummary) && <Card title={paged ? `Thống kê thưởng theo bộ lọc — ${unitLabel}` : `Thống kê thưởng — ${unitLabel}`}>
       <CompensationStatisticsGrid statistics={rewardSummary} employees={scopedEmployees} showEmployee mode="reward" supportTagContextForRow={supportTagContextForRewardSummary} />
     </Card>}
     {showViolation && <Card title={`Thống kê vi phạm và đánh giá — ${unitLabel}`}>

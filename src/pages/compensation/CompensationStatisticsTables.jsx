@@ -65,7 +65,7 @@ export function CompensationStatisticsGrid({
   </div>
 }
 
-export function RewardHistoryTable({ rows = [], employees = [], showEmployee = false, filterable = false, filterFields, supportTagContextForRow = null, paginate = true }) {
+export function RewardHistoryTable({ rows = [], employees = [], showEmployee = false, filterable = false, filterFields, supportTagContextForRow = null, paginate = true, totalAmountVnd, loading = false }) {
   const [dateFilter, setDateFilter] = useState('')
   const [monthFilter, setMonthFilter] = useState('')
   const [shiftFilter, setShiftFilter] = useState('all')
@@ -131,7 +131,7 @@ export function RewardHistoryTable({ rows = [], employees = [], showEmployee = f
       firstPageDates={filterable ? [today()] : []}
       paginationKey={`${monthFilter}:${dateFilter}:${shiftFilter}:${employeeFilter}`}
     >
-      <thead><tr>{showEmployee && <th>Nhân viên</th>}<th>Ngày</th><th>Ca làm</th><th>Công việc</th><th>Tiền thưởng{hasFilters && <small className="compensation-subline">Tổng: <strong className="compensation-credit">+{money(filteredTotal)}</strong></small>}</th><th>Ghi nhận lúc</th><th>Trạng thái</th></tr></thead>
+      <thead><tr>{showEmployee && <th>Nhân viên</th>}<th>Ngày</th><th>Ca làm</th><th>Công việc</th><th>Tiền thưởng{(hasFilters || totalAmountVnd !== undefined) && <small className="compensation-subline">Tổng: <strong className="compensation-credit">{totalAmountVnd === null ? 'Đang tổng hợp…' : `+${money(totalAmountVnd ?? filteredTotal)}`}</strong></small>}</th><th>Ghi nhận lúc</th><th>Trạng thái</th></tr></thead>
       <tbody>
         {filteredRows.map((row) => <tr key={row.id} data-page-date={row.workDate}>
           {showEmployee && <td><strong>{employeeName(employees, row.employeeId, row.employeeName)}</strong><SupportEmployeeTag context={supportTagContextForRow?.(row)} className="compensation-subline" /><small className="compensation-subline">{row.employeeId}</small></td>}
@@ -142,7 +142,7 @@ export function RewardHistoryTable({ rows = [], employees = [], showEmployee = f
           <td>{displayTime(row.completedAt)}</td>
           <td><Badge tone={row.workBonusBlocked ? 'red' : row.payoutStatus === 'pending' ? 'orange' : 'green'}>{row.workBonusBlocked ? 'Không nhận thưởng (vi phạm ≥ 5 điểm)' : row.payoutStatus === 'pending' ? 'Chờ duyệt team' : 'Đã ghi nhận'}</Badge></td>
         </tr>)}
-        {!filteredRows.length && <tr><td colSpan={showEmployee ? 7 : 6} className="compensation-empty">{completedRows.length ? 'Không có lịch sử phù hợp bộ lọc.' : 'Chưa có lịch sử nhận thưởng.'}</td></tr>}
+        {!filteredRows.length && <tr><td colSpan={showEmployee ? 7 : 6} className="compensation-empty">{loading ? 'Đang tải danh sách...' : completedRows.length ? 'Không có lịch sử phù hợp bộ lọc.' : 'Chưa có lịch sử nhận thưởng.'}</td></tr>}
       </tbody>
     </TableWrap>
   </>

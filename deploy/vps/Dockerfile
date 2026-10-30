@@ -37,6 +37,9 @@ COPY --from=build /app/package.json ./package.json
 COPY --from=build /app/dist/client ./dist/client
 COPY --from=build /app/server ./server
 COPY --from=build /app/src/domain ./src/domain
+# Pure reporting modules are shared with the Node API to keep reward math canonical.
+COPY --from=build /app/src/utils.js ./src/utils.js
+COPY --from=build /app/src/pages/compensation/compensationStatistics.js /app/src/pages/compensation/compensationViewModel.js ./src/pages/compensation/
 COPY --from=build /app/drizzle ./drizzle
 RUN mkdir -p /app/data && chown -R node:node /app
 

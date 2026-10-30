@@ -21,6 +21,12 @@ release đã merge vào `main` được triển khai tự động khi **Verify I
 `/api/release` phải trả đúng SHA đang chạy. PR merge, CI xanh hoặc container `Up`
 không đủ để kết luận production đã nhận release.
 
+Runtime image cũng đóng gói các module báo cáo thuần JavaScript được API và UI
+sử dụng chung (thống kê thưởng, view model và utils), cùng thư mục domain.
+Kiểm thử runtime kiểm tra toàn bộ chuỗi import tương đối của Worker để phát hiện
+file dùng chung bị bỏ sót trước khi deploy. Phần tổng hợp thưởng chỉ đọc dữ liệu;
+không cần migration hoặc khôi phục DB khi revert/redeploy bản sửa này.
+
 ## 1. Cài đặt VPS lần đầu
 
 ### Recovery pause: chốt thưởng tự động
