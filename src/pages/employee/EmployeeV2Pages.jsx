@@ -1,6 +1,7 @@
 import { attendanceTaskShiftLock, TASK_SHIFT_LOCK_STATUS, taskIsAttendanceShiftObligation, taskProgressForObligations } from '../../domain/taskProgress'
 import { attendanceMatchesWindow, scheduleWindows, supportForScheduledWindow } from '../../domain/supportScheduling'
 import { useEffect, useRef, useState } from 'react'
+import { CustomerPhoneInput } from '../../components/CustomerPhoneInput'
 import {
   Banknote,
   CalendarDays,
@@ -762,7 +763,7 @@ export function EmployeeOrdersPage() {
       <Modal open={open} onClose={closeCreate} title={`Tạo đơn hàng • ${store?.name || 'IDOSI'}`} footer={<><Button variant="outline" onClick={closeCreate}>Hủy</Button><Button icon={ShoppingCart} loading={saving} onClick={save}>LƯU ĐƠN</Button></>}>
         <div className="form-grid">
           <Field label="Tên khách hàng" required error={formErrors.customerName}><Input value={form.customerName} onChange={(event) => updateForm('customerName', event.target.value)} /></Field>
-          <Field label="Số điện thoại"><Input inputMode="tel" value={form.customerPhone} onChange={(event) => updateForm('customerPhone', event.target.value)} /></Field>
+          <Field label="Số điện thoại"><CustomerPhoneInput app={app} storeId={workingStoreId} enabled={open} value={form.customerPhone} onChange={(event) => updateForm('customerPhone', event.target.value)} /></Field>
           <Field label="Tuổi"><Input type="number" min="0" max="120" value={form.customerAge} onChange={(event) => updateForm('customerAge', event.target.value)} /></Field>
           <Field label="Giới tính" required hint="Hỏi khách hoặc đoán." error={formErrors.gender}><Select value={form.gender} onChange={(event) => updateForm('gender', event.target.value)}><option value="">Chọn giới tính</option>{ORDER_GENDERS.map((item) => <option key={item}>{item}</option>)}</Select></Field>
           <Field label="Nghề nghiệp" required hint="Hỏi khách hoặc đoán; dùng ô tìm kiếm trong danh sách." error={formErrors.occupation}><SearchableSelect aria-label="Nghề nghiệp" value={form.occupation} onChange={(event) => updateForm('occupation', event.target.value)} options={occupations} placeholder="Chọn" loading={['connecting', 'syncing'].includes(apiStatus)} error={apiStatus === 'error' ? 'Không thể tải danh sách nghề nghiệp.' : ''} /></Field>
