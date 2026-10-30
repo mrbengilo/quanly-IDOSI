@@ -100,6 +100,7 @@ export const StoreOrdersPage = createLazyRouteComponent(loadStoreV2Pages, 'Store
 export const StorePayrollV2 = createLazyRouteComponent(loadStoreV2Pages, 'StorePayrollV2')
 export const StoreReportsV2 = createLazyRouteComponent(loadStoreV2Pages, 'StoreReportsV2')
 export const StoreStatisticsPage = createLazyRouteComponent(() => import('./pages/store/StoreStatisticsPage'), 'StoreStatisticsPage')
+export const CustomerLookupPage = createLazyRouteComponent(() => import('./pages/store/CustomerLookupPage'), 'CustomerLookupPage')
 
 export const UnifiedSchedule = createLazyRouteComponent(() => import('./pages/store/UnifiedSchedule'), 'default')
 
@@ -140,6 +141,7 @@ const routeComponents = {
   '/store/employees': StoreEmployees,
   '/store/orders': StoreOrdersPage,
   '/store/statistics': StoreStatisticsPage,
+  '/store/customer-lookup': CustomerLookupPage,
   '/store/tasks': StoreTasks,
   '/store/imports': StoreImportsV2,
   '/store/expenses': StoreExpensesV2,

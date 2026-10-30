@@ -26,6 +26,7 @@ import {
   Settings,
   ShieldAlert,
   ShoppingCart,
+  Search,
   Store,
   Users,
   WalletCards,
@@ -62,6 +63,7 @@ const systemOperations = [
 const storeOperations = [
   { label: 'Tổng quan', path: '/store/overview', icon: LayoutDashboard },
   { label: 'Đơn hàng', path: '/store/orders', icon: ShoppingCart },
+  { label: 'Tra cứu', path: '/store/customer-lookup', icon: Search },
   { label: 'Số liệu thống kê', path: '/store/statistics', icon: BarChart3 },
   { label: 'Công việc tính thưởng & vi phạm', path: '/store/tasks', icon: ClipboardCheck },
   { label: 'Lịch phân ca', path: '/store/schedule', icon: CalendarCheck },
