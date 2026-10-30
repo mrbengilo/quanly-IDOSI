@@ -58,6 +58,32 @@ afterAll(async () => {
   if (directory) await rm(directory, { recursive: true, force: true })
 })
 
+it('uses global purchase thresholds for tags across list, history, suggestions and exact status without writes', async () => {
+  const before = runtime.database.database.prepare("SELECT version FROM app_state WHERE scope_key='global'").get().version
+  for (const [phone, returning] of [['0999999999', false], ['0901234567', true]]) {
+    for (const scope of ['store', 'global']) {
+      const options = { scope, query: phone }
+      const list = await lookup(options)
+      expect(list.status).toBe(200)
+      expect(list.body.customers[0]).toMatchObject({ isReturningCustomer: returning, hasPurchaseHistory: true })
+      const history = await lookup({ scope, mode: 'history', customerKey: `phone:${phone}` })
+      expect(history.body.customer).toMatchObject({ isReturningCustomer: returning })
+    }
+    const suggestions = await lookup({ mode: 'suggest', query: phone }, employee)
+    expect(suggestions.body.suggestions[0]).toMatchObject({ isReturningCustomer: returning })
+    const status = await lookup({ mode: 'status', query: phone }, employee)
+    expect(status.body).toMatchObject({ hasPurchaseHistory: true, isReturningCustomer: returning })
+  }
+  const missing = await lookup({ mode: 'status', query: '0777777777' }, employee)
+  expect(missing.body).toMatchObject({ hasPurchaseHistory: false, isReturningCustomer: false })
+  const noPhone = await lookup({ scope: 'global', query: 'nguyen anh' })
+  expect(noPhone.body.customers.filter((customer) => !customer.customerPhone)).toEqual([
+    expect.objectContaining({ orderCount: 1, isReturningCustomer: false }),
+    expect.objectContaining({ orderCount: 1, isReturningCustomer: false }),
+  ])
+  expect(runtime.database.database.prepare("SELECT version FROM app_state WHERE scope_key='global'").get().version).toBe(before)
+})
+
 it('searches global contacts across all periods but keeps detailed history and counts within the selected store', async () => {
   const result = await lookup({}, manager)
   expect(result.status, JSON.stringify(result.body)).toBe(200)
@@ -80,7 +106,7 @@ it('returns compact name/phone suggestions and exact history flags to employees,
   const result = await lookup({ mode: 'suggest', query: '090' }, employee)
   expect(result.status).toBe(200)
   expect(result.body.suggestions).toEqual([{ key: 'phone:0901234567', customerName: 'Ánh Nguyễn',
-    customerPhone: '0901234567', hasPurchaseHistory: true }])
+    customerPhone: '0901234567', hasPurchaseHistory: true, isReturningCustomer: true }])
   const names = await lookup({ mode: 'suggest', field: 'name', query: 'nguyen anh' }, employee)
   expect(names.status).toBe(200)
   expect(names.body.suggestions).toHaveLength(4)
@@ -90,7 +116,7 @@ it('returns compact name/phone suggestions and exact history flags to employees,
   expect((await lookup({ mode: 'status', query: '090123' }, employee)).body).toMatchObject({ hasPurchaseHistory: false, hasSuggestions: true })
   expect((await lookup({ mode: 'status', query: '0999999999' }, employee)).body.hasPurchaseHistory).toBe(true)
   expect((await lookup({ mode: 'suggest', query: '099' }, employee)).body.suggestions).toEqual([
-    { key: 'phone:0999999999', customerName: 'Trần Khách Liên Cửa Hàng', customerPhone: '0999999999', hasPurchaseHistory: true },
+    { key: 'phone:0999999999', customerName: 'Trần Khách Liên Cửa Hàng', customerPhone: '0999999999', hasPurchaseHistory: true, isReturningCustomer: false },
   ])
   expect((await lookup({ mode: 'suggest', field: 'name', query: 'tran khach' }, employee)).body.suggestions).toEqual([
     expect.objectContaining({ customerPhone: '0999999999', hasPurchaseHistory: true }),

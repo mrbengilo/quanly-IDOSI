@@ -5,8 +5,8 @@ import { customerPhone } from '../domain/customerLookup'
 
 import './CustomerPhoneInput.css'
 
-export function CustomerHistoryBadge({ hasPurchaseHistory }) {
-  return <Badge tone={hasPurchaseHistory ? 'green' : 'blue'}>{hasPurchaseHistory ? 'KH cũ' : 'KH mới'}</Badge>
+export function CustomerHistoryBadge({ isReturningCustomer }) {
+  return <Badge tone={isReturningCustomer ? 'green' : 'blue'}>{isReturningCustomer ? 'KH cũ' : 'KH mới'}</Badge>
 }
 
 function CustomerInput({ app, storeId, field, value, onChange, onSelect, enabled = true }) {
@@ -48,7 +48,7 @@ function CustomerInput({ app, storeId, field, value, onChange, onSelect, enabled
         key={customer.key} aria-selected={active === index} onMouseDown={(event) => event.preventDefault()}
         onClick={() => select(customer)}>
         <span className="customer-input__contact"><strong>{customer.customerName}</strong><small>{customer.customerPhone || 'Không có SĐT'}</small></span>
-        <CustomerHistoryBadge hasPurchaseHistory={customer.hasPurchaseHistory} />
+        <CustomerHistoryBadge isReturningCustomer={customer.isReturningCustomer} />
       </span>)}
     </span>}
     <small id={`${id}-hint`} role="status">{error || (loading ? 'Đang tìm khách hàng…'
@@ -69,7 +69,7 @@ export function CustomerPurchaseStatus({ app, storeId, customerName, phone, enab
   return <div className="span-2 customer-purchase-status" role="status">
     {loading ? 'Đang đối chiếu lịch sử mua hàng…' : error ? `Chưa xác định loại khách hàng: ${error}`
       : value && !value.hasPurchaseHistory && value.hasSuggestions ? 'Có khách hàng phù hợp. Chọn gợi ý hoặc tiếp tục nhập đầy đủ thông tin để đối chiếu.'
-        : value && <><CustomerHistoryBadge hasPurchaseHistory={value.hasPurchaseHistory} />
+        : value && <><CustomerHistoryBadge isReturningCustomer={value.isReturningCustomer} />
         <span>{value.hasPurchaseHistory ? 'Đã có lịch sử mua hàng trên toàn hệ thống.' : 'Chưa có lịch sử mua hàng khớp thông tin đã nhập trên toàn hệ thống.'}
           {field === 'name' && ' Đang đối chiếu theo tên; nhập SĐT để xác định chính xác hơn.'}</span></>}
   </div>

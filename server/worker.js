@@ -4,7 +4,7 @@ import { taskShiftContext, bindTaskShiftContext, mergeTaskShiftProgress, attenda
 import { normalizeOrderItems as normalizedHistoricalOrderItems, resolveOrderItems as resolveConfiguredOrderItems, totalOrderItemQuantity, totalOrderItemWeightKg } from '../src/domain/orderItems.js'
 import { orderRevenueByType, validateOrderRevenue } from '../src/domain/orderRevenue.js'
 import { salesOverviewFromSummary } from '../src/domain/salesOverview.js'
-import { customerDirectory, customerPublicInfo, customerSuggestions, customerHasPurchaseHistory, customerHistoryForStore, customerOrderDetails } from '../src/domain/customerLookup.js'
+import { customerDirectory, customerPublicInfo, customerSuggestions, customerPurchaseStatus, customerHistoryForStore, customerOrderDetails } from '../src/domain/customerLookup.js'
 import { applyRevenueSnapshotPointPolicy, normalizeViolationPointInput, restorePointBonusRecord, restorePointRevenueSnapshot, storeViolationPointAssessment, violationPointsOf, isActivePointViolation, violationPointPeriod, formatViolationPoints } from '../src/domain/violationPoints.js'
 import { attendanceMatchesWindow, scheduleAssignmentIsUsable, scheduleConflict, scheduleWindows, scheduledCheckInChoices, shiftWindow, supportAllowsScheduling, supportForScheduledWindow } from '../src/domain/supportScheduling.js'
 import {
@@ -6027,7 +6027,7 @@ const getCustomerLookup = async (request, env, context, url) => {
     return jsonResponse(apiPayload(context, { storeId, suggestions }))
   }
   if (mode === 'status') {
-    return jsonResponse(apiPayload(context, { storeId, hasPurchaseHistory: customerHasPurchaseHistory(customers, query, field),
+    return jsonResponse(apiPayload(context, { storeId, ...customerPurchaseStatus(customers, query, field),
       hasSuggestions: customerSuggestions(customers, query, field, 1).length > 0 }))
   }
   if (mode === 'list') {

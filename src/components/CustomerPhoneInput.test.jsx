@@ -13,9 +13,23 @@ beforeEach(() => {
 })
 afterEach(cleanup)
 
+it.each([0, 1, 2, 3])('uses the same tag for %i purchases in order entry and suggestions', (count) => {
+  const app = { ...mocked.app, orders: Array.from({ length: count }, (_, i) => ({
+    id: `O${i}`, storeId: `S${i}`, customerName: 'Đặng Ánh', customerPhone: '0901234567',
+  })) }
+  const tag = count >= 2 ? 'KH cũ' : 'KH mới'
+  const view = render(<CustomerPurchaseStatus app={app} storeId="S1" customerName="Đặng Ánh" phone="0901234567" />)
+  expect(screen.getByText(tag)).toBeTruthy()
+  view.unmount()
+  render(<CustomerPhoneInput app={app} storeId="S1" value="090" onChange={vi.fn()} />)
+  fireEvent.focus(screen.getByRole('combobox'))
+  if (count) expect(screen.getByRole('option').textContent).toContain(tag)
+  else expect(screen.queryByRole('option')).toBeNull()
+})
+
 it('only queries phone suggestions after two digits and preserves typing and selection', async () => {
   mocked.app.apiStatus = 'connected'
-  mocked.read.mockResolvedValue({ suggestions: [{ key: 'phone:0901234567', customerName: 'Nguyễn Ánh', customerPhone: '0901234567', hasPurchaseHistory: true }] })
+  mocked.read.mockResolvedValue({ suggestions: [{ key: 'phone:0901234567', customerName: 'Nguyễn Ánh', customerPhone: '0901234567', hasPurchaseHistory: true, isReturningCustomer: true }] })
   const change = vi.fn()
   const view = render(<CustomerPhoneInput app={mocked.app} storeId="S1" value="0" onChange={change} />)
   expect(mocked.read).not.toHaveBeenCalled()
@@ -35,7 +49,7 @@ it('suggests unaccented names with keyboard selection, Escape dismissal, and man
   render(<CustomerNameInput app={app} storeId="S1" value="dang" onChange={change} onSelect={select} />)
   const input = screen.getByRole('combobox')
   fireEvent.focus(input)
-  expect(screen.getByRole('option', { name: /Đặng Ánh.*KH cũ/ })).toBeTruthy()
+  expect(screen.getByRole('option', { name: /Đặng Ánh.*KH mới/ })).toBeTruthy()
   fireEvent.keyDown(input, { key: 'ArrowDown' })
   expect(input.getAttribute('aria-activedescendant')).toBeTruthy()
   fireEvent.keyDown(input, { key: 'Enter' })
@@ -51,16 +65,16 @@ it('suggests unaccented names with keyboard selection, Escape dismissal, and man
 it('prioritizes an exact phone over a matching name and recomputes status on store/input changes', () => {
   const app = { ...mocked.app, orders: [{ id: 'O1', storeId: 'S1', customerName: 'Đặng Ánh', customerPhone: '0901234567' }] }
   const view = render(<CustomerPurchaseStatus app={app} storeId="S1" customerName="dang anh" phone="" />)
-  expect(screen.getByText('KH cũ')).toBeTruthy()
+  expect(screen.getByText('KH mới')).toBeTruthy()
   view.rerender(<CustomerPurchaseStatus app={app} storeId="S1" customerName="dang" phone="" />)
   expect(screen.queryByText('KH mới')).toBeNull()
   expect(screen.getByText(/Có khách hàng phù hợp/)).toBeTruthy()
   view.rerender(<CustomerPurchaseStatus app={app} storeId="S1" customerName="dang anh" phone="0999999999" />)
   expect(screen.getByText('KH mới')).toBeTruthy()
   view.rerender(<CustomerPurchaseStatus app={app} storeId="S1" customerName="Tên khác" phone="090 123 4567" />)
-  expect(screen.getByText('KH cũ')).toBeTruthy()
+  expect(screen.getByText('KH mới')).toBeTruthy()
   view.rerender(<CustomerPurchaseStatus app={app} storeId="S2" customerName="Đặng Ánh" phone="0901234567" />)
-  expect(screen.getByText('KH cũ')).toBeTruthy()
+  expect(screen.getByText('KH mới')).toBeTruthy()
   view.rerender(<CustomerPurchaseStatus app={app} storeId="S1" customerName="" phone="" />)
   expect(screen.queryByText(/KH (cũ|mới)/)).toBeNull()
 })
@@ -83,7 +97,7 @@ it('does not label a customer new while loading, after an error, or from an outd
   expect(await screen.findByText('KH mới')).toBeTruthy()
 })
 
-it('fills a customer purchased only at another store into the create dialog as KH cũ without saving', () => {
+it('fills a customer purchased only at another store into the create dialog as KH mới without saving', () => {
   const employee = { id: 'E1', name: 'Employee', storeId: 'S1' }
   mocked.app = { ...mocked.app, activeStoreId: 'S1', currentEmployee: employee, employees: [employee],
     session: { role: 'employee', employeeId: 'E1', storeId: 'S1' },
@@ -97,7 +111,7 @@ it('fills a customer purchased only at another store into the create dialog as K
   fireEvent.click(screen.getByRole('option', { name: /Đặng Ánh/ }))
   expect(name.value).toBe('Đặng Ánh')
   expect(screen.getByRole('combobox', { name: /Số điện thoại/ }).value).toBe('0901234567')
-  expect(screen.getByText('KH cũ')).toBeTruthy()
+  expect(screen.getByText('KH mới')).toBeTruthy()
   expect(mocked.app.createOrder).not.toHaveBeenCalled()
 })
 
