@@ -1,0 +1,14 @@
+.customer-input { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.customer-input__list {
+  display: flex; flex-direction: column; max-height: 240px; overflow-y: auto;
+  border: 1px solid var(--border); border-radius: 10px; background: var(--surface, #fff);
+}
+.customer-input__option {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  padding: 10px 12px; min-height: 52px; cursor: pointer;
+}
+.customer-input__option + .customer-input__option { border-top: 1px solid var(--border); }
+.customer-input__option:hover, .customer-input__option[aria-selected="true"] { background: var(--green-50, #eef8f1); }
+.customer-input__contact { display: flex; flex-direction: column; gap: 3px; min-width: 0; overflow-wrap: anywhere; }
+.customer-input__option .badge, .customer-purchase-status .badge { flex-shrink: 0; }
+.customer-purchase-status { display: flex; align-items: flex-start; gap: 10px; font-size: 13px; }

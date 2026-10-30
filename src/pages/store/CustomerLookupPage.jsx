@@ -5,6 +5,7 @@ import { OrderItemsSummary } from '../../components/OrderItemSelector'
 import { OrderCustomFieldsSummary } from '../../components/OrderCustomFields'
 import { OrderRevenueDetails } from '../../components/OrderRevenue'
 import { useCustomerLookup } from '../../components/useCustomerLookup'
+import { CustomerHistoryBadge } from '../../components/CustomerPhoneInput'
 import { useApp } from '../../state/AppContext'
 import { money, shortDateTime24 } from '../../utils'
 import './CustomerLookupPage.css'
@@ -22,7 +23,7 @@ function CustomerHistory({ app, storeId, customerKey, onClose, revision }) {
   const { value, loading, error } = useCustomerLookup({ app, storeId, mode: 'history', customerKey, offset, revision: revision + retry })
   return <Modal open onClose={onClose} title="Lịch sử mua hàng" wide footer={<Button variant="outline" onClick={onClose}>Đóng</Button>}>
     {value && <div className="customer-lookup__contact"><strong>{value.customer.customerName}</strong>
-      <span>{value.customer.customerPhone || 'Không có SĐT'}</span><Badge>{value.total} đơn hàng</Badge></div>}
+      <span>{value.customer.customerPhone || 'Không có SĐT'}</span><CustomerHistoryBadge hasPurchaseHistory={value.customer.hasPurchaseHistory} /><Badge>{value.total} đơn hàng</Badge></div>}
     {loading && <p role="status">Đang tải lịch sử mua hàng…</p>}
     {error && <p role="alert">{error} <Button variant="outline" onClick={() => setRetry((current) => current + 1)}>Thử lại</Button></p>}
     {value && <>
@@ -62,7 +63,7 @@ export function CustomerLookupPage() {
         <Input icon={Search} list={id} value={query} autoComplete="off" placeholder="Nhập tên khách hàng hoặc số điện thoại…"
           onChange={(event) => setSearch({ storeId, query: event.target.value, offset: 0 })} />
         <datalist id={id}>{(value?.customers || []).map((customer) => <option key={customer.key}
-          value={customer.customerPhone || customer.customerName}>{customer.customerName} • {customer.customerPhone || 'Không có SĐT'}</option>)}</datalist>
+          value={customer.customerPhone || customer.customerName}>{customer.customerName} • {customer.customerPhone || 'Không có SĐT'} • {customer.hasPurchaseHistory ? 'KH cũ' : 'KH mới'}</option>)}</datalist>
       </Field></div>
       {!storeId && <EmptyState title="Chưa chọn cửa hàng" description="Chọn cửa hàng để tra cứu khách hàng." />}
       {loading && <p role="status">Đang tra cứu khách hàng…</p>}
@@ -71,13 +72,13 @@ export function CustomerLookupPage() {
         <TableWrap paginate={false} tableLabel="Danh sách khách hàng">
           <thead><tr><th>STT</th><th>Tên khách hàng</th><th>SĐT</th><th>Lịch sử mua hàng</th></tr></thead>
           <tbody>{value.customers.map((customer, index) => <tr key={customer.key}>
-            <td data-label="STT">{offset + index + 1}</td><td data-label="Tên khách hàng"><strong>{customer.customerName}</strong></td>
+            <td data-label="STT">{offset + index + 1}</td><td data-label="Tên khách hàng"><strong>{customer.customerName}</strong><span className="table-note"><CustomerHistoryBadge hasPurchaseHistory={customer.hasPurchaseHistory} /></span></td>
             <td data-label="SĐT">{customer.customerPhone || 'Không có SĐT'}</td>
             <td data-label="Lịch sử mua hàng"><Button variant="outline" onClick={() => setSelected({ storeId, key: customer.key })}>Lịch sử mua hàng ({customer.orderCount})</Button></td>
           </tr>)}</tbody>
         </TableWrap><Pagination result={value} offset={offset} onChange={changeOffset} />
       </>}
-      {value?.customers.length === 0 && <EmptyState title={query ? 'Không tìm thấy khách hàng' : 'Chưa có khách hàng'} description={query ? 'Thử tên hoặc số điện thoại khác.' : 'Khách hàng sẽ xuất hiện khi cửa hàng có đơn hàng.'} />}
+      {value?.customers.length === 0 && <>{query.trim() && <div className="customer-lookup__contact"><CustomerHistoryBadge hasPurchaseHistory={false} /><span>Chưa có lịch sử mua hàng khớp thông tin tra cứu tại cửa hàng.</span></div>}<EmptyState title={query ? 'Không tìm thấy khách hàng' : 'Chưa có khách hàng'} description={query ? 'Thử tên hoặc số điện thoại khác.' : 'Khách hàng sẽ xuất hiện khi cửa hàng có đơn hàng.'} /></>}
     </Card>
     {selected?.storeId === storeId && <CustomerHistory key={`${storeId}:${selected.key}`} app={app} storeId={storeId}
       customerKey={selected.key} revision={revision} onClose={() => setSelected(null)} />}

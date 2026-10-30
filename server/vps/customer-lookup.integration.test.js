@@ -70,14 +70,26 @@ it('searches all periods and name aliases, normalizes phones, keeps missing phon
   expect((await lookup({ mode: 'history', customerKey: 'phone:0888888888', offset: 20 })).body.records).toHaveLength(3)
 })
 
-it('returns only phone suggestions to employees and denies history and cross-store reads', async () => {
+it('returns compact name/phone suggestions and exact history flags to employees, denying details and cross-store reads', async () => {
   const result = await lookup({ mode: 'suggest', query: '090' }, employee)
   expect(result.status).toBe(200)
-  expect(result.body.suggestions).toEqual([{ customerPhone: '0901234567' }])
+  expect(result.body.suggestions).toEqual([{ key: 'phone:0901234567', customerName: 'Ánh Nguyễn',
+    customerPhone: '0901234567', hasPurchaseHistory: true }])
+  const names = await lookup({ mode: 'suggest', field: 'name', query: 'nguyen anh' }, employee)
+  expect(names.status).toBe(200)
+  expect(names.body.suggestions).toHaveLength(4)
+  expect(names.body.suggestions.every((row) => row.hasPurchaseHistory && !('orders' in row) && !('orderCount' in row))).toBe(true)
+  expect((await lookup({ mode: 'status', field: 'name', query: 'Nguyen Anh' }, employee)).body.hasPurchaseHistory).toBe(true)
+  expect((await lookup({ mode: 'status', query: '090 123 4567' }, employee)).body.hasPurchaseHistory).toBe(true)
+  expect((await lookup({ mode: 'status', query: '090123' }, employee)).body).toMatchObject({ hasPurchaseHistory: false, hasSuggestions: true })
+  expect((await lookup({ mode: 'status', query: '0999999999' }, employee)).body.hasPurchaseHistory).toBe(false)
+  expect((await lookup({ mode: 'status', field: 'name', query: 'Khách chưa mua' }, employee)).body.hasPurchaseHistory).toBe(false)
+  expect((await lookup({ mode: 'suggest', field: 'email', query: '090' }, employee)).status).toBe(400)
   expect((await lookup({ mode: 'suggest', query: '0' }, employee)).body.suggestions).toEqual([])
   expect((await lookup({}, employee)).status).toBe(403)
   expect((await lookup({ mode: 'history', customerKey: 'phone:0901234567' }, employee)).status).toBe(403)
   for (const authorization of [manager, employee]) expect((await lookup({ mode: 'suggest', query: '09', storeId: 'S2' }, authorization)).status).toBe(403)
+  expect((await lookup({ mode: 'status', query: '0999999999', storeId: 'S2' }, employee)).status).toBe(403)
   expect((await lookup({}, '')).status).toBe(401)
   expect((await lookup({ offset: '-1' })).status).toBe(400)
   expect((await lookup({ mode: 'history', customerKey: 'phone:0999999999' })).status).toBe(404)
