@@ -48,4 +48,3 @@ it('discards stale remote responses when the store changes and retries errors', 
   fireEvent.click(screen.getByRole('button', { name: 'Làm mới' }))
   await screen.findByText('Chưa có khách hàng')
 })
-
