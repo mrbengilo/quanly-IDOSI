@@ -12,6 +12,7 @@ const SYSTEM_SCREEN_BY_PATH = Object.freeze({
   '/admin/policies': 'policies',
   '/admin/order-audit': 'order-audit',
   '/admin/customer-survey': 'customer-survey',
+  '/admin/customer-lookup': 'customer-lookup',
   '/admin/support-transfers': 'support-transfers',
   '/admin/order-information-settings': 'order-information-settings',
   '/admin/work-catalog': 'work-catalog',

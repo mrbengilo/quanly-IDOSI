@@ -213,7 +213,7 @@ describe('AppShell notifications', () => {
       'Lịch làm việc của tôi', 'Thu nhập của tôi', 'Vi phạm của tôi', 'Phân lịch làm việc',
       'Nhân viên hỗ trợ KD', 'Khối văn phòng', 'Danh sách cửa hàng',
       'Danh sách nhân viên cửa hàng', 'Nhân viên quản lý cửa hàng', 'Dòng tiền', 'Báo cáo',
-      'Cài đặt thông tin đơn hàng', 'Danh mục công việc & vi phạm', 'Khảo sát thông tin KH', 'Thưởng và phụ cấp quản lý',
+      'Cài đặt thông tin đơn hàng', 'Danh mục công việc & vi phạm', 'Khảo sát thông tin KH', 'Tra cứu', 'Thưởng và phụ cấp quản lý',
       'Lịch sử chỉnh sửa đơn hàng', 'Điều chuyển nhân sự', 'Cài đặt chính sách',
     ])
   })

@@ -7,6 +7,18 @@ export const customerOrderTime = (order) => String(order.createdAt || order.date
 export const customerKey = (order) => customerPhone(order.customerPhone)
   ? `phone:${customerPhone(order.customerPhone)}` : `order:${order.id || order.code || order.entityKey}`
 
+// Preserve the name captured at sale time; resolve older records from current
+// or archived directories without returning employee profile fields.
+export function customerOrderDetails(order, { stores = [], employees = [], deletedEmployees = [] } = {}) {
+  const matches = (record, id) => Boolean(id) && [record.id, record.code].some((value) =>
+    String(value || '').trim().toLowerCase() === String(id).trim().toLowerCase())
+  return { ...order,
+    storeName: order.storeName || stores.find((store) => matches(store, order.storeId))?.name || '',
+    employeeName: order.employeeName || [...employees, ...deletedEmployees]
+      .find((employee) => matches(employee, order.employeeId))?.name || '',
+  }
+}
+
 // A phone identifies a purchase contact. Nameless/phone-less orders must never
 // merge merely because their display name happens to be the same.
 export function customerDirectory(orders = [], { storeId = '', query = '' } = {}) {
@@ -33,8 +45,16 @@ export function customerDirectory(orders = [], { storeId = '', query = '' } = {}
     || (digits && /^[\d\s()+.-]+$/u.test(query) && customer.customerPhone.includes(digits)))
 }
 
-export const customerPublicInfo = ({ key, customerName, customerPhone, orderCount }) => ({
-  key, customerName, customerPhone, orderCount, hasPurchaseHistory: orderCount > 0,
+// Contact identity/classification is global; detailed history and counts can
+// still be restricted to the caller's store without losing the global flag.
+export function customerHistoryForStore(customer, storeId = '') {
+  const orders = customer.orders.filter((order) => !storeId
+    || String(order.storeId).toLowerCase() === String(storeId).toLowerCase())
+  return { ...customer, orders, orderCount: orders.length, hasPurchaseHistory: customer.orderCount > 0 }
+}
+
+export const customerPublicInfo = ({ key, customerName, customerPhone, orderCount, hasPurchaseHistory = orderCount > 0 }) => ({
+  key, customerName, customerPhone, orderCount, hasPurchaseHistory,
 })
 
 // Suggestions expose contacts and a history flag, never order counts/details.

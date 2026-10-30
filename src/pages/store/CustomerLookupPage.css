@@ -3,6 +3,9 @@
 .customer-lookup__contact { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; margin-bottom: 20px; }
 .customer-history-table td { vertical-align: top; }
 .customer-history-table td:nth-child(3) { min-width: 220px; }
+.customer-lookup-page .modal--wide { width: min(1180px, 100%); }
+.customer-history-table td:nth-child(5),
+.customer-history-table td:nth-child(6) { min-width: 120px; overflow-wrap: anywhere; }
 @media (max-width: 640px) {
   .customer-lookup__search { max-width: 100%; }
   .customer-lookup__contact { align-items: flex-start; flex-direction: column; gap: 8px; }
@@ -25,4 +28,5 @@
   .customer-lookup-page .table-scroll td .button { width: 100%; min-height: 44px; }
   .customer-lookup-page .table-note { font-size: 12px; }
   .customer-lookup-page .order-items-summary { min-width: 0; }
+  .customer-lookup-page .customer-history-table td { min-width: 0; }
 }

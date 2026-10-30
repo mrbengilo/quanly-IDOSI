@@ -128,6 +128,7 @@ const routeComponents = {
   '/admin/policies': PolicySettings,
   '/admin/order-audit': OrderAuditPage,
   '/admin/customer-survey': CustomerSurveyPage,
+  '/admin/customer-lookup': CustomerLookupPage,
   '/admin/support-transfers': SupportTransfersPage,
   '/admin/order-information-settings': OrderInformationSettingsPage,
   '/admin/work-catalog': WorkCatalogSettingsPage,

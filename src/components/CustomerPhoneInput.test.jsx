@@ -60,7 +60,7 @@ it('prioritizes an exact phone over a matching name and recomputes status on sto
   view.rerender(<CustomerPurchaseStatus app={app} storeId="S1" customerName="Tên khác" phone="090 123 4567" />)
   expect(screen.getByText('KH cũ')).toBeTruthy()
   view.rerender(<CustomerPurchaseStatus app={app} storeId="S2" customerName="Đặng Ánh" phone="0901234567" />)
-  expect(screen.getByText('KH mới')).toBeTruthy()
+  expect(screen.getByText('KH cũ')).toBeTruthy()
   view.rerender(<CustomerPurchaseStatus app={app} storeId="S1" customerName="" phone="" />)
   expect(screen.queryByText(/KH (cũ|mới)/)).toBeNull()
 })
@@ -83,11 +83,11 @@ it('does not label a customer new while loading, after an error, or from an outd
   expect(await screen.findByText('KH mới')).toBeTruthy()
 })
 
-it('fills both name and phone from a selected suggestion in the create dialog without saving', () => {
+it('fills a customer purchased only at another store into the create dialog as KH cũ without saving', () => {
   const employee = { id: 'E1', name: 'Employee', storeId: 'S1' }
   mocked.app = { ...mocked.app, activeStoreId: 'S1', currentEmployee: employee, employees: [employee],
     session: { role: 'employee', employeeId: 'E1', storeId: 'S1' },
-    orders: [{ id: 'O1', storeId: 'S1', customerName: 'Đặng Ánh', customerPhone: '0901234567' }],
+    orders: [{ id: 'O1', storeId: 'S2', customerName: 'Đặng Ánh', customerPhone: '0901234567' }],
     stores: [{ id: 'S1', name: 'Home' }], attendance: [{ id: 'A1', employeeId: 'E1', storeId: 'S1', checkInAt: '2026-10-30T08:00:00+07:00', date: '2026-10-30' }],
     createOrder: vi.fn(), notify: vi.fn() }
   render(<MemoryRouter><EmployeeOrdersPage /></MemoryRouter>)
