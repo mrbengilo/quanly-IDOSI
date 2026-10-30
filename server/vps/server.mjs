@@ -88,8 +88,9 @@ export const createVpsRuntime = ({
   warehouseApiKey = process.env.WAREHOUSE_API_KEY || '',
   warehouseApiAllowedOrigins = process.env.WAREHOUSE_API_ALLOWED_ORIGINS || '',
   warehouseApiStoreIds = process.env.WAREHOUSE_API_STORE_IDS || '',
+  backgroundSnapshotReads = process.env.NODE_ENV === 'production',
 } = {}) => {
-  const database = createSqliteD1({ databasePath, migrationsDirectory })
+  const database = createSqliteD1({ databasePath, migrationsDirectory, backgroundSnapshotReads })
   const env = {
     DB: database,
     IDENTITY_IMAGES: new ImageFileR2(imagesDirectory),

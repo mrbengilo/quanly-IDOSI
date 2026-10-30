@@ -319,6 +319,40 @@ backup mới nhất, report cần audit hoặc previous image còn dùng để r
 
 ### Backup hằng ngày không dừng hệ thống
 
+### Login latency during large history reads
+
+The production runtime reads full global snapshots and the large store `tasks`
+snapshot through one read-only SQLite worker at a time. The SQL, projections,
+authorization and optimistic version checks are unchanged. Initial login data
+continues to use the small synchronous queries, so it does not queue behind
+history reads. Each background query opens a fresh WAL reader, without applying
+migrations or data fixes. Its connection closes after the query. Snapshot timing
+labels end in `:background` and include queue wait and worker startup. The queue
+is bounded to eight waiting queries; worker errors fail the requesting operation.
+The worker shares the VPS memory budget: its configured V8 resource limit can be
+overridden by the parent Node heap flag, so serialized execution is essential.
+This mitigation does not make large historical responses smaller or eliminate
+the main-thread cost of hydration/serialization. Roll back to the previous
+verified image if behavior regresses; no schema migration is involved.
+
+### Explicit one-shot backup retention
+
+Use `Retain two IDOSI VPS backups` on `main`, first with `mode=inventory`.
+Review the returned filenames, timestamps, sizes and manifest, then run
+`mode=apply` with that exact manifest. This is an explicit maintenance action,
+not an automatic deployment hook. It keeps the newest two archives across
+`backups/idosi-data-*.tar.gz` and `backups/daily/idosi-daily-*.tar.gz` together.
+Both retained archives must match their sidecar/deployment-report checksum,
+pass gzip validation and an isolated SQLite restore (including the archived WAL)
+with `integrity_check` and `foreign_key_check` before any removal. Encrypted
+retained archives fail closed and require separate restore verification.
+Changed inventories, unsafe filesystem entries and active deploy/backup locks
+abort the operation. Only recognized old archives and their checksum sidecars
+are deleted. Reports, job logs, persistent volumes and rollback images remain.
+Reports referring to deleted archives remain audit records, not usable restore
+points. This action cannot be undone; recovery uses the retained pair or a
+separately held offsite backup. Future backups follow the existing backup policy.
+
 Backup theo deployment chỉ có khi deploy. `deploy/vps/backup-daily.sh` tạo thêm
 một bản mỗi ngày mà **không dừng app/Caddy**:
 
