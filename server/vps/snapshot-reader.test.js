@@ -19,18 +19,35 @@ it('keeps health and real login responsive during a long read-only SQLite query'
     const response = await fetch(`${base}${path}`, {
       method: 'POST', headers: { 'content-type': 'application/json', ...headers }, body: JSON.stringify(body),
     })
-    expect(response.ok).toBe(true)
-    return response.json()
+    const payload = await response.json()
+    expect(response.ok, JSON.stringify(payload.error)).toBe(true)
+    return payload
   }
   try {
     await post('/api/bootstrap', {
       username: 'background.admin', password: 'synthetic-background-test-password',
       initialState: { stores: [{ id: 'S1' }, { id: 'S2' }],
-        employees: [{ id: 'E1', storeId: 'S1' }, { id: 'E2', storeId: 'S2' }],
+        employees: [
+          { id: 'E1', storeId: 'S1', unit: 'store', status: 'Đang làm việc' },
+          { id: 'E2', storeId: 'S2', unit: 'store', status: 'Đang làm việc' },
+          { id: 'M1', storeId: 'S1', unit: 'store_manager', role: 'store_manager', status: 'Đang làm việc' },
+          { id: 'H1', storeId: 'BUSINESS_SUPPORT', unit: 'business_support', role: 'business_support', status: 'Đang làm việc' },
+        ],
         tasks: [{ id: 'T1', storeId: 'S1', employeeId: 'E1' }, { id: 'T2', storeId: 'S2', employeeId: 'E2' }],
       },
     }, { 'x-idosi-bootstrap-token': 'background-test' })
     const db = runtime.database
+    const password = 'synthetic-background-test-password'
+    const admin = await post('/api/login', { username: 'background.admin', password })
+    const accounts = [
+      { username: 'background.employee', role: 'employee', storeId: 'S1', employeeId: 'E1' },
+      { username: 'background.manager', role: 'store_manager', storeId: 'S1', employeeId: 'M1' },
+      { username: 'background.support', role: 'business_support', storeId: 'BUSINESS_SUPPORT', employeeId: 'H1' },
+    ]
+    for (const account of accounts) {
+      await post('/api/command', { type: 'user.create', payload: { ...account, password, displayName: account.username } },
+        { authorization: `Bearer ${admin.token}`, 'idempotency-key': `background-create-${account.employeeId}` })
+    }
     let finished = false
     const slow = db.snapshotReader.query(`WITH RECURSIVE n(x) AS (
       VALUES(0) UNION ALL SELECT x+1 FROM n WHERE x < 8000000
@@ -38,8 +55,9 @@ it('keeps health and real login responsive during a long read-only SQLite query'
     const health = await fetch(`${base}/api/health`)
     expect(health.status).toBe(200)
     await health.arrayBuffer()
-    const login = await post('/api/login', { username: 'background.admin', password: 'synthetic-background-test-password' })
-    expect(login.token).toBeTruthy()
+    const logins = await Promise.all(['background.admin', ...accounts.map((account) => account.username)]
+      .map((username) => post('/api/login', { username, password })))
+    expect(logins.every((login) => Boolean(login.token))).toBe(true)
     expect(finished, 'authentication must finish while the SQL worker is still busy').toBe(false)
     expect((await slow)[0].total).toBe(32000004000000)
 
