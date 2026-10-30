@@ -192,7 +192,7 @@ describe('violation point policy through VPS commands and projections', () => {
     const locked = await f.command('M1', 'violation.void', { violationId: 'FIVE', reason: 'Kiểm tra khóa kỳ' })
     expect(locked.status, JSON.stringify(locked.body)).toBe(409)
     expect(f.rows('violations')[0].status).toBe('ACTIVE')
-    const state = (await f.read('M1', '/api/store-screens/tasks?storeId=S1')).state
+    const state = (await f.read('M1', '/api/store-screens/task-violations?storeId=S1&period=2026-09')).state
     expect(state.violationPointSummaries.map((row) => row.employeeId)).toEqual(['E1'])
     expect(state.violations).not.toContainEqual(expect.objectContaining({ employeeId: 'E1' }))
   }, 30000)
