@@ -218,6 +218,10 @@ export const apiGetCustomerLookup = ({ signal, ...options } = {}) => {
   const query = new URLSearchParams(Object.entries(options).map(([key, value]) => [key, String(value ?? '')]))
   return stateReadRequest(`/api/customer-lookup?${query.toString()}`, { signal })
 }
+export const apiGetStoreTaskSummary = ({ signal, ...filters } = {}) => {
+  const query = new URLSearchParams(Object.entries(filters).map(([key, value]) => [key, String(value || '')]))
+  return stateReadRequest(`/api/store-task-summary?${query.toString()}`, { signal })
+}
 export const apiGetStoreTaskHistory = ({ signal, ...filters } = {}) => {
   const query = new URLSearchParams(Object.entries(filters).map(([key, value]) => [key, String(value || '')]))
   return stateReadRequest(`/api/store-task-history?${query.toString()}`, { signal })

@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { Button, Field, InfoNote, Input, Select } from '../../components/UI'
-import { apiGetStoreTaskHistory, apiGetStoreScreenState } from '../../services/idosiApi'
+import { apiGetStoreTaskHistory, apiGetStoreTaskSummary, apiGetStoreScreenState } from '../../services/idosiApi'
 import { useApp } from '../../state/AppContext'
 import { today } from '../../utils'
 import { ViolationManagementPage } from '../compensation/ViolationManagementPage'
@@ -13,6 +13,22 @@ export function useStoreTaskHistory({ enabled, storeId, assignmentId, employees,
   const selection = storedSelection.scopeKey === scopeKey ? storedSelection : emptySelection
   const [result, setResult] = useState(null)
   const [retry, setRetry] = useState(0)
+  const [summaryResult, setSummaryResult] = useState(null)
+  const [summaryRetry, setSummaryRetry] = useState(0)
+  const summaryKey = JSON.stringify([storeId, selection.date, selection.employeeId, selection.shiftId, summaryRetry])
+  useEffect(() => {
+    if (!enabled || !storeId) return
+    const controller = new AbortController()
+    let active = true
+    apiGetStoreTaskSummary({ storeId, date: selection.date, employeeId: selection.employeeId,
+      shiftId: selection.shiftId, signal: controller.signal }).then((payload) => {
+      if (active) setSummaryResult({ key: summaryKey, summary: payload.summary })
+    }).catch((error) => {
+      if (active) setSummaryResult({ key: summaryKey, error: error.message || 'Không thể tổng hợp dữ liệu thưởng.' })
+    })
+    return () => { active = false; controller.abort() }
+  }, [enabled, storeId, selection.date, selection.employeeId, selection.shiftId, summaryKey])
+  const summary = summaryResult?.key === summaryKey ? summaryResult : null
   const cursor = selection.cursors.at(-1)
   const key = JSON.stringify([storeId, assignmentId, selection.date, selection.employeeId, selection.shiftId, cursor, retry])
   useEffect(() => {
@@ -39,7 +55,9 @@ export function useStoreTaskHistory({ enabled, storeId, assignmentId, employees,
         <option value="">Tất cả ca</option>{shiftDefinitions.map((shift) => <option key={shift.id} value={shift.id}>{shift.name || shift.id}</option>)}
       </Select></Field>
     </div>
-    <InfoNote>Mỗi trang hiển thị thưởng của tối đa 10 lượt ca gần nhất. Tổng tiền và thống kê bên dưới thuộc trang đang xem.</InfoNote>
+    <InfoNote>Danh sách hiển thị tối đa 10 lượt ca mỗi trang. Tổng tiền và thống kê tính trên toàn bộ dữ liệu khớp bộ lọc.</InfoNote>
+    {!summary && <p role="status">Đang tổng hợp toàn bộ dữ liệu theo bộ lọc...</p>}
+    {summary?.error && <InfoNote tone="red">{summary.error} <Button onClick={() => setSummaryRetry((value) => value + 1)}>Thử lại thống kê</Button></InfoNote>}
     {!current && <p role="status">Đang tải trang lịch sử...</p>}
     {current?.error && <InfoNote tone="red">{current.error} <Button onClick={() => setRetry((value) => value + 1)}>Thử lại</Button></InfoNote>}
   </>
@@ -49,7 +67,7 @@ export function useStoreTaskHistory({ enabled, storeId, assignmentId, employees,
     <Button variant="outline" disabled={!current?.payload?.page?.hasMore} onClick={() => setSelection({ ...selection, cursors: [...selection.cursors, current.payload.page.nextCursor] })}>Trang sau</Button>
   </nav>
   return { state: current?.payload?.state || { attendance: [], tasks: [], workCatalogProgress: [], compensationEntries: [], taskAssignmentHistory: [], violations: [] },
-    ready: Boolean(current?.payload), controls, pagination }
+    ready: Boolean(current?.payload), summary: summary?.summary, controls, pagination }
 }
 
 export function StoreTaskViolations({ storeId }) {
