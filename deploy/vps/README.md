@@ -343,7 +343,8 @@ Review the returned filenames, timestamps, sizes and manifest, then run
 not an automatic deployment hook. It keeps the newest two archives across
 `backups/idosi-data-*.tar.gz` and `backups/daily/idosi-daily-*.tar.gz` together.
 Both retained archives must match their sidecar/deployment-report checksum,
-pass gzip validation and contain `idosi.sqlite` before any removal. Encrypted
+pass gzip validation and an isolated SQLite restore (including the archived WAL)
+with `integrity_check` and `foreign_key_check` before any removal. Encrypted
 retained archives fail closed and require separate restore verification.
 Changed inventories, unsafe filesystem entries and active deploy/backup locks
 abort the operation. Only recognized old archives and their checksum sidecars

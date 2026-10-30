@@ -6,9 +6,12 @@ import json
 import os
 from pathlib import Path
 import re
+import shutil
+import sqlite3
 import stat
 import subprocess
 import tarfile
+import tempfile
 
 
 ARCHIVE = re.compile(r"^idosi-(?:data|daily)-(\d{8}T\d{6}Z)(?:-[A-Za-z0-9._-]+)?\.tar\.gz(?:\.enc)?$")
@@ -72,10 +75,37 @@ def verify_archive(root, row):
     if actual != expected:
         raise ValueError("Retained archive checksum mismatch")
     subprocess.run(["gzip", "-t", "--", str(path)], check=True)
-    with tarfile.open(path, "r:gz") as archive:
-        if not any(member.name.removeprefix("./") == "idosi.sqlite" and member.isfile()
-                   and member.size > 0 for member in archive):
+    # Restore only the database and WAL to a disposable directory, never the
+    # live volume. An archived WAL may contain committed pages absent from the
+    # main file. Ignore its shared-memory index: SQLite rebuilds that locally.
+    with tempfile.TemporaryDirectory(prefix="idosi-backup-verify-") as temporary:
+        restored = Path(temporary)
+        found = set()
+        with tarfile.open(path, "r:gz") as archive:
+            for member in archive:
+                name = member.name.removeprefix("./")
+                if name not in ("idosi.sqlite", "idosi.sqlite-wal"):
+                    continue
+                if name in found or not member.isfile() or (name == "idosi.sqlite" and member.size <= 0):
+                    raise ValueError("Invalid or duplicate database archive member")
+                if member.size + 64 * 1024 * 1024 > shutil.disk_usage(restored).free:
+                    raise ValueError("Not enough temporary disk space to validate retained database")
+                found.add(name)
+                with archive.extractfile(member) as source, (restored / name).open("xb") as target:
+                    shutil.copyfileobj(source, target)
+        if "idosi.sqlite" not in found:
             raise ValueError("Retained archive has no SQLite database")
+        database = sqlite3.connect(str(restored / "idosi.sqlite"))
+        try:
+            database.execute("PRAGMA query_only = ON")
+            if database.execute("PRAGMA integrity_check").fetchall() != [("ok",)]:
+                raise ValueError("Retained SQLite database failed integrity_check")
+            if database.execute("PRAGMA foreign_key_check").fetchone() is not None:
+                raise ValueError("Retained SQLite database has foreign-key violations")
+            if not database.execute("SELECT name FROM sqlite_schema WHERE type='table'").fetchone():
+                raise ValueError("Retained SQLite database has no tables")
+        finally:
+            database.close()
     return actual
 
 

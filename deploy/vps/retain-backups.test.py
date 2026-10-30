@@ -1,6 +1,7 @@
 import hashlib
 import importlib.util
 import io
+import sqlite3
 from pathlib import Path
 import tarfile
 import tempfile
@@ -22,8 +23,16 @@ class RetentionTests(unittest.TestCase):
         directory.mkdir(exist_ok=True)
         prefix = "daily" if daily else "data"
         path = directory / f"idosi-{prefix}-202610{day:02}T000000Z.tar.gz"
+        fixture = self.root / "fixture.sqlite"
+        database = sqlite3.connect(fixture)
+        try:
+            database.execute("CREATE TABLE IF NOT EXISTS fixture (id INTEGER PRIMARY KEY)")
+            database.execute("INSERT OR IGNORE INTO fixture VALUES (1)")
+            database.commit()
+        finally:
+            database.close()
         with tarfile.open(path, "w:gz") as archive:
-            data = b"SQLite format 3\x00fixture"
+            data = fixture.read_bytes()
             info = tarfile.TarInfo("./idosi.sqlite")
             info.size = len(data)
             archive.addfile(info, io.BytesIO(data))
@@ -46,6 +55,38 @@ class RetentionTests(unittest.TestCase):
         self.assertFalse(Path(str(paths[0]) + ".sha256").exists())
         self.assertTrue(all(path.exists() for path in paths[1:] + [report, unknown]))
         retention.retain(self.root, "apply", retention.manifest_hash(retention.inventory(self.root)))
+
+    def test_corrupt_database_inside_valid_archives_preserves_older_recovery_point(self):
+        paths = [self.archive(day) for day in (1, 2, 3)]
+        for path in paths[1:]:
+            with tarfile.open(path, "w:gz") as archive:
+                data = b"not a SQLite database"
+                member = tarfile.TarInfo("./idosi.sqlite")
+                member.size = len(data)
+                archive.addfile(member, io.BytesIO(data))
+            digest = hashlib.sha256(path.read_bytes()).hexdigest()
+            Path(str(path) + ".sha256").write_text(f"{digest}  {path.name}\n")
+        with self.assertRaises(sqlite3.DatabaseError):
+            retention.retain(self.root, "apply", retention.manifest_hash(retention.inventory(self.root)))
+        self.assertTrue(all(path.exists() for path in paths))
+
+    def test_archived_wal_is_restored_for_integrity_verification(self):
+        path = self.archive(1)
+        fixture = self.root / "wal.sqlite"
+        database = sqlite3.connect(fixture)
+        try:
+            database.execute("PRAGMA journal_mode=WAL")
+            database.execute("PRAGMA wal_autocheckpoint=0")
+            database.execute("CREATE TABLE wal_only (id INTEGER PRIMARY KEY)")
+            database.commit()
+            with tarfile.open(path, "w:gz") as archive:
+                archive.add(fixture, arcname="./idosi.sqlite")
+                archive.add(Path(str(fixture) + "-wal"), arcname="./idosi.sqlite-wal")
+            digest = hashlib.sha256(path.read_bytes()).hexdigest()
+            Path(str(path) + ".sha256").write_text(f"{digest}  {path.name}\n")
+            self.assertEqual(retention.verify_archive(self.root, retention.inventory(self.root)[0]), digest)
+        finally:
+            database.close()
 
     def test_changed_manifest_or_missing_second_backup_never_deletes(self):
         self.archive(1)
