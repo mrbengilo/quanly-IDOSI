@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { apiGetCustomerLookup } from '../services/idosiApi'
-import { customerDirectory, customerPublicInfo, customerSuggestions, customerHasPurchaseHistory, customerOrderDetails } from '../domain/customerLookup'
+import { customerDirectory, customerPublicInfo, customerSuggestions, customerHasPurchaseHistory, customerHistoryForStore, customerOrderDetails } from '../domain/customerLookup'
 
 export function useCustomerLookup({ app, storeId, scope = 'store', mode = 'list', field = 'phone', query = '', customerKey = '', offset = 0, enabled = true, revision = 0 }) {
   const remote = ['connected', 'connecting', 'syncing', 'error'].includes(app.apiStatus)
@@ -25,13 +25,14 @@ export function useCustomerLookup({ app, storeId, scope = 'store', mode = 'list'
   if (!ready) return { value: null, error: '', loading: false }
   if (remote) return result.identity === identity
     ? { ...result, loading: false } : { value: null, error: '', loading: true }
-  const customers = customerDirectory(app.orders || [], { storeId: scope === 'global' ? '' : storeId, query: mode === 'list' ? query : '' })
+  const customers = customerDirectory(app.orders || [], { query: mode === 'list' ? query : '' })
   if (mode === 'suggest') return { loading: false, error: '', value: { suggestions: customerSuggestions(customers, query, field) } }
   if (mode === 'status') return { loading: false, error: '', value: { hasPurchaseHistory: customerHasPurchaseHistory(customers, query, field),
     hasSuggestions: customerSuggestions(customers, query, field, 1).length > 0 } }
-  if (mode === 'list') return { loading: false, error: '', value: { customers: customers.slice(offset, offset + 20).map(customerPublicInfo), total: customers.length, limit: 20 } }
-  const customer = customers.find((candidate) => candidate.key === customerKey)
-  return customer ? { loading: false, error: '', value: { customer: customerPublicInfo(customer),
-    records: customer.orders.slice(offset, offset + 20).map((order) => customerOrderDetails(order, app)), total: customer.orderCount, limit: 20 } }
-    : { loading: false, value: null, error: scope === 'global' ? 'Không tìm thấy khách hàng trong hệ thống.' : 'Không tìm thấy khách hàng trong cửa hàng này.' }
+  if (mode === 'list') return { loading: false, error: '', value: { customers: customers.slice(offset, offset + 20)
+    .map((customer) => customerPublicInfo(customerHistoryForStore(customer, scope === 'global' ? '' : storeId))), total: customers.length, limit: 20 } }
+  const contact = customers.find((candidate) => candidate.key === customerKey)
+  const customer = contact && customerHistoryForStore(contact, scope === 'global' ? '' : storeId)
+  return customer ? { loading: false, error: '', value: { customer: customerPublicInfo(customer), records: customer.orders.slice(offset, offset + 20).map((order) => customerOrderDetails(order, app)), total: customer.orderCount, limit: 20 } }
+    : { loading: false, value: null, error: 'Không tìm thấy khách hàng trong hệ thống.' }
 }

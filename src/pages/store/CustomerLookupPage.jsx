@@ -23,10 +23,11 @@ function CustomerHistory({ app, storeId, scope, customerKey, onClose, revision }
   const { value, loading, error } = useCustomerLookup({ app, storeId, scope, mode: 'history', customerKey, offset, revision: revision + retry })
   return <Modal open onClose={onClose} title="Lịch sử mua hàng" wide footer={<Button variant="outline" onClick={onClose}>Đóng</Button>}>
     {value && <div className="customer-lookup__contact"><strong>{value.customer.customerName}</strong>
-      <span>{value.customer.customerPhone || 'Không có SĐT'}</span><CustomerHistoryBadge hasPurchaseHistory={value.customer.hasPurchaseHistory} /><Badge>{value.total} đơn hàng</Badge></div>}
+      <span>{value.customer.customerPhone || 'Không có SĐT'}</span><CustomerHistoryBadge hasPurchaseHistory={value.customer.hasPurchaseHistory} /><Badge>{value.total} đơn hàng{scope === 'store' ? ' tại cửa hàng' : ''}</Badge></div>}
     {loading && <p role="status">Đang tải lịch sử mua hàng…</p>}
     {error && <p role="alert">{error} <Button variant="outline" onClick={() => setRetry((current) => current + 1)}>Thử lại</Button></p>}
-    {value && <>
+    {value?.total === 0 && <EmptyState title="Chưa có đơn hàng tại cửa hàng này" description="Khách đã có lịch sử mua hàng trên toàn hệ thống và được nhận diện là KH cũ." />}
+    {value?.total > 0 && <>
       <TableWrap paginate={false} tableLabel="Đơn hàng của khách" tableClassName="customer-history-table">
         <thead><tr><th>STT</th><th>Đơn hàng / Thời gian mua</th><th>Mặt hàng / Số lượng</th><th>Số tiền</th><th>Cửa hàng</th><th>Nhân viên bán</th><th>Thông tin đơn</th></tr></thead>
         <tbody>{value.records.map((order, index) => <tr key={order.id || order.code}>
@@ -59,7 +60,7 @@ export function CustomerLookupPage({ systemWide = false }) {
   const { value, loading, error } = useCustomerLookup({ app, storeId, scope, query, offset, revision })
   const changeOffset = (next) => setSearch({ storeId, query, offset: next })
   return <div className="page customer-lookup-page">
-    <PageHeader title="Tra cứu" subtitle={systemWide ? 'Thông tin khách hàng và toàn bộ lịch sử mua hàng trên toàn hệ thống.' : 'Thông tin khách hàng và toàn bộ lịch sử mua hàng tại cửa hàng.'}
+    <PageHeader title="Tra cứu" subtitle={systemWide ? 'Thông tin khách hàng và toàn bộ lịch sử mua hàng trên toàn hệ thống.' : 'Tìm khách hàng và nhận diện KH cũ trên toàn hệ thống. Chi tiết đơn hiển thị theo quyền tại cửa hàng.'}
       actions={<Button variant="outline" icon={RefreshCw} onClick={() => { changeOffset(0); setRevision((current) => current + 1) }}>Làm mới</Button>} />
     <Card title="Khách hàng" subtitle={value ? `${value.total} khách hàng phù hợp` : 'Tra cứu theo tên hoặc số điện thoại'}>
       <div className="customer-lookup__search"><Field label="Tìm theo tên khách hàng hoặc SĐT">
@@ -73,15 +74,15 @@ export function CustomerLookupPage({ systemWide = false }) {
       {error && <p role="alert">{error}</p>}
       {value?.customers.length > 0 && <>
         <TableWrap paginate={false} tableLabel="Danh sách khách hàng">
-          <thead><tr><th>STT</th><th>Tên khách hàng</th><th>SĐT</th><th>Lịch sử mua hàng</th></tr></thead>
+          <thead><tr><th>STT</th><th>Tên khách hàng</th><th>SĐT</th><th>{systemWide ? 'Lịch sử toàn hệ thống' : 'Lịch sử tại cửa hàng'}</th></tr></thead>
           <tbody>{value.customers.map((customer, index) => <tr key={customer.key}>
             <td data-label="STT">{offset + index + 1}</td><td data-label="Tên khách hàng"><strong>{customer.customerName}</strong><span className="table-note"><CustomerHistoryBadge hasPurchaseHistory={customer.hasPurchaseHistory} /></span></td>
             <td data-label="SĐT">{customer.customerPhone || 'Không có SĐT'}</td>
-            <td data-label="Lịch sử mua hàng"><Button variant="outline" onClick={() => setSelected({ storeId, key: customer.key })}>Lịch sử mua hàng ({customer.orderCount})</Button></td>
+            <td data-label={systemWide ? 'Lịch sử toàn hệ thống' : 'Lịch sử tại cửa hàng'}><Button variant="outline" onClick={() => setSelected({ storeId, key: customer.key })}>Lịch sử mua hàng ({customer.orderCount})</Button></td>
           </tr>)}</tbody>
         </TableWrap><Pagination result={value} offset={offset} onChange={changeOffset} />
       </>}
-      {value?.customers.length === 0 && <>{query.trim() && <div className="customer-lookup__contact"><CustomerHistoryBadge hasPurchaseHistory={false} /><span>{systemWide ? 'Chưa có lịch sử mua hàng khớp thông tin tra cứu trong hệ thống.' : 'Chưa có lịch sử mua hàng khớp thông tin tra cứu tại cửa hàng.'}</span></div>}<EmptyState title={query ? 'Không tìm thấy khách hàng' : 'Chưa có khách hàng'} description={query ? 'Thử tên hoặc số điện thoại khác.' : systemWide ? 'Khách hàng sẽ xuất hiện khi hệ thống có đơn hàng.' : 'Khách hàng sẽ xuất hiện khi cửa hàng có đơn hàng.'} /></>}
+      {value?.customers.length === 0 && <>{query.trim() && <div className="customer-lookup__contact"><CustomerHistoryBadge hasPurchaseHistory={false} /><span>Chưa có lịch sử mua hàng khớp thông tin tra cứu trên toàn hệ thống.</span></div>}<EmptyState title={query ? 'Không tìm thấy khách hàng' : 'Chưa có khách hàng'} description={query ? 'Thử tên hoặc số điện thoại khác.' : 'Khách hàng sẽ xuất hiện khi hệ thống có đơn hàng.'} /></>}
     </Card>
     {selected?.storeId === storeId && <CustomerHistory key={`${scope}:${storeId}:${selected.key}`} app={app} storeId={storeId} scope={scope}
       customerKey={selected.key} revision={revision} onClose={() => setSelected(null)} />}

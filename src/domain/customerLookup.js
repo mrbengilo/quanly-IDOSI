@@ -45,8 +45,16 @@ export function customerDirectory(orders = [], { storeId = '', query = '' } = {}
     || (digits && /^[\d\s()+.-]+$/u.test(query) && customer.customerPhone.includes(digits)))
 }
 
-export const customerPublicInfo = ({ key, customerName, customerPhone, orderCount }) => ({
-  key, customerName, customerPhone, orderCount, hasPurchaseHistory: orderCount > 0,
+// Contact identity/classification is global; detailed history and counts can
+// still be restricted to the caller's store without losing the global flag.
+export function customerHistoryForStore(customer, storeId = '') {
+  const orders = customer.orders.filter((order) => !storeId
+    || String(order.storeId).toLowerCase() === String(storeId).toLowerCase())
+  return { ...customer, orders, orderCount: orders.length, hasPurchaseHistory: customer.orderCount > 0 }
+}
+
+export const customerPublicInfo = ({ key, customerName, customerPhone, orderCount, hasPurchaseHistory = orderCount > 0 }) => ({
+  key, customerName, customerPhone, orderCount, hasPurchaseHistory,
 })
 
 // Suggestions expose contacts and a history flag, never order counts/details.

@@ -31,10 +31,11 @@ beforeAll(async () => {
       { id: 'H1', name: 'Support', unit: 'business_support', storeId: 'BUSINESS_SUPPORT' }],
     deletedEmployees: [{ id: 'E-OLD', code: 'OLD-STAFF', name: 'Former employee', salary: 8888888 }],
     orders: [order('OLD'), order('NEW', { customerName: 'Ánh Nguyễn', customerPhone: '0901234567', createdAt: '2026-10-30T09:00:00+07:00' }),
+      order('OTHER', { storeId: 'S2', customerName: 'Trần Khách Liên Cửa Hàng', customerPhone: '0999999999' }),
       order('CROSS-STORE', { storeId: 'S2', employeeId: 'OLD-STAFF', createdAt: '2025-01-01T01:00:00Z' }),
       order('CLOSED-STORE', { storeId: 'S3', employeeId: 'MISSING', employeeName: 'Seller snapshot' }),
-      order('OTHER', { storeId: 'S2', customerPhone: '0999999999' }),
-      order('DELETED', { deletedAt: '2026-10-30' }), order('BALANCE', { source: 'legacy-opening-balance' }),
+      order('DELETED', { deletedAt: '2026-10-30', customerPhone: '0111111111' }),
+      order('BALANCE', { source: 'legacy-opening-balance', customerPhone: '0222222222' }),
       order('NO-PHONE-1', { customerPhone: '' }), order('NO-PHONE-2', { customerPhone: '' }),
       ...Array.from({ length: 23 }, (_, index) => order(`PAGE-${index}`, { customerPhone: '0888888888' }))],
   } }, { 'x-idosi-bootstrap-token': 'customer-fixture' })).status).toBe(201)
@@ -57,16 +58,18 @@ afterAll(async () => {
   if (directory) await rm(directory, { recursive: true, force: true })
 })
 
-it('searches all periods and name aliases, normalizes phones, keeps missing phones separate, and excludes deleted/balance/other-store rows', async () => {
+it('searches global contacts across all periods but keeps detailed history and counts within the selected store', async () => {
   const result = await lookup({}, manager)
   expect(result.status, JSON.stringify(result.body)).toBe(200)
-  expect(result.body.total).toBe(4)
+  expect(result.body.total).toBe(5)
   const customer = result.body.customers.find((row) => row.customerPhone === '0901234567')
   expect(customer).toMatchObject({ customerName: 'Ánh Nguyễn', orderCount: 2 })
   expect(customer.orders).toBeUndefined()
   expect((await lookup({ query: 'nguyen anh' })).body.customers).toHaveLength(4)
   expect((await lookup({ query: '090 123' }, support)).body.customers).toEqual([customer])
-  expect((await lookup({ query: '0999' })).body.total).toBe(0)
+  expect((await lookup({ query: '0999' })).body.customers).toEqual([
+    expect.objectContaining({ customerPhone: '0999999999', hasPurchaseHistory: true, orderCount: 0 }),
+  ])
   const history = await lookup({ mode: 'history', customerKey: customer.key }, manager)
   expect(history.body.records.map((row) => row.id)).toEqual(['NEW', 'OLD'])
   expect(history.body.records[0]).toMatchObject({ amount: 120000, items: [{ quantity: 2, productName: 'Áo' }] })
@@ -85,7 +88,18 @@ it('returns compact name/phone suggestions and exact history flags to employees,
   expect((await lookup({ mode: 'status', field: 'name', query: 'Nguyen Anh' }, employee)).body.hasPurchaseHistory).toBe(true)
   expect((await lookup({ mode: 'status', query: '090 123 4567' }, employee)).body.hasPurchaseHistory).toBe(true)
   expect((await lookup({ mode: 'status', query: '090123' }, employee)).body).toMatchObject({ hasPurchaseHistory: false, hasSuggestions: true })
-  expect((await lookup({ mode: 'status', query: '0999999999' }, employee)).body.hasPurchaseHistory).toBe(false)
+  expect((await lookup({ mode: 'status', query: '0999999999' }, employee)).body.hasPurchaseHistory).toBe(true)
+  expect((await lookup({ mode: 'suggest', query: '099' }, employee)).body.suggestions).toEqual([
+    { key: 'phone:0999999999', customerName: 'Trần Khách Liên Cửa Hàng', customerPhone: '0999999999', hasPurchaseHistory: true },
+  ])
+  expect((await lookup({ mode: 'suggest', field: 'name', query: 'tran khach' }, employee)).body.suggestions).toEqual([
+    expect.objectContaining({ customerPhone: '0999999999', hasPurchaseHistory: true }),
+  ])
+  expect((await lookup({ mode: 'status', field: 'name', query: 'tran khach lien cua hang' }, employee)).body.hasPurchaseHistory).toBe(true)
+  for (const query of ['0111111111', '0222222222', '0777777777']) {
+    expect((await lookup({ mode: 'status', query }, employee)).body.hasPurchaseHistory).toBe(false)
+    expect((await lookup({ mode: 'suggest', query }, employee)).body.suggestions).toEqual([])
+  }
   expect((await lookup({ mode: 'status', field: 'name', query: 'Khách chưa mua' }, employee)).body.hasPurchaseHistory).toBe(false)
   expect((await lookup({ mode: 'suggest', field: 'email', query: '090' }, employee)).status).toBe(400)
   expect((await lookup({ mode: 'suggest', query: '0' }, employee)).body.suggestions).toEqual([])
@@ -95,7 +109,10 @@ it('returns compact name/phone suggestions and exact history flags to employees,
   expect((await lookup({ mode: 'status', query: '0999999999', storeId: 'S2' }, employee)).status).toBe(403)
   expect((await lookup({}, '')).status).toBe(401)
   expect((await lookup({ offset: '-1' })).status).toBe(400)
-  expect((await lookup({ mode: 'history', customerKey: 'phone:0999999999' })).status).toBe(404)
+  const outside = await lookup({ mode: 'history', customerKey: 'phone:0999999999' }, manager)
+  expect(outside.status).toBe(200)
+  expect(outside.body).toMatchObject({ total: 0, records: [], customer: { orderCount: 0, hasPurchaseHistory: true } })
+  expect((await lookup({ mode: 'history', customerKey: 'phone:0777777777' })).status).toBe(404)
 })
 
 it('loads the new store screen without hydrating order history or changing state', async () => {
