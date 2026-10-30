@@ -83,6 +83,50 @@ const fixture = async (initial = {}) => {
 }
 
 describe('violation point policy through VPS commands and projections', () => {
+  it('keeps saved awards intact while live, history and payroll block and restore the same amounts', async () => {
+    const f = await fixture({
+      violations: [point('PREVIOUS', 4.5)],
+      revenueBonusDaily: [{ id: 'DAY', storeId: 'S1', businessDate: '2026-09-03', period: '2026-09',
+        status: 'FINALIZED', automatic: true, revenueVnd: 2000000, totalPoolVnd: 30000,
+        automaticAllocatedVnd: 30000, allocatedVnd: 30000, unallocatedVnd: 0 }],
+      revenueBonusAllocations: ['E1', 'E2'].map((employeeId, index) => ({ id: `ALLOC-${employeeId}`,
+        revenueBonusDailyId: 'DAY', employeeId, storeId: 'S1', businessDate: '2026-09-03', period: '2026-09',
+        automaticAmountVnd: [10000, 20000][index], amountVnd: [10000, 20000][index], status: 'APPROVED' })),
+    })
+    const savedAwards = f.rows('revenueBonusAllocations')
+    const check = async (blocked) => {
+      for (const actor of ['admin', 'M1', 'E1']) {
+        const live = (await f.read(actor, '/api/revenue-bonus/live?storeId=S1&businessDate=2026-09-03')).snapshot
+        const history = (await f.read(actor, '/api/revenue-bonus/period?storeId=S1&period=2026-09')).period
+        for (const snapshot of [live, history]) {
+          expect(snapshot.allocations.find((row) => row.employeeId === 'E1').amountVnd).toBe(blocked ? 0 : 10000)
+          if (actor === 'E1') expect(snapshot.allocations.every((row) => row.employeeId === 'E1')).toBe(true)
+          else expect(snapshot.allocations.find((row) => row.employeeId === 'E2').amountVnd).toBe(20000)
+          expect(snapshot.allocatedVnd).toBe(blocked ? 20000 : 30000)
+          expect(snapshot.unallocatedVnd).toBe(blocked ? 10000 : 0)
+        }
+      }
+      const close = await f.command('admin', 'payroll.close', { storeId: 'S1', period: '2026-09' })
+      expect([200, 201], JSON.stringify(close.body)).toContain(close.status)
+      expect(close.body.period.rows.find((row) => row.employeeId === 'E1')).toMatchObject({
+        workBonusVnd: blocked ? 0 : 10000,
+        revenueBonusVnd: blocked ? 0 : 30000,
+        manualBonusVnd: 3000,
+        violationPoints: blocked ? 5 : 4.5,
+      })
+      expect(f.rows('revenueBonusAllocations')).toEqual(savedAwards)
+    }
+    await check(false)
+    const created = await f.command('M1', 'violation.create_batch', f.batch())
+    expect(created.status, JSON.stringify(created.body)).toBe(201)
+    expect(f.rows('payrollPeriods')[0].needsReclose).toBe(true)
+    await check(true)
+    const voided = await f.command('M1', 'violation.void', { violationId: created.body.violations[0].id, reason: 'Ghi nhận nhầm' })
+    expect(voided.status, JSON.stringify(voided.body)).toBe(200)
+    expect(f.rows('payrollPeriods')[0].needsReclose).toBe(true)
+    await check(false)
+  }, 30000)
+
   it('configures office and business-support violations with 0,5-point steps and no money', async () => {
     const legacy = { id: 'OFFICE-LEGACY', code: 'office.violation.custom', kind: 'VIOLATION', targetGroup: 'office', name: 'Vi phạm VP cũ', amountVnd: 3000, active: true, version: 1 }
     const f = await fixture({ workCatalogItems: [legacy] })
