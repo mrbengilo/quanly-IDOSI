@@ -6,7 +6,7 @@ import { mkdtemp, mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promis
 import { request as nodeHttpRequest } from 'node:http'
 import { createConnection } from 'node:net'
 import { tmpdir } from 'node:os'
-import { resolve } from 'node:path'
+import { dirname, relative, resolve, sep } from 'node:path'
 import process from 'node:process'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { FileR2 } from './file-r2.mjs'
@@ -96,6 +96,25 @@ describe('IDOSI VPS runtime', () => {
   it('packages the shared domain modules imported by the Worker into the runtime image', async () => {
     const dockerfile = await readFile(resolve('deploy', 'vps', 'Dockerfile'), 'utf8')
     expect(dockerfile).toContain('COPY --from=build /app/src/domain ./src/domain')
+  })
+
+  it('packages every relative Worker import in the runtime image', async () => {
+    const dockerfile = await readFile(resolve('deploy/vps/Dockerfile'), 'utf8')
+    const runtime = dockerfile.split(/FROM .* AS runtime/u)[1]
+    const copied = [...runtime.matchAll(/^COPY --from=\S+ (.+)$/gmu)].flatMap((match) => match[1].trim().split(/\s+/u).slice(0, -1))
+      .filter((source) => source.startsWith('/app/')).map((source) => source.slice('/app/'.length))
+    const visited = new Set()
+    const missing = []
+    const walk = async (file) => {
+      if (visited.has(file)) return
+      visited.add(file)
+      const local = relative(resolve('.'), file).split(sep).join('/')
+      if (!copied.some((source) => local === source || local.startsWith(source + '/'))) missing.push(local)
+      const source = await readFile(file, 'utf8')
+      for (const match of source.matchAll(/(?:\bfrom\s*|\bimport\s*)['"](\.[^'"]+)['"]/gu)) await walk(resolve(dirname(file), match[1]))
+    }
+    await walk(resolve('server/worker.js'))
+    expect(missing).toEqual([])
   })
 
   it('bounds app and proxy log files on the VPS', async () => {
