@@ -1,5 +1,5 @@
 import { expect, it } from 'vitest'
-import { customerDirectory, customerHasPurchaseHistory, customerPublicInfo, customerSuggestions, customerHistoryForStore, customerOrderDetails } from './customerLookup'
+import { customerDirectory, customerHasPurchaseHistory, customerPurchaseStatus, customerPublicInfo, customerSuggestions, customerHistoryForStore, customerOrderDetails } from './customerLookup'
 
 const order = (id, overrides = {}) => ({ id, storeId: 'S1', customerName: 'Nguyễn Ánh', customerPhone: '090 123 4567', ...overrides })
 const directory = () => customerDirectory([
@@ -13,7 +13,7 @@ const directory = () => customerDirectory([
 it('suggests by accented/unaccented name aliases or normalized phone, with compact history tags', () => {
   const customers = directory()
   expect(customerSuggestions(customers, 'nguyen anh', 'name')).toEqual([
-    { key: 'phone:0901234567', customerName: 'Ánh Nguyễn', customerPhone: '0901234567', hasPurchaseHistory: true },
+    { key: 'phone:0901234567', customerName: 'Ánh Nguyễn', customerPhone: '0901234567', hasPurchaseHistory: true, isReturningCustomer: true },
   ])
   expect(customerSuggestions(customers, 'dang', 'name')[0].customerName).toBe('Đặng An')
   expect(customerSuggestions(customers, '090 123')).toHaveLength(1)
@@ -45,12 +45,33 @@ it('recognizes purchases across stores while exposing only the selected store hi
   const [customer] = customerDirectory([order('S1-ORDER'), order('S2-ORDER', { storeId: 'S2' })])
   expect(customer.orderCount).toBe(2)
   const otherStore = customerHistoryForStore(customer, 'S3')
-  expect(customerPublicInfo(otherStore)).toMatchObject({ hasPurchaseHistory: true, orderCount: 0 })
+  expect(customerPublicInfo(otherStore)).toMatchObject({ hasPurchaseHistory: true, isReturningCustomer: true, orderCount: 0 })
   expect(otherStore.orders).toEqual([])
   const ownStore = customerHistoryForStore(customer, 's1')
   expect(ownStore.orders.map((row) => row.id)).toEqual(['S1-ORDER'])
-  expect(customerPublicInfo(ownStore)).toMatchObject({ hasPurchaseHistory: true, orderCount: 1 })
+  expect(customerPublicInfo(ownStore)).toMatchObject({ hasPurchaseHistory: true, isReturningCustomer: true, orderCount: 1 })
   expect(customerHistoryForStore(customer).orderCount).toBe(2)
+})
+
+it.each([0, 1, 2, 3])('classifies %i global purchases consistently across public info, suggestions and exact status', (count) => {
+  const customers = customerDirectory(Array.from({ length: count }, (_, i) => order(`O${i}`, { storeId: `S${i}` })))
+  const expected = { hasPurchaseHistory: count > 0, isReturningCustomer: count >= 2 }
+  expect(customerPurchaseStatus(customers, '090 123 4567')).toEqual(expected)
+  expect(customerPurchaseStatus(customers, 'nguyen anh', 'name')).toEqual(expected)
+  expect(customerPublicInfo({ orderCount: count })).toMatchObject(expected)
+  if (count) {
+    expect(customerSuggestions(customers, '090')[0]).toMatchObject(expected)
+    expect(customerPublicInfo(customerHistoryForStore(customers[0], 'OTHER'))).toMatchObject({ ...expected, orderCount: 0 })
+  }
+})
+
+it('does not count deleted/opening orders or merge phone-less namesakes toward returning status', () => {
+  const customers = customerDirectory([order('FIRST'), order('DELETED', { deletedAt: '2026-10-30' }),
+    order('BALANCE', { source: 'legacy-opening-balance' }), order('NO-PHONE-1', { customerPhone: '' }),
+    order('NO-PHONE-2', { customerPhone: '' })])
+  expect(customers).toHaveLength(3)
+  expect(customers.map(customerPublicInfo).every((customer) => !customer.isReturningCustomer)).toBe(true)
+  expect(customerPurchaseStatus(customers, 'nguyen anh', 'name')).toEqual({ hasPurchaseHistory: true, isReturningCustomer: false })
 })
 
 it('groups the same phone across stores while preserving distinct contacts and missing phones', () => {

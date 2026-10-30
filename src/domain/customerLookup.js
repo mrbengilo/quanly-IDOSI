@@ -50,11 +50,13 @@ export function customerDirectory(orders = [], { storeId = '', query = '' } = {}
 export function customerHistoryForStore(customer, storeId = '') {
   const orders = customer.orders.filter((order) => !storeId
     || String(order.storeId).toLowerCase() === String(storeId).toLowerCase())
-  return { ...customer, orders, orderCount: orders.length, hasPurchaseHistory: customer.orderCount > 0 }
+  return { ...customer, orders, orderCount: orders.length, hasPurchaseHistory: customer.orderCount > 0,
+    isReturningCustomer: customer.orderCount >= 2 }
 }
 
-export const customerPublicInfo = ({ key, customerName, customerPhone, orderCount, hasPurchaseHistory = orderCount > 0 }) => ({
-  key, customerName, customerPhone, orderCount, hasPurchaseHistory,
+export const customerPublicInfo = ({ key, customerName, customerPhone, orderCount, hasPurchaseHistory = orderCount > 0,
+  isReturningCustomer = orderCount >= 2 }) => ({
+  key, customerName, customerPhone, orderCount, hasPurchaseHistory, isReturningCustomer,
 })
 
 // Suggestions expose contacts and a history flag, never order counts/details.
@@ -65,14 +67,21 @@ export function customerSuggestions(customers, query, field = 'phone', limit = 1
     ? customer.customerPhone.includes(text)
     : customer.orders.some((order) => searchText(order.customerName).includes(text)))
     .slice(0, limit).map((customer) => ({ key: customer.key, customerName: customer.customerName,
-      customerPhone: customer.customerPhone, hasPurchaseHistory: customer.orderCount > 0 }))
+      customerPhone: customer.customerPhone, hasPurchaseHistory: customer.orderCount > 0,
+      isReturningCustomer: customer.orderCount >= 2 }))
 }
 
 // Exact matching is separate from the capped substring suggestions. The caller
 // chooses phone whenever supplied, so an unrelated namesake cannot override it.
-export function customerHasPurchaseHistory(customers, query, field = 'phone') {
+export function customerPurchaseStatus(customers, query, field = 'phone') {
   const text = field === 'phone' ? customerPhone(query) : searchText(query)
-  return Boolean(text) && customers.some((customer) => field === 'phone'
+  const matches = text ? customers.filter((customer) => field === 'phone'
     ? customer.customerPhone === text
-    : customer.orders.some((order) => searchText(order.customerName) === text))
+    : customer.orders.some((order) => searchText(order.customerName) === text)) : []
+  return { hasPurchaseHistory: matches.some((customer) => customer.orderCount > 0),
+    isReturningCustomer: matches.some((customer) => customer.orderCount >= 2) }
+}
+
+export function customerHasPurchaseHistory(customers, query, field = 'phone') {
+  return customerPurchaseStatus(customers, query, field).hasPurchaseHistory
 }

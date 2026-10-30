@@ -5,7 +5,7 @@ import { CustomerLookupPage } from './CustomerLookupPage'
 const mocked = vi.hoisted(() => ({ app: {}, read: vi.fn() }))
 vi.mock('../../state/AppContext', () => ({ useApp: () => mocked.app }))
 vi.mock('../../services/idosiApi', () => ({ apiGetCustomerLookup: (...args) => mocked.read(...args) }))
-const customer = { key: 'phone:0901234567', customerName: 'Nguyễn Ánh', customerPhone: '0901234567', orderCount: 2, hasPurchaseHistory: true }
+const customer = { key: 'phone:0901234567', customerName: 'Nguyễn Ánh', customerPhone: '0901234567', orderCount: 2, hasPurchaseHistory: true, isReturningCustomer: true }
 const order = { id: 'O1', code: 'S1-00001', storeId: 'S1', customerName: customer.customerName, customerPhone: customer.customerPhone,
   createdAt: '2026-10-30T08:00:00+07:00', amount: 120000, items: [{ productId: 'P1', productName: 'Áo', quantity: 2 }], paymentMethod: 'Tiền mặt' }
 beforeEach(() => {
@@ -16,6 +16,24 @@ beforeEach(() => {
       storeName: 'Cửa hàng Hai', employeeName: 'Nhân viên Hai' }] }
 })
 afterEach(cleanup)
+
+it.each(['admin', 'business_support', 'store_manager'])('updates the %s directory, suggestion and history tag after the second global purchase', (role) => {
+  mocked.app = { ...mocked.app, session: { role }, orders: [order] }
+  const systemWide = role !== 'store_manager'
+  const view = render(<CustomerLookupPage systemWide={systemWide} />)
+  const table = screen.getByRole('table', { name: 'Danh sách khách hàng' })
+  expect(within(table).getByText('KH mới')).toBeTruthy()
+  expect(screen.getByRole('option', { hidden: true }).textContent).toContain('KH mới')
+  fireEvent.click(screen.getByRole('button', { name: 'Lịch sử mua hàng (1)' }))
+  expect(within(screen.getByRole('dialog')).getByText('KH mới')).toBeTruthy()
+  fireEvent.click(screen.getByRole('button', { name: 'Đóng' }))
+  mocked.app = { ...mocked.app, orders: [order, { ...order, id: 'SECOND', storeId: 'S2' }] }
+  view.rerender(<CustomerLookupPage systemWide={systemWide} />)
+  expect(within(table).getByText('KH cũ')).toBeTruthy()
+  expect(screen.getByRole('option', { hidden: true }).textContent).toContain('KH cũ')
+  fireEvent.click(screen.getByRole('button', { name: 'Lịch sử mua hàng (2)' }))
+  expect(within(screen.getByRole('dialog')).getByText('KH cũ')).toBeTruthy()
+})
 
 it('does not request or display global history for an employee', () => {
   mocked.app = { ...mocked.app, apiStatus: 'connected', session: { role: 'employee', storeId: 'S1' } }
@@ -29,7 +47,8 @@ it('lets a store manager see all-store purchase details including store and sell
   render(<CustomerLookupPage />)
   expect(screen.getByRole('table', { name: 'Danh sách khách hàng' })).toBeTruthy()
   expect(screen.getByText('Khách cửa hàng khác')).toBeTruthy()
-  expect(screen.getAllByText('KH cũ')).toHaveLength(2)
+  expect(screen.getAllByText('KH cũ')).toHaveLength(1)
+  expect(screen.getAllByText('KH mới')).toHaveLength(1)
   fireEvent.change(screen.getByRole('combobox', { name: 'Tìm theo tên khách hàng hoặc SĐT' }), { target: { value: 'nguyen anh' } })
   fireEvent.click(screen.getByRole('button', { name: 'Lịch sử mua hàng (2)' }))
   const dialog = screen.getByRole('dialog', { name: 'Lịch sử mua hàng' })
@@ -41,11 +60,11 @@ it('lets a store manager see all-store purchase details including store and sell
   expect(within(dialog).getByText(/01\/01\/24/)).toBeTruthy()
   fireEvent.click(within(dialog).getByRole('button', { name: 'Đóng' }))
   fireEvent.change(screen.getByRole('combobox', { name: 'Tìm theo tên khách hàng hoặc SĐT' }), { target: { value: '0999' } })
-  expect(screen.getByText('KH cũ')).toBeTruthy()
-  expect(screen.queryByText('KH mới')).toBeNull()
+  expect(screen.getByText('KH mới')).toBeTruthy()
+  expect(screen.queryByText('KH cũ')).toBeNull()
   fireEvent.click(screen.getByRole('button', { name: 'Lịch sử mua hàng (1)' }))
   const outside = screen.getByRole('dialog', { name: 'Lịch sử mua hàng' })
-  expect(within(outside).getByText('KH cũ')).toBeTruthy()
+  expect(within(outside).getByText('KH mới')).toBeTruthy()
   expect(within(outside).queryByText('Chưa có đơn hàng tại cửa hàng này')).toBeNull()
   expect(within(outside).getByRole('table')).toBeTruthy()
   expect(within(outside).getByText(/999[.,]999/)).toBeTruthy()

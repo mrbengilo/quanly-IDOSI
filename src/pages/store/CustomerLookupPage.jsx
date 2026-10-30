@@ -23,11 +23,11 @@ function CustomerHistory({ app, storeId, scope, customerKey, onClose, revision }
   const { value, loading, error } = useCustomerLookup({ app, storeId, scope, mode: 'history', customerKey, offset, revision: revision + retry })
   return <Modal open onClose={onClose} title="Lịch sử mua hàng" wide footer={<Button variant="outline" onClick={onClose}>Đóng</Button>}>
     {value && <div className="customer-lookup__contact"><strong>{value.customer.customerName}</strong>
-      <span>{value.customer.customerPhone || 'Không có SĐT'}</span><CustomerHistoryBadge hasPurchaseHistory={value.customer.hasPurchaseHistory} /><Badge>{value.total} đơn hàng{scope === 'store' ? ' tại cửa hàng' : ''}</Badge></div>}
+      <span>{value.customer.customerPhone || 'Không có SĐT'}</span><CustomerHistoryBadge isReturningCustomer={value.customer.isReturningCustomer} /><Badge>{value.total} đơn hàng{scope === 'store' ? ' tại cửa hàng' : ''}</Badge></div>}
     {loading && <p role="status">Đang tải lịch sử mua hàng…</p>}
     {error && <p role="alert">{error} <Button variant="outline" onClick={() => setRetry((current) => current + 1)}>Thử lại</Button></p>}
     {value?.total === 0 && <EmptyState title={scope === 'global' ? 'Chưa có lịch sử mua hàng' : 'Chưa có đơn hàng tại cửa hàng này'}
-      description={scope === 'global' ? 'Chưa có đơn hàng phù hợp trên toàn hệ thống.' : 'Khách đã có lịch sử mua hàng trên toàn hệ thống và được nhận diện là KH cũ.'} />}
+      description={scope === 'global' ? 'Chưa có đơn hàng phù hợp trên toàn hệ thống.' : 'Khách đã có lịch sử mua hàng trên toàn hệ thống. Tag KH cũ áp dụng khi có từ 2 đơn hàng.'} />}
     {value?.total > 0 && <>
       <TableWrap paginate={false} tableLabel="Đơn hàng của khách" tableClassName="customer-history-table">
         <thead><tr><th>STT</th><th>Đơn hàng / Thời gian mua</th><th>Mặt hàng / Số lượng</th><th>Số tiền</th><th>Cửa hàng</th><th>Nhân viên bán</th><th>Thông tin đơn</th></tr></thead>
@@ -69,7 +69,7 @@ export function CustomerLookupPage({ systemWide = false }) {
         <Input icon={Search} list={id} value={query} autoComplete="off" placeholder="Nhập tên khách hàng hoặc số điện thoại…"
           onChange={(event) => setSearch({ storeId, query: event.target.value, offset: 0 })} />
         <datalist id={id}>{(value?.customers || []).map((customer) => <option key={customer.key}
-          value={customer.customerPhone || customer.customerName}>{customer.customerName} • {customer.customerPhone || 'Không có SĐT'} • {customer.hasPurchaseHistory ? 'KH cũ' : 'KH mới'}</option>)}</datalist>
+          value={customer.customerPhone || customer.customerName}>{customer.customerName} • {customer.customerPhone || 'Không có SĐT'} • {customer.isReturningCustomer ? 'KH cũ' : 'KH mới'}</option>)}</datalist>
       </Field></div>
       {!globalHistory && !storeId && <EmptyState title="Chưa chọn cửa hàng" description="Chọn cửa hàng để tra cứu khách hàng." />}
       {loading && <p role="status">Đang tra cứu khách hàng…</p>}
@@ -78,13 +78,13 @@ export function CustomerLookupPage({ systemWide = false }) {
         <TableWrap paginate={false} tableLabel="Danh sách khách hàng">
           <thead><tr><th>STT</th><th>Tên khách hàng</th><th>SĐT</th><th>{globalHistory ? 'Lịch sử toàn hệ thống' : 'Lịch sử tại cửa hàng'}</th></tr></thead>
           <tbody>{value.customers.map((customer, index) => <tr key={customer.key}>
-            <td data-label="STT">{offset + index + 1}</td><td data-label="Tên khách hàng"><strong>{customer.customerName}</strong><span className="table-note"><CustomerHistoryBadge hasPurchaseHistory={customer.hasPurchaseHistory} /></span></td>
+            <td data-label="STT">{offset + index + 1}</td><td data-label="Tên khách hàng"><strong>{customer.customerName}</strong><span className="table-note"><CustomerHistoryBadge isReturningCustomer={customer.isReturningCustomer} /></span></td>
             <td data-label="SĐT">{customer.customerPhone || 'Không có SĐT'}</td>
             <td data-label={globalHistory ? 'Lịch sử toàn hệ thống' : 'Lịch sử tại cửa hàng'}><Button variant="outline" onClick={() => setSelected({ storeId, key: customer.key })}>Lịch sử mua hàng ({customer.orderCount})</Button></td>
           </tr>)}</tbody>
         </TableWrap><Pagination result={value} offset={offset} onChange={changeOffset} />
       </>}
-      {value?.customers.length === 0 && <>{query.trim() && <div className="customer-lookup__contact"><CustomerHistoryBadge hasPurchaseHistory={false} /><span>Chưa có lịch sử mua hàng khớp thông tin tra cứu trên toàn hệ thống.</span></div>}<EmptyState title={query ? 'Không tìm thấy khách hàng' : 'Chưa có khách hàng'} description={query ? 'Thử tên hoặc số điện thoại khác.' : 'Khách hàng sẽ xuất hiện khi hệ thống có đơn hàng.'} /></>}
+      {value?.customers.length === 0 && <>{query.trim() && <div className="customer-lookup__contact"><CustomerHistoryBadge isReturningCustomer={false} /><span>Chưa có lịch sử mua hàng khớp thông tin tra cứu trên toàn hệ thống.</span></div>}<EmptyState title={query ? 'Không tìm thấy khách hàng' : 'Chưa có khách hàng'} description={query ? 'Thử tên hoặc số điện thoại khác.' : 'Khách hàng sẽ xuất hiện khi hệ thống có đơn hàng.'} /></>}
     </Card>
     {selected?.storeId === storeId && <CustomerHistory key={`${scope}:${storeId}:${selected.key}`} app={app} storeId={storeId} scope={scope}
       customerKey={selected.key} revision={revision} onClose={() => setSelected(null)} />}
