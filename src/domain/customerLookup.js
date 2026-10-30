@@ -54,6 +54,11 @@ export function customerHistoryForStore(customer, storeId = '') {
     isReturningCustomer: customer.orderCount >= 2 }
 }
 
+// Store membership controls discovery, while a selected customer's purchases
+// remain grouped across the system by normalized phone (never by name alone).
+export const customerPurchasedAtStore = (customer, storeId) => customer.orders.some((order) =>
+  String(order.storeId || '').toLowerCase() === String(storeId || '').toLowerCase())
+
 export const customerPublicInfo = ({ key, customerName, customerPhone, orderCount, hasPurchaseHistory = orderCount > 0,
   isReturningCustomer = orderCount >= 2 }) => ({
   key, customerName, customerPhone, orderCount, hasPurchaseHistory, isReturningCustomer,

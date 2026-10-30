@@ -1,5 +1,5 @@
 import { expect, it } from 'vitest'
-import { customerDirectory, customerHasPurchaseHistory, customerPurchaseStatus, customerPublicInfo, customerSuggestions, customerHistoryForStore, customerOrderDetails } from './customerLookup'
+import { customerDirectory, customerHasPurchaseHistory, customerPurchaseStatus, customerPublicInfo, customerSuggestions, customerHistoryForStore, customerOrderDetails, customerPurchasedAtStore } from './customerLookup'
 
 const order = (id, overrides = {}) => ({ id, storeId: 'S1', customerName: 'Nguyễn Ánh', customerPhone: '090 123 4567', ...overrides })
 const directory = () => customerDirectory([
@@ -96,4 +96,12 @@ it('resolves directory names and archived seller codes, preserves sale snapshots
   expect(customerOrderDetails(order('O', { employeeId: 'UNKNOWN', storeId: 'UNKNOWN' }), directories))
     .toMatchObject({ storeName: '', employeeName: '' })
   expect(customerOrderDetails(order('O'), directories).salary).toBeUndefined()
+})
+
+it('requires a purchase at the selected store without changing the global contact group', () => {
+  const [customer] = customerDirectory([order('A'), order('B', { storeId: 'S2' }), order('D', { storeId: 'S3', deletedAt: '2026-10-30' })])
+  expect(customerPurchasedAtStore(customer, 's1')).toBe(true)
+  expect(customerPurchasedAtStore(customer, 'S2')).toBe(true)
+  expect(customerPurchasedAtStore(customer, 'S3')).toBe(false)
+  expect(customer.orderCount).toBe(2)
 })

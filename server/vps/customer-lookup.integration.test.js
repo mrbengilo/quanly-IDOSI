@@ -67,6 +67,11 @@ it('uses global purchase thresholds for tags across list, history, suggestions a
       const options = { scope, query: phone }
       const list = await lookup(options)
       expect(list.status).toBe(200)
+      if (scope === 'store' && phone === '0999999999') {
+        expect(list.body.customers).toEqual([])
+        expect((await lookup({ scope, mode: 'history', customerKey: `phone:${phone}` })).status).toBe(404)
+        continue
+      }
       expect(list.body.customers[0]).toMatchObject({ isReturningCustomer: returning, hasPurchaseHistory: true })
       const history = await lookup({ scope, mode: 'history', customerKey: `phone:${phone}` })
       expect(history.body.customer).toMatchObject({ isReturningCustomer: returning })
@@ -86,20 +91,18 @@ it('uses global purchase thresholds for tags across list, history, suggestions a
   expect(runtime.database.database.prepare("SELECT version FROM app_state WHERE scope_key='global'").get().version).toBe(before)
 })
 
-it('searches global contacts across all periods but keeps detailed history and counts within the selected store', async () => {
+it('lists only store contacts across all periods and returns the selected customer purchases across stores', async () => {
   const result = await lookup({}, manager)
   expect(result.status, JSON.stringify(result.body)).toBe(200)
-  expect(result.body.total).toBe(5)
+  expect(result.body.total).toBe(4)
   const customer = result.body.customers.find((row) => row.customerPhone === '0901234567')
-  expect(customer).toMatchObject({ customerName: 'Ánh Nguyễn', orderCount: 2 })
+  expect(customer).toMatchObject({ customerName: 'Ánh Nguyễn', orderCount: 4 })
   expect(customer.orders).toBeUndefined()
   expect((await lookup({ query: 'nguyen anh' })).body.customers).toHaveLength(4)
   expect((await lookup({ query: '090 123' }, support)).body.customers).toEqual([customer])
-  expect((await lookup({ query: '0999' })).body.customers).toEqual([
-    expect.objectContaining({ customerPhone: '0999999999', hasPurchaseHistory: true, orderCount: 0 }),
-  ])
+  expect((await lookup({ query: '0999' })).body.customers).toEqual([])
   const history = await lookup({ mode: 'history', customerKey: customer.key }, manager)
-  expect(history.body.records.map((row) => row.id)).toEqual(['NEW', 'OLD'])
+  expect(history.body.records.map((row) => row.id)).toEqual(['NEW', 'CROSS-STORE', 'OLD', 'CLOSED-STORE'])
   expect(history.body.records[0]).toMatchObject({ amount: 120000, items: [{ quantity: 2, productName: 'Áo' }] })
   expect((await lookup({ mode: 'history', customerKey: 'phone:0888888888', offset: 20 })).body.records).toHaveLength(3)
 })
@@ -138,8 +141,8 @@ it('returns compact name/phone suggestions and exact history flags to employees,
   expect((await lookup({}, '')).status).toBe(401)
   expect((await lookup({ offset: '-1' })).status).toBe(400)
   const outside = await lookup({ mode: 'history', customerKey: 'phone:0999999999' }, manager)
-  expect(outside.status).toBe(200)
-  expect(outside.body).toMatchObject({ total: 0, records: [], customer: { orderCount: 0, hasPurchaseHistory: true } })
+  expect(outside.status).toBe(404)
+  expect(outside.body.records).toBeUndefined()
   expect((await lookup({ mode: 'history', customerKey: 'phone:0777777777' })).status).toBe(404)
 })
 
@@ -218,10 +221,15 @@ it.each(['S1', 'S2'])('recomputes tags from persisted orders through create, cus
     expect(suggestions.body.suggestions[0]).toMatchObject(expected)
     for (const storeId of ['S1', 'S2']) {
       const list = await lookup({ storeId, query: phone })
-      expect(list.body.customers[0]).toMatchObject({ ...expected, orderCount: storeCounts[storeId] || 0 })
       const history = await lookup({ storeId, mode: 'history', customerKey: `phone:${phone}` })
-      expect(history.body).toMatchObject({ total: storeCounts[storeId] || 0, customer: { ...expected, orderCount: storeCounts[storeId] || 0 } })
-      expect(history.body.records).toHaveLength(storeCounts[storeId] || 0)
+      if (!storeCounts[storeId]) {
+        expect(list.body.customers).toEqual([])
+        expect(history.status).toBe(404)
+      } else {
+        expect(list.body.customers[0]).toMatchObject({ ...expected, orderCount: count })
+        expect(history.body).toMatchObject({ total: count, customer: { ...expected, orderCount: count } })
+        expect(history.body.records).toHaveLength(count)
+      }
     }
   }
   await assertContact(phoneA, 0)

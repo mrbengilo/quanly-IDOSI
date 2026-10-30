@@ -4,7 +4,7 @@ import { taskShiftContext, bindTaskShiftContext, mergeTaskShiftProgress, attenda
 import { normalizeOrderItems as normalizedHistoricalOrderItems, resolveOrderItems as resolveConfiguredOrderItems, totalOrderItemQuantity, totalOrderItemWeightKg } from '../src/domain/orderItems.js'
 import { orderRevenueByType, validateOrderRevenue } from '../src/domain/orderRevenue.js'
 import { salesOverviewFromSummary } from '../src/domain/salesOverview.js'
-import { customerDirectory, customerPublicInfo, customerSuggestions, customerPurchaseStatus, customerHistoryForStore, customerOrderDetails } from '../src/domain/customerLookup.js'
+import { customerDirectory, customerPublicInfo, customerSuggestions, customerPurchaseStatus, customerPurchasedAtStore, customerOrderDetails } from '../src/domain/customerLookup.js'
 import { applyRevenueSnapshotPointPolicy, normalizeViolationPointInput, restorePointBonusRecord, restorePointRevenueSnapshot, storeViolationPointAssessment, violationPointsOf, isActivePointViolation, violationPointPeriod, formatViolationPoints } from '../src/domain/violationPoints.js'
 import { attendanceMatchesWindow, scheduleAssignmentIsUsable, scheduleConflict, scheduleWindows, scheduledCheckInChoices, shiftWindow, supportAllowsScheduling, supportForScheduledWindow } from '../src/domain/supportScheduling.js'
 import {
@@ -5988,8 +5988,6 @@ const getCustomerLookup = async (request, env, context, url) => {
   } else {
     ;({ user, storeId } = await resolveHistoryReadScope(request, db, context, url))
   }
-  const storeFilter = scope === 'store' ? 'AND store_id = ? COLLATE NOCASE' : ''
-  const storeParameters = scope === 'store' ? [storeId] : []
   const mode = url.searchParams.get('mode') || 'list'
   const field = url.searchParams.get('field') || 'phone'
   const query = String(url.searchParams.get('query') || '').trim()
@@ -6031,17 +6029,19 @@ const getCustomerLookup = async (request, env, context, url) => {
       hasSuggestions: customerSuggestions(customers, query, field, 1).length > 0 }))
   }
   if (mode === 'list') {
-    return jsonResponse(apiPayload(context, { storeId, customers: customers.slice(offset, offset + limit)
-      .map((customer) => customerPublicInfo(customerHistoryForStore(customer, storeId))),
-      total: customers.length, offset, limit }))
+    const visible = scope === 'global' ? customers : customers.filter((customer) => customerPurchasedAtStore(customer, storeId))
+    return jsonResponse(apiPayload(context, { storeId, customers: visible.slice(offset, offset + limit).map(customerPublicInfo),
+      total: visible.length, offset, limit }))
   }
   const contact = customers.find((candidate) => candidate.key === key)
-  if (!contact) throw new ApiError(404, 'CUSTOMER_NOT_FOUND', 'Không tìm thấy khách hàng trong hệ thống.')
-  const customer = customerHistoryForStore(contact, storeId)
+  if (!contact || (scope === 'store' && !customerPurchasedAtStore(contact, storeId))) {
+    throw new ApiError(404, 'CUSTOMER_NOT_FOUND', 'Không tìm thấy khách hàng tại cửa hàng này.')
+  }
+  const customer = contact
   const keys = customer.orders.slice(offset, offset + limit).map((order) => order.entityKey)
   const rows = keys.length ? await all(db, `SELECT entity_key, value_json, value_bytes FROM state_entities
-    WHERE scope_key = 'global' AND collection_key = 'orders' ${storeFilter}
-    AND entity_key IN (${keys.map(() => '?').join(',')})`, ...storeParameters, ...keys) : []
+    WHERE scope_key = 'global' AND collection_key = 'orders'
+    AND entity_key IN (${keys.map(() => '?').join(',')})`, ...keys) : []
   const byKey = new Map(rows.map((row) => {
     if (jsonByteLength(String(row.value_json)) !== Number(row.value_bytes) || Number(row.value_bytes) > MAX_STATE_ENTITY_BYTES) {
       throw new ApiError(500, 'STATE_ENTITY_CORRUPT', 'Bản ghi lịch sử không hợp lệ.')

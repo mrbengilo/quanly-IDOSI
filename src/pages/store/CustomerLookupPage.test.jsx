@@ -67,40 +67,27 @@ it('does not request or display global history for an employee', () => {
   expect(screen.queryByRole('table')).toBeNull()
 })
 
-it('lets a store manager see all-store purchase details including store and seller from the existing lookup page', () => {
+it('lists only store customers and opens their cross-store purchases without exposing unrelated contacts', () => {
+  mocked.app.orders[1] = { ...mocked.app.orders[1], storeId: 'S2', storeName: 'Cửa hàng Hai', employeeName: 'Nhân viên Hai' }
   render(<CustomerLookupPage />)
-  expect(screen.getByRole('table', { name: 'Danh sách khách hàng' })).toBeTruthy()
-  expect(screen.getByText('Khách cửa hàng khác')).toBeTruthy()
-  expect(screen.getAllByText('KH cũ')).toHaveLength(1)
-  expect(screen.getAllByText('KH mới')).toHaveLength(1)
-  fireEvent.change(screen.getByRole('combobox', { name: 'Tìm theo tên khách hàng hoặc SĐT' }), { target: { value: 'nguyen anh' } })
+  expect(screen.queryByText('Khách cửa hàng khác')).toBeNull()
+  expect(screen.getByRole('option', { hidden: true }).value).toBe('0901234567')
   fireEvent.click(screen.getByRole('button', { name: 'Lịch sử mua hàng (2)' }))
   const dialog = screen.getByRole('dialog', { name: 'Lịch sử mua hàng' })
   expect(within(dialog).getByText('2 đơn hàng')).toBeTruthy()
   expect(within(dialog).getByText('KH cũ')).toBeTruthy()
   expect(within(dialog).getAllByText('Áo')).toHaveLength(2)
-  expect(within(dialog).getAllByText('2 cái')).toHaveLength(2)
-  expect(within(dialog).getAllByText(/120.000/)).toHaveLength(2)
-  expect(within(dialog).getByText(/01\/01\/24/)).toBeTruthy()
+  expect(within(dialog).getByText('Cửa hàng Hai')).toBeTruthy()
+  expect(within(dialog).getByText('Nhân viên Hai')).toBeTruthy()
+  expect(within(dialog).queryByText(/999[.,]999/)).toBeNull()
   fireEvent.click(within(dialog).getByRole('button', { name: 'Đóng' }))
   fireEvent.change(screen.getByRole('combobox', { name: 'Tìm theo tên khách hàng hoặc SĐT' }), { target: { value: '0999' } })
-  expect(screen.getByText('KH mới')).toBeTruthy()
-  expect(screen.queryByText('KH cũ')).toBeNull()
-  fireEvent.click(screen.getByRole('button', { name: 'Lịch sử mua hàng (1)' }))
-  const outside = screen.getByRole('dialog', { name: 'Lịch sử mua hàng' })
-  expect(within(outside).getByText('KH mới')).toBeTruthy()
-  expect(within(outside).queryByText('Chưa có đơn hàng tại cửa hàng này')).toBeNull()
-  expect(within(outside).getByRole('table')).toBeTruthy()
-  expect(within(outside).getByText(/999[.,]999/)).toBeTruthy()
-  expect(within(outside).getByText('Cửa hàng Hai')).toBeTruthy()
-  expect(within(outside).getByText('Nhân viên Hai')).toBeTruthy()
-  fireEvent.click(within(outside).getByRole('button', { name: 'Đóng' }))
-  fireEvent.change(screen.getByRole('combobox', { name: 'Tìm theo tên khách hàng hoặc SĐT' }), { target: { value: '0777777777' } })
   expect(screen.getByText('Không tìm thấy khách hàng')).toBeTruthy()
-  expect(screen.getByText('KH mới')).toBeTruthy()
+  expect(screen.queryByText('KH mới')).toBeNull()
+  expect(screen.queryByRole('option', { hidden: true })).toBeNull()
 })
 
-it('uses global scope for a manager, discards stale search responses and retries errors', async () => {
+it('uses store scope for a manager, discards stale search responses and retries errors', async () => {
   mocked.app.apiStatus = 'connected'
   let resolveOld
   mocked.read.mockImplementationOnce(() => new Promise((resolve) => { resolveOld = resolve }))
@@ -108,7 +95,7 @@ it('uses global scope for a manager, discards stale search responses and retries
     .mockResolvedValue({ customers: [], total: 0, limit: 20 })
   render(<CustomerLookupPage />)
   await waitFor(() => expect(mocked.read).toHaveBeenCalledTimes(1))
-  expect(mocked.read).toHaveBeenCalledWith(expect.objectContaining({ scope: 'global', storeId: '' }))
+  expect(mocked.read).toHaveBeenCalledWith(expect.objectContaining({ scope: 'store', storeId: 'S1' }))
   fireEvent.change(screen.getByRole('combobox', { name: 'Tìm theo tên khách hàng hoặc SĐT' }), { target: { value: 'khach khac' } })
   await screen.findByText('Không thể tải fixture')
   resolveOld({ customers: [customer], total: 1, limit: 20 })
@@ -191,4 +178,14 @@ it.each(['admin', 'store_manager'])('paginates system customers and all-store pu
   const purchases = within(within(dialog).getByRole('table')).getAllByRole('row')
   expect(purchases).toHaveLength(4)
   expect(within(purchases[1]).getByText('21')).toBeTruthy()
+})
+
+it('resets search and closes history when switching stores', () => {
+  const view = render(<CustomerLookupPage />)
+  fireEvent.click(screen.getByRole('button', { name: 'Lịch sử mua hàng (2)' }))
+  mocked.app = { ...mocked.app, activeStoreId: 'S2' }
+  view.rerender(<CustomerLookupPage />)
+  expect(screen.queryByRole('dialog')).toBeNull()
+  expect(screen.queryByText('Nguyễn Ánh')).toBeNull()
+  expect(screen.getByText('Khách cửa hàng khác')).toBeTruthy()
 })
