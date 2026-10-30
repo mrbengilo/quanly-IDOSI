@@ -322,6 +322,7 @@ export default function AppRoutes() {
         <Route path="/admin/policies" element={<PolicySettings />} />
         <Route path="/admin/order-audit" element={<OrderAuditPage />} />
         <Route path="/admin/customer-survey" element={<CustomerSurveyPage />} />
+        <Route path="/admin/customer-lookup" element={<CustomerLookupPage systemWide />} />
         <Route path="/admin/support-transfers" element={<SupportTransfersPage />} />
         <Route path="/admin/order-information-settings" element={<OrderInformationSettingsPage />} />
         <Route path="/admin/work-catalog" element={<WorkCatalogSettingsPage />} />

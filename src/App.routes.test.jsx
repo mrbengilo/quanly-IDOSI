@@ -97,6 +97,10 @@ vi.mock('./pages/store/StoreStatisticsPage', () => ({
   StoreStatisticsPage: () => <div>Số liệu thống kê route</div>,
 }))
 
+vi.mock('./pages/store/CustomerLookupPage', () => ({
+  CustomerLookupPage: ({ systemWide = false }) => <div>{systemWide ? 'Tra cứu toàn hệ thống route' : 'Tra cứu cửa hàng route'}</div>,
+}))
+
 vi.mock('./pages/compensation', () => ({
   ManagerCompensationPage: () => <div>Quản lý thưởng phụ cấp</div>,
   MyCompensationPage: () => <div>Thu nhập của tôi</div>,
@@ -152,6 +156,18 @@ describe('App role routes', () => {
     expect(screen.getByRole('alert')).toBeTruthy()
     fireEvent.click(screen.getByRole('button', { name: 'Tải lại trang' }))
     expect(reload).toHaveBeenCalledOnce()
+  })
+
+  it.each(['admin', 'business_support'])('opens global customer lookup for %s', async (role) => {
+    renderRoute('/admin/customer-lookup', role)
+    expect(await screen.findByText('Tra cứu toàn hệ thống route')).toBeTruthy()
+    expect(screen.getByTestId('current-route').textContent).toBe('/admin/customer-lookup')
+  })
+
+  it.each(['store_manager', 'employee'])('denies global customer lookup for %s', async (role) => {
+    renderRoute('/admin/customer-lookup', role)
+    await waitFor(() => expect(screen.getByTestId('current-route').textContent).not.toBe('/admin/customer-lookup'))
+    expect(screen.queryByText('Tra cứu toàn hệ thống route')).toBeNull()
   })
 
   it.each(['admin', 'business_support'])('allows %s to open order information settings', async (role) => {
