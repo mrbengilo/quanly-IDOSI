@@ -33,4 +33,26 @@ export function customerDirectory(orders = [], { storeId = '', query = '' } = {}
     || (digits && /^[\d\s()+.-]+$/u.test(query) && customer.customerPhone.includes(digits)))
 }
 
-export const customerPublicInfo = ({ key, customerName, customerPhone, orderCount }) => ({ key, customerName, customerPhone, orderCount })
+export const customerPublicInfo = ({ key, customerName, customerPhone, orderCount }) => ({
+  key, customerName, customerPhone, orderCount, hasPurchaseHistory: orderCount > 0,
+})
+
+// Suggestions expose contacts and a history flag, never order counts/details.
+export function customerSuggestions(customers, query, field = 'phone', limit = 10) {
+  const text = field === 'phone' ? customerPhone(query) : searchText(query)
+  if (text.length < 2) return []
+  return customers.filter((customer) => field === 'phone'
+    ? customer.customerPhone.includes(text)
+    : customer.orders.some((order) => searchText(order.customerName).includes(text)))
+    .slice(0, limit).map((customer) => ({ key: customer.key, customerName: customer.customerName,
+      customerPhone: customer.customerPhone, hasPurchaseHistory: customer.orderCount > 0 }))
+}
+
+// Exact matching is separate from the capped substring suggestions. The caller
+// chooses phone whenever supplied, so an unrelated namesake cannot override it.
+export function customerHasPurchaseHistory(customers, query, field = 'phone') {
+  const text = field === 'phone' ? customerPhone(query) : searchText(query)
+  return Boolean(text) && customers.some((customer) => field === 'phone'
+    ? customer.customerPhone === text
+    : customer.orders.some((order) => searchText(order.customerName) === text))
+}

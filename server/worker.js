@@ -2,7 +2,7 @@ import { taskShiftContext, bindTaskShiftContext, mergeTaskShiftProgress, attenda
 import { normalizeOrderItems as normalizedHistoricalOrderItems, resolveOrderItems as resolveConfiguredOrderItems, totalOrderItemQuantity, totalOrderItemWeightKg } from '../src/domain/orderItems.js'
 import { orderRevenueByType, validateOrderRevenue } from '../src/domain/orderRevenue.js'
 import { salesOverviewFromSummary } from '../src/domain/salesOverview.js'
-import { customerDirectory, customerPublicInfo, customerPhone } from '../src/domain/customerLookup.js'
+import { customerDirectory, customerPublicInfo, customerSuggestions, customerHasPurchaseHistory } from '../src/domain/customerLookup.js'
 import { applyRevenueSnapshotPointPolicy, normalizeViolationPointInput, restorePointBonusRecord, restorePointRevenueSnapshot, storeViolationPointAssessment, violationPointsOf, isActivePointViolation, violationPointPeriod, formatViolationPoints } from '../src/domain/violationPoints.js'
 import { attendanceMatchesWindow, scheduleAssignmentIsUsable, scheduleConflict, scheduleWindows, scheduledCheckInChoices, shiftWindow, supportAllowsScheduling, supportForScheduledWindow } from '../src/domain/supportScheduling.js'
 import {
@@ -5970,20 +5970,21 @@ const getCustomerLookup = async (request, env, context, url) => {
   const db = getDatabase(env)
   const { user, storeId } = await resolveHistoryReadScope(request, db, context, url)
   const mode = url.searchParams.get('mode') || 'list'
+  const field = url.searchParams.get('field') || 'phone'
   const query = String(url.searchParams.get('query') || '').trim()
   const key = String(url.searchParams.get('customerKey') || '')
   const offset = Number(url.searchParams.get('offset') || 0)
   const limit = mode === 'suggest' ? 10 : 20
-  if (!['list', 'history', 'suggest'].includes(mode) || query.length > 200 || key.length > 250
+  if (!['list', 'history', 'suggest', 'status'].includes(mode) || !['name', 'phone'].includes(field) || query.length > 200 || key.length > 250
     || !Number.isSafeInteger(offset) || offset < 0 || (mode === 'history' && !key)) {
     throw new ApiError(400, 'CUSTOMER_QUERY_INVALID', 'Thông tin tra cứu khách hàng không hợp lệ.')
   }
-  // Employees can discover phone numbers for order entry, but never another
-  // employee's orders, customer profiles, counts or purchase history.
-  if (user.role === 'employee' && mode !== 'suggest') {
-    throw new ApiError(403, 'ROLE_FORBIDDEN', 'Nhân viên chỉ được xem gợi ý số điện thoại khi tạo đơn.')
+  // Order entry can discover contacts and whether they have purchased here;
+  // other employees' orders, profile fields and counts remain inaccessible.
+  if (user.role === 'employee' && !['suggest', 'status'].includes(mode)) {
+    throw new ApiError(403, 'ROLE_FORBIDDEN', 'Nhân viên chỉ được xem gợi ý khách hàng khi tạo đơn.')
   }
-  if (mode === 'suggest' && customerPhone(query).length < 2) {
+  if (mode === 'suggest' && (field === 'phone' ? query.replace(/\D/gu, '') : query).length < 2) {
     return jsonResponse(apiPayload(context, { storeId, suggestions: [] }))
   }
   // Only compact contact fields are materialized across history; full order
@@ -6001,10 +6002,12 @@ const getCustomerLookup = async (request, env, context, url) => {
   const orders = contacts.map((row) => ({ ...parseStoredJson(row.contact_json, {}), entityKey: row.entity_key }))
   const customers = customerDirectory(orders, { storeId, query: mode === 'list' ? query : '' })
   if (mode === 'suggest') {
-    const digits = customerPhone(query)
-    const suggestions = customers.filter((customer) => customer.customerPhone.includes(digits))
-      .slice(0, limit).map((customer) => ({ customerPhone: customer.customerPhone }))
+    const suggestions = customerSuggestions(customers, query, field, limit)
     return jsonResponse(apiPayload(context, { storeId, suggestions }))
+  }
+  if (mode === 'status') {
+    return jsonResponse(apiPayload(context, { storeId, hasPurchaseHistory: customerHasPurchaseHistory(customers, query, field),
+      hasSuggestions: customerSuggestions(customers, query, field, 1).length > 0 }))
   }
   if (mode === 'list') {
     return jsonResponse(apiPayload(context, { storeId, customers: customers.slice(offset, offset + limit).map(customerPublicInfo),
