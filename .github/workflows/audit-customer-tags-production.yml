@@ -1,0 +1,94 @@
+name: Audit all production customer tags
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: idosi-production
+  cancel-in-progress: false
+
+jobs:
+  audit:
+    if: github.repository == 'mrbengilo/quanly-IDOSI' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    environment:
+      name: production
+      url: https://idosi.io.vn
+    steps:
+      - name: Checkout audited source
+        uses: actions/checkout@v6
+
+      - name: Validate audit and calculate expected deployed source hashes
+        run: |
+          set -Eeuo pipefail
+          node --check scripts/audit-customer-tags.mjs
+          echo "EXPECTED_DOMAIN_SHA=$(sha256sum src/domain/customerLookup.js | cut -d ' ' -f 1)" >> "$GITHUB_ENV"
+          echo "EXPECTED_WORKER_SHA=$(sha256sum server/worker.js | cut -d ' ' -f 1)" >> "$GITHUB_ENV"
+
+      - name: Configure production SSH
+        env:
+          VPS_PORT: ${{ secrets.IDOSI_VPS_PORT }}
+          VPS_SSH_PRIVATE_KEY: ${{ secrets.IDOSI_VPS_SSH_PRIVATE_KEY }}
+          VPS_KNOWN_HOSTS: ${{ secrets.IDOSI_VPS_KNOWN_HOSTS }}
+        run: |
+          set -Eeuo pipefail
+          : "${VPS_SSH_PRIVATE_KEY:?Missing IDOSI_VPS_SSH_PRIVATE_KEY}"
+          : "${VPS_KNOWN_HOSTS:?Missing IDOSI_VPS_KNOWN_HOSTS}"
+          [[ "${VPS_PORT:-22}" =~ ^[0-9]+$ ]]
+          install -m 700 -d "$HOME/.ssh"
+          printf '%s\n' "$VPS_SSH_PRIVATE_KEY" > "$HOME/.ssh/id_ed25519"
+          chmod 600 "$HOME/.ssh/id_ed25519"
+          printf '%s\n' "$VPS_KNOWN_HOSTS" > "$HOME/.ssh/known_hosts"
+          chmod 600 "$HOME/.ssh/known_hosts"
+          echo "VPS_PORT=${VPS_PORT:-22}" >> "$GITHUB_ENV"
+
+      - name: Audit every customer against all persisted orders in a read-only snapshot
+        env:
+          VPS_HOST: ${{ secrets.IDOSI_VPS_HOST }}
+          VPS_USER: ${{ secrets.IDOSI_VPS_USER }}
+        run: |
+          set -Eeuo pipefail
+          : "${VPS_HOST:?Missing IDOSI_VPS_HOST}"
+          : "${VPS_USER:?Missing IDOSI_VPS_USER}"
+          [[ "$EXPECTED_DOMAIN_SHA" =~ ^[a-f0-9]{64}$ ]]
+          [[ "$EXPECTED_WORKER_SHA" =~ ^[a-f0-9]{64}$ ]]
+          {
+            cat <<'REMOTE'
+          set -Eeuo pipefail
+          ROOT="${IDOSI_ROOT:-/opt/idosi}"
+          COMPOSE_FILE="${IDOSI_COMPOSE_FILE:-$ROOT/deploy/vps/compose.yml}"
+          LOCK_FILE="${IDOSI_DEPLOY_LOCK:-/tmp/idosi-production-deploy.lock}"
+          exec 9>"$LOCK_FILE"
+          flock -n 9 || { echo 'audit_aborted=deployment_or_rollback_active' >&2; exit 1; }
+          docker compose -f "$COMPOSE_FILE" exec -T \
+            -e "IDOSI_AUDIT_EXPECTED_DOMAIN_SHA=$EXPECTED_DOMAIN_SHA" \
+            -e "IDOSI_AUDIT_EXPECTED_WORKER_SHA=$EXPECTED_WORKER_SHA" \
+            app node --input-type=module <<'NODE_CUSTOMER_AUDIT'
+          REMOTE
+            cat scripts/audit-customer-tags.mjs
+            printf '\nNODE_CUSTOMER_AUDIT\n'
+          } > "$RUNNER_TEMP/audit-customers-remote.sh"
+          bash -n "$RUNNER_TEMP/audit-customers-remote.sh"
+          ssh -i "$HOME/.ssh/id_ed25519" -p "$VPS_PORT" \
+            -o BatchMode=yes -o ConnectTimeout=15 -o IdentitiesOnly=yes \
+            -o StrictHostKeyChecking=yes -o ServerAliveInterval=15 -o ServerAliveCountMax=3 \
+            "$VPS_USER@$VPS_HOST" \
+            "EXPECTED_DOMAIN_SHA='$EXPECTED_DOMAIN_SHA' EXPECTED_WORKER_SHA='$EXPECTED_WORKER_SHA' bash -s" \
+            < "$RUNNER_TEMP/audit-customers-remote.sh" | tee "$RUNNER_TEMP/customer-tag-audit.json"
+
+      - name: Upload aggregate audit evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: production-customer-tag-audit
+          path: ${{ runner.temp }}/customer-tag-audit.json
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Cleanup SSH material
+        if: always()
+        run: rm -rf "$HOME/.ssh"
