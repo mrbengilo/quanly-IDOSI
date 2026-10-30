@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Inventory, then explicitly retain the two newest IDOSI backup archives."""
 import argparse
+from datetime import datetime, timezone
 import hashlib
 import json
 import os
@@ -14,7 +15,8 @@ import tarfile
 import tempfile
 
 
-ARCHIVE = re.compile(r"^idosi-(?:data|daily)-(\d{8}T\d{6}Z)(?:-[A-Za-z0-9._-]+)?\.tar\.gz(?:\.enc)?$")
+ARCHIVE = re.compile(r"^idosi-(?:data|daily)-[\s\S]+\.tar\.gz(?:\.enc)?$")
+STAMP = re.compile(r"\d{8}T\d{6}Z")
 
 
 def inventory(root):
@@ -34,7 +36,16 @@ def inventory(root):
             info = path.lstat()
             if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
                 raise ValueError("Non-regular or hardlinked archive refused")
-            rows.append({"path": str(path.relative_to(root)), "timestamp": match[1],
+            # Older operators used date prefixes/suffixes in several formats.
+            # Keep their archives in scope too. Prefer a valid embedded UTC
+            # creation stamp; otherwise use the file's actual modification time.
+            stamp = STAMP.search(path.name)
+            try:
+                created = datetime.strptime(stamp[0], "%Y%m%dT%H%M%SZ").replace(tzinfo=timezone.utc) if stamp else None
+            except ValueError:
+                created = None
+            created = created or datetime.fromtimestamp(info.st_mtime, timezone.utc)
+            rows.append({"path": str(path.relative_to(root)), "timestamp": created.strftime("%Y%m%dT%H%M%SZ"),
                          "bytes": info.st_size, "mtime_ns": info.st_mtime_ns,
                          "inode": info.st_ino, "device": info.st_dev})
     return sorted(rows, key=lambda row: (row["timestamp"], row["path"]), reverse=True)

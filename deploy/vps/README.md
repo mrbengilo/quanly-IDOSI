@@ -342,6 +342,9 @@ Review the returned filenames, timestamps, sizes and manifest, then run
 `mode=apply` with that exact manifest. This is an explicit maintenance action,
 not an automatic deployment hook. It keeps the newest two archives across
 `backups/idosi-data-*.tar.gz` and `backups/daily/idosi-daily-*.tar.gz` together.
+Legacy names with a different prefix/suffix date layout are included. Ordering
+uses a valid embedded UTC creation stamp, or file modification time when a
+legacy filename has no valid stamp. Inventory shows the effective date used.
 Both retained archives must match their sidecar/deployment-report checksum,
 pass gzip validation and an isolated SQLite restore (including the archived WAL)
 with `integrity_check` and `foreign_key_check` before any removal. Encrypted
