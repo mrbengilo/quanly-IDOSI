@@ -257,14 +257,23 @@ it.each(['S1', 'S2'])('recomputes tags from persisted orders through create, cus
   const phoneA = secondStore === 'S1' ? '0917000101' : '0918000101'
   const phoneB = secondStore === 'S1' ? '0917000202' : '0918000202'
   const versions = new Map()
-  const command = (type, payload, key = crypto.randomUUID(), authorization = token) => {
+  let lastOrderVersion
+  const command = async (type, payload, key = crypto.randomUUID(), authorization = token) => {
     if (!versions.has(key)) versions.set(key, runtime.database.database.prepare("SELECT version FROM app_state WHERE scope_key='global'").get().version)
-    return request('/api/command', authorization, { type, payload, expectedVersion: versions.get(key) }, { 'idempotency-key': key })
+    const result = await request('/api/command', authorization, { type, payload, expectedVersion: versions.get(key) }, { 'idempotency-key': key })
+    if (result.status < 300) lastOrderVersion = result.body.version
+    return result
   }
   const create = (phone, storeId, key) => command('order.create', { storeId, customerName: `Fixture ${phone === phoneA ? 'A' : 'B'}`,
     customerPhone: phone, gender: 'Nam', occupation: 'Kỹ sư', acquisitionChannel: 'Facebook',
     paymentMethod: 'Tiền mặt', amount: 100000, items: [{ productId: 'order-product-001', quantity: 1 }] }, key)
   const assertContact = async (phone, count, storeCounts) => {
+    for (const storeId of ['S1', 'S2']) {
+      const metadata = await request(`/api/state-metadata?scope=global&storeId=${storeId}&customers=1`, employee)
+      expect(metadata.status).toBe(200)
+      expect(metadata.body.customerVersion).toEqual(expect.any(Number))
+      if (lastOrderVersion !== undefined) expect(metadata.body.customerVersion).toBe(lastOrderVersion)
+    }
     const expected = { isReturningCustomer: count >= 2, hasPurchaseHistory: count > 0 }
     const global = await lookup({ scope: 'global', query: phone })
     expect(global.status).toBe(200)
@@ -315,6 +324,12 @@ it.each(['S1', 'S2'])('recomputes tags from persisted orders through create, cus
   const nameOnly = await command('order.update', { orderId: second.body.order.id, customerName: 'Fixture A renamed', reason: 'Name correction only' })
   expect(nameOnly.status).toBe(200)
   await assertContact(phoneA, 2, twoA)
+  const stale = await request('/api/command', token, { type: 'order.update', expectedVersion: lastOrderVersion - 1,
+    payload: { orderId: second.body.order.id, customerPhone: phoneB, reason: 'Stale revision must not move a token' } },
+  { 'idempotency-key': crypto.randomUUID() })
+  expect(stale.status).toBe(409)
+  expect((await request('/api/state-metadata?scope=global', employee)).body.customerVersion).toBeUndefined()
+  expect((await request('/api/state-metadata?scope=global&customers=1', '')).status).toBe(401)
   expect((await command('order.update', { orderId: second.body.order.id, customerPhone: phoneB, reason: '' })).status).toBe(400)
   expect((await command('order.delete', { orderId: second.body.order.id, reason: 'Denied manager deletion' }, crypto.randomUUID(), manager)).status).toBe(403)
   await assertContact(phoneA, 2, twoA)

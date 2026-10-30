@@ -490,6 +490,9 @@ describe('IDOSI lightweight state synchronization', () => {
     fetchMock.mockResolvedValueOnce({ ok: true, json: async () => ({ version: 12, user: { id: 'admin' } }) })
     await apiGetStateMetadata('global', { restore: true })
     expect(fetchMock.mock.calls[2][0]).toBe('/api/state-metadata?scope=global&restore=1')
+    fetchMock.mockResolvedValueOnce({ ok: true, json: async () => ({ version: 15, customerVersion: 14 }) })
+    await expect(apiGetStateMetadata('global', { customers: true })).resolves.toMatchObject({ customerVersion: 14 })
+    expect(fetchMock.mock.calls[3][0]).toBe('/api/state-metadata?scope=global&customers=1')
   })
 })
 

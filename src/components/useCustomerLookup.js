@@ -1,5 +1,6 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState, useSyncExternalStore } from 'react'
 import { apiGetCustomerLookup } from '../services/idosiApi'
+import { subscribeCustomerChanges, customerChangeSnapshot } from '../services/customerLookupSync'
 import { customerDirectory, customerPublicInfo, customerSuggestions, customerPurchaseStatus, customerPurchasedAtStore, customerMatchesHistoryQuery, customerOrderDetails } from '../domain/customerLookup'
 
 export function useCustomerLookup({ app, storeId, scope = 'store', mode = 'list', field = 'phone', query = '', customerKey = '', offset = 0, enabled = true, revision = 0 }) {
@@ -7,7 +8,10 @@ export function useCustomerLookup({ app, storeId, scope = 'store', mode = 'list'
   const allowed = scope !== 'global' || ['admin', 'business_support', 'store_manager'].includes(app.session?.role)
   const ready = enabled && allowed && (scope === 'global' || Boolean(storeId))
   const options = { storeId, scope, mode, field, query, customerKey, offset }
-  const queryKey = JSON.stringify([options, app.stateVersion, revision])
+  const subscribe = useCallback((listener) => remote && ready
+    ? subscribeCustomerChanges(listener) : () => {}, [remote, ready])
+  const customerRevision = useSyncExternalStore(subscribe, customerChangeSnapshot, customerChangeSnapshot)
+  const queryKey = JSON.stringify([options, app.stateVersion, revision, customerRevision])
   // Command deltas replace orders before the deferred authoritative refresh
   // advances stateVersion. Invalidate every customer read on that delta too,
   // without serializing order history into the request/cache identity.

@@ -1,21 +1,63 @@
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import { CustomerLookupPage } from './CustomerLookupPage'
+import { customerDirectory, customerHistoryForStore, customerPublicInfo } from '../../domain/customerLookup'
+import { CUSTOMER_SYNC_INTERVAL_MS } from '../../services/customerLookupSync'
 
-const mocked = vi.hoisted(() => ({ app: {}, read: vi.fn() }))
+const mocked = vi.hoisted(() => ({ app: {}, read: vi.fn(), metadata: vi.fn() }))
 vi.mock('../../state/AppContext', () => ({ useApp: () => mocked.app }))
-vi.mock('../../services/idosiApi', () => ({ apiGetCustomerLookup: (...args) => mocked.read(...args) }))
+vi.mock('../../services/idosiApi', () => ({ apiGetCustomerLookup: (...args) => mocked.read(...args), apiGetStateMetadata: (...args) => mocked.metadata(...args) }))
 const customer = { key: 'phone:0901234567', customerName: 'Nguyễn Ánh', customerPhone: '0901234567', orderCount: 2, hasPurchaseHistory: true, isReturningCustomer: true }
 const order = { id: 'O1', code: 'S1-00001', storeId: 'S1', customerName: customer.customerName, customerPhone: customer.customerPhone,
   createdAt: '2026-10-30T08:00:00+07:00', amount: 120000, items: [{ productId: 'P1', productName: 'Áo', quantity: 2 }], paymentMethod: 'Tiền mặt' }
 beforeEach(() => {
   mocked.read.mockReset()
+  mocked.metadata.mockReset()
   mocked.app = { apiStatus: 'local', activeStoreId: 'S1', session: { role: 'store_manager', storeId: 'S1' }, orders: [order,
     { ...order, id: 'O2', createdAt: '2024-01-01T08:00:00+07:00' },
     { ...order, id: 'OTHER', storeId: 'S2', customerName: 'Khách cửa hàng khác', customerPhone: '0999999999', amount: 999999,
       storeName: 'Cửa hàng Hai', employeeName: 'Nhân viên Hai' }] }
 })
-afterEach(cleanup)
+afterEach(() => { cleanup(); vi.useRealTimers() })
+
+it.each(['admin', 'business_support', 'store_manager'])('refreshes the open %s directory/history after another store writes, without changing local orders or store token', async (role) => {
+  vi.useFakeTimers()
+  let serverOrders = [order], token = 1
+  mocked.app = { ...mocked.app, apiStatus: 'connected', stateVersion: 1, session: { role }, orders: [] }
+  const localOrders = mocked.app.orders
+  mocked.metadata.mockImplementation(async () => ({ version: token, customerVersion: token, scopeVersion: 1 }))
+  mocked.read.mockImplementation(async ({ mode }) => {
+    const [contact] = customerDirectory(serverOrders)
+    const customer = customerPublicInfo(customerHistoryForStore(contact))
+    return mode === 'history' ? { customer, records: contact.orders, total: contact.orderCount, limit: 20 }
+      : { customers: [customer], total: 1, limit: 20 }
+  })
+  const settle = async (duration = 0) => {
+    await act(async () => { await vi.advanceTimersByTimeAsync(duration) })
+    await act(async () => { await vi.advanceTimersByTimeAsync(300) })
+  }
+  render(<CustomerLookupPage systemWide={role !== 'store_manager'} />)
+  await settle()
+  expect(screen.getByText('KH mới')).toBeTruthy()
+  const input = screen.getByRole('combobox')
+  fireEvent.click(screen.getByRole('button', { name: 'Lịch sử mua hàng (1)' }))
+  await settle()
+  const second = { ...order, id: 'OTHER-STORE', storeId: 'S2' }
+  for (const [orders, count] of [[[order, second], 2], [[order, { ...second, customerPhone: '0999999999' }], 1],
+    [[order, second], 2], [[order, { ...second, deletedAt: '2026-10-30' }], 1]]) {
+    serverOrders = orders
+    token += 1
+    await settle(CUSTOMER_SYNC_INTERVAL_MS)
+    const tag = count >= 2 ? 'KH cũ' : 'KH mới'
+    expect(within(screen.getByRole('table', { name: 'Danh sách khách hàng' })).getByText(tag)).toBeTruthy()
+    const dialog = screen.getByRole('dialog')
+    expect(within(dialog).getByText(tag)).toBeTruthy()
+    expect(within(dialog).getByText(`${count} đơn hàng`)).toBeTruthy()
+  }
+  expect(mocked.app.orders).toBe(localOrders)
+  expect(mocked.app.stateVersion).toBe(1)
+  expect(screen.getByRole('combobox')).toBe(input)
+})
 
 it('discards an older two-order response after a deletion refresh at the same stateVersion', async () => {
   const single = { ...customer, orderCount: 1, isReturningCustomer: false }

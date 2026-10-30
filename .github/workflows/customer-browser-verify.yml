@@ -1,0 +1,47 @@
+name: Verify customer cross-tab sync
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - '.github/workflows/customer-browser-verify.yml'
+      - 'scripts/verify-customer-cross-tab-browser.mjs'
+      - 'src/services/customerLookupSync*'
+      - 'src/components/useCustomerLookup*'
+      - 'src/state/AppContext.jsx'
+      - 'server/worker.js'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: customer-browser-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  customer-browser:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci --prefer-offline --no-audit --no-fund
+      - name: Install isolated browser tools
+        run: |
+          npm install --prefix "$RUNNER_TEMP/customer-browser-tools" --no-save --package-lock=false playwright@1.55.0
+          node "$RUNNER_TEMP/customer-browser-tools/node_modules/playwright/cli.js" install --with-deps chromium
+      - name: Verify independent tabs and another-store session without production access
+        env:
+          IDOSI_PLAYWRIGHT_MODULE: ${{ runner.temp }}/customer-browser-tools/node_modules/playwright/index.mjs
+          IDOSI_BROWSER_OUTPUT: ${{ runner.temp }}/customer-browser
+        run: node scripts/verify-customer-cross-tab-browser.mjs
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: customer-cross-tab-evidence
+          path: ${{ runner.temp }}/customer-browser
+          retention-days: 7
