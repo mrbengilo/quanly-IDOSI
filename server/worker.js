@@ -3,7 +3,7 @@ import { taskShiftContext, bindTaskShiftContext, mergeTaskShiftProgress, attenda
 import { normalizeOrderItems as normalizedHistoricalOrderItems, resolveOrderItems as resolveConfiguredOrderItems, totalOrderItemQuantity, totalOrderItemWeightKg } from '../src/domain/orderItems.js'
 import { orderRevenueByType, validateOrderRevenue } from '../src/domain/orderRevenue.js'
 import { salesOverviewFromSummary } from '../src/domain/salesOverview.js'
-import { customerDirectory, customerPublicInfo, customerSuggestions, customerHasPurchaseHistory } from '../src/domain/customerLookup.js'
+import { customerDirectory, customerPublicInfo, customerSuggestions, customerHasPurchaseHistory, customerHistoryForStore } from '../src/domain/customerLookup.js'
 import { applyRevenueSnapshotPointPolicy, normalizeViolationPointInput, restorePointBonusRecord, restorePointRevenueSnapshot, storeViolationPointAssessment, violationPointsOf, isActivePointViolation, violationPointPeriod, formatViolationPoints } from '../src/domain/violationPoints.js'
 import { attendanceMatchesWindow, scheduleAssignmentIsUsable, scheduleConflict, scheduleWindows, scheduledCheckInChoices, shiftWindow, supportAllowsScheduling, supportForScheduledWindow } from '../src/domain/supportScheduling.js'
 import {
@@ -5984,7 +5984,7 @@ const getCustomerLookup = async (request, env, context, url) => {
     || !Number.isSafeInteger(offset) || offset < 0 || (mode === 'history' && !key)) {
     throw new ApiError(400, 'CUSTOMER_QUERY_INVALID', 'Thông tin tra cứu khách hàng không hợp lệ.')
   }
-  // Order entry can discover contacts and whether they have purchased here;
+  // Order entry can discover global contacts and whether they have purchased;
   // other employees' orders, profile fields and counts remain inaccessible.
   if (user.role === 'employee' && !['suggest', 'status'].includes(mode)) {
     throw new ApiError(403, 'ROLE_FORBIDDEN', 'Nhân viên chỉ được xem gợi ý khách hàng khi tạo đơn.')
@@ -6003,9 +6003,9 @@ const getCustomerLookup = async (request, env, context, url) => {
     'deletedAt', json_extract(value_json, '$.deletedAt'), 'status', json_extract(value_json, '$.status'),
     'source', json_extract(value_json, '$.source')) AS contact_json
     FROM state_entities WHERE scope_key = 'global' AND collection_key = 'orders'
-    AND store_id = ? COLLATE NOCASE ORDER BY entity_order DESC, entity_key DESC`, storeId)
+    ORDER BY entity_order DESC, entity_key DESC`)
   const orders = contacts.map((row) => ({ ...parseStoredJson(row.contact_json, {}), entityKey: row.entity_key }))
-  const customers = customerDirectory(orders, { storeId, query: mode === 'list' ? query : '' })
+  const customers = customerDirectory(orders, { query: mode === 'list' ? query : '' })
   if (mode === 'suggest') {
     const suggestions = customerSuggestions(customers, query, field, limit)
     return jsonResponse(apiPayload(context, { storeId, suggestions }))
@@ -6015,11 +6015,13 @@ const getCustomerLookup = async (request, env, context, url) => {
       hasSuggestions: customerSuggestions(customers, query, field, 1).length > 0 }))
   }
   if (mode === 'list') {
-    return jsonResponse(apiPayload(context, { storeId, customers: customers.slice(offset, offset + limit).map(customerPublicInfo),
+    return jsonResponse(apiPayload(context, { storeId, customers: customers.slice(offset, offset + limit)
+      .map((customer) => customerPublicInfo(customerHistoryForStore(customer, storeId))),
       total: customers.length, offset, limit }))
   }
-  const customer = customers.find((candidate) => candidate.key === key)
-  if (!customer) throw new ApiError(404, 'CUSTOMER_NOT_FOUND', 'Không tìm thấy khách hàng trong cửa hàng này.')
+  const contact = customers.find((candidate) => candidate.key === key)
+  if (!contact) throw new ApiError(404, 'CUSTOMER_NOT_FOUND', 'Không tìm thấy khách hàng trong hệ thống.')
+  const customer = customerHistoryForStore(contact, storeId)
   const keys = customer.orders.slice(offset, offset + limit).map((order) => order.entityKey)
   const rows = keys.length ? await all(db, `SELECT entity_key, value_json, value_bytes FROM state_entities
     WHERE scope_key = 'global' AND collection_key = 'orders' AND store_id = ? COLLATE NOCASE
