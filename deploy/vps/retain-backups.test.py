@@ -1,6 +1,7 @@
 import hashlib
 import importlib.util
 import io
+import os
 import sqlite3
 from pathlib import Path
 import tarfile
@@ -118,6 +119,32 @@ class RetentionTests(unittest.TestCase):
         with self.assertRaises(Exception):
             retention.retain(self.root, "apply", retention.manifest_hash(retention.inventory(self.root)))
         self.assertTrue(all(path.exists() for path in paths))
+
+    def test_legacy_archive_names_are_inventoried_and_removed_without_touching_other_files(self):
+        self.archive(2)
+        self.archive(3)
+        for name in ("idosi-data-before-release-20260821T050136Z.tar.gz",
+                     "idosi-data-2026-08-21-before-release.tar.gz"):
+            path = self.root / name
+            path.write_bytes(b"obsolete archive")
+            os.utime(path, (1787270400, 1787270400))
+        unknown = self.root / "another-application.tar.gz"
+        unknown.write_bytes(b"not an IDOSI backup")
+        rows = retention.inventory(self.root)
+        self.assertEqual(len(rows), 4)
+        self.assertEqual([row["path"] for row in rows[:2]], [
+            "idosi-data-20261003T000000Z.tar.gz", "idosi-data-20261002T000000Z.tar.gz"])
+        result = retention.retain(self.root, "apply", retention.manifest_hash(rows))
+        self.assertEqual(result["count_after"], 2)
+        self.assertEqual(len(list(self.root.glob("idosi-data-*.tar.gz"))), 2)
+        self.assertTrue(unknown.exists())
+
+    def test_invalid_embedded_date_falls_back_to_filesystem_time(self):
+        path = self.root / "idosi-data-20269999T990000Z.tar.gz"
+        path.write_bytes(b"old archive")
+        os.utime(path, (1787270400, 1787270400))
+        row = retention.inventory(self.root)[0]
+        self.assertEqual(row["timestamp"], "20260821T000000Z")
 
 
 if __name__ == "__main__":
