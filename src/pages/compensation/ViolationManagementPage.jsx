@@ -1,6 +1,6 @@
 import { formatViolationPoints, violationPointsOf, violationPointPeriod } from '../../domain/violationPoints'
 import { ViolationPointAssessment } from './ViolationPointAssessment'
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { HistoryMonthFilter } from './HistoryMonthFilter'
 import { Save, ShieldAlert, UserRoundCheck, XCircle } from 'lucide-react'
 import { useApp } from '../../state/AppContext'
@@ -158,8 +158,9 @@ const resolveShiftOptions = ({
   ))
 }
 
-export function ViolationManagementPage({ targetUnit: requestedTargetUnit, storeId: requestedStoreId = '', embedded = false }) {
-  const app = useApp()
+export function ViolationManagementPage({ targetUnit: requestedTargetUnit, storeId: requestedStoreId = '', embedded = false, data, onScopeChange, dataLoading = false }) {
+  const context = useApp()
+  const app = data ? { ...context, ...data } : context
   const role = canonicalRole(app.session?.role)
   const targetUnit = requestedTargetUnit || routeTargetUnit()
   const permittedUnit = ['store', 'office', 'business_support'].includes(targetUnit)
@@ -195,6 +196,7 @@ export function ViolationManagementPage({ targetUnit: requestedTargetUnit, store
   const [historyEmployeeFilter, setHistoryEmployeeFilter] = useState('all')
   const [assessmentPeriod, setAssessmentPeriod] = useState(() => vietnamToday().slice(0, 7))
   const { busyKey, error, run } = useCompensationAction(app)
+  useEffect(() => { onScopeChange?.({ period: assessmentPeriod, occurredOn, historyDate: historyDateFilter }) }, [onScopeChange, assessmentPeriod, occurredOn, historyDateFilter])
   const selectedEmployeeId = employeeSelection || entityId(employees[0])
   const selectedEmployee = employees.find((employee) => entityId(employee) === selectedEmployeeId) || null
   const selectedSupportContext = targetUnit === 'store'
@@ -404,7 +406,7 @@ export function ViolationManagementPage({ targetUnit: requestedTargetUnit, store
         <InfoNote>Vi phạm được ghi nhận bằng điểm, không trừ tiền. Điểm được chốt theo cấu hình tại thời điểm ghi nhận. Từ 5 điểm trong kỳ, cả thưởng doanh thu và thưởng công việc đều bằng 0.</InfoNote>
         {validation && <InfoNote tone="red">{validation}</InfoNote>}
         <ActionError message={error} />
-        <div className="compensation-actions"><Button icon={Save} loading={busyKey === 'create'} disabled={!employees.length || !selectedShift || !selectedPolicies.length || Boolean(busyKey)} onClick={createViolation}>LƯU VI PHẠM</Button></div>
+        <div className="compensation-actions"><Button icon={Save} loading={busyKey === 'create'} disabled={dataLoading || !employees.length || !selectedShift || !selectedPolicies.length || Boolean(busyKey)} onClick={createViolation}>LƯU VI PHẠM</Button></div>
       </Card>
       <Card title="Lịch sử vi phạm" action={<Badge tone="red">{filteredRows.filter((entry) => !isVoided(entry)).length} đang hiệu lực</Badge>}>
         {targetUnit === 'office' && <HistoryMonthFilter label="Tháng vi phạm" groupLabel="Bộ lọc lịch sử vi phạm" value={historyMonthFilter} onChange={setHistoryMonthFilter}>{historyEmployeeControl}</HistoryMonthFilter>}
@@ -431,7 +433,7 @@ export function ViolationManagementPage({ targetUnit: requestedTargetUnit, store
               <td><ViolationValue entry={entry} /></td>
               <td>{entry.note || '—'}</td>
               <td><Badge tone={statusTone(entry)}>{statusLabel(entry)}</Badge></td>
-              <td>{!isVoided(entry) && typeof app.voidViolation === 'function' ? <Button variant="danger" icon={XCircle} loading={busyKey === `void:${entry.id}`} disabled={Boolean(busyKey)} onClick={() => voidViolation(entry)}>Hủy</Button> : <span>—</span>}</td>
+              <td>{!isVoided(entry) && typeof app.voidViolation === 'function' ? <Button variant="danger" icon={XCircle} loading={busyKey === `void:${entry.id}`} disabled={dataLoading || Boolean(busyKey)} onClick={() => voidViolation(entry)}>Hủy</Button> : <span>—</span>}</td>
             </tr>)}
             {!filteredRows.length && <tr><td colSpan={targetUnit === 'store' ? 9 : 8} className="compensation-empty">{rows.length ? 'Không có lịch sử phù hợp bộ lọc.' : 'Chưa có vi phạm trong phạm vi này.'}</td></tr>}
           </tbody>

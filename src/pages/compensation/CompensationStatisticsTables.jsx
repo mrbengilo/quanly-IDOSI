@@ -65,7 +65,7 @@ export function CompensationStatisticsGrid({
   </div>
 }
 
-export function RewardHistoryTable({ rows = [], employees = [], showEmployee = false, filterable = false, filterFields, supportTagContextForRow = null }) {
+export function RewardHistoryTable({ rows = [], employees = [], showEmployee = false, filterable = false, filterFields, supportTagContextForRow = null, paginate = true }) {
   const [dateFilter, setDateFilter] = useState('')
   const [monthFilter, setMonthFilter] = useState('')
   const [shiftFilter, setShiftFilter] = useState('all')
@@ -127,6 +127,7 @@ export function RewardHistoryTable({ rows = [], employees = [], showEmployee = f
     <TableWrap
       key={filterByMonth ? JSON.stringify([monthFilter, employeeFilter]) : undefined}
       className="compensation-table reward-history-table"
+      paginate={paginate}
       firstPageDates={filterable ? [today()] : []}
       paginationKey={`${monthFilter}:${dateFilter}:${shiftFilter}:${employeeFilter}`}
     >

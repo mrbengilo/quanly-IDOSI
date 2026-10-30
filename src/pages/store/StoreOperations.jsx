@@ -53,6 +53,7 @@ import { useApp } from '../../state/AppContext'
 import { nextSupportTransferBoundaryDelay } from '../../domain/supportScheduling'
 import { UnitCompensationStatistics } from '../compensation/UnitCompensationStatistics'
 import { ViolationManagementPage } from '../compensation/ViolationManagementPage'
+import { useStoreTaskHistory, StoreTaskViolations } from './StoreTaskHistory'
 import { workRewardRows } from '../compensation/compensationStatistics'
 import { formatVietnamTransferPeriod, supportTransferMatchesMoment } from '../../domain/supportTransferTime'
 import {
@@ -819,6 +820,12 @@ export function StoreEmployees() {
 }
 
 export function StoreTasks() {
+  const scope = useStoreScope()
+  const [searchParams] = useSearchParams()
+  const requestedAssignmentId = String(searchParams.get('assignment') || '').trim()
+  const remote = Boolean(scope.remoteProjection && scope.remoteProjection.kind !== 'local')
+  const history = useStoreTaskHistory({ enabled: remote, storeId: scope.storeId, assignmentId: requestedAssignmentId,
+    employees: scope.allEmployees || [], shiftDefinitions: scope.shiftDefinitions || [] })
   const {
     activeStore,
     stores,
@@ -835,9 +842,7 @@ export function StoreTasks() {
     workCatalogItems = [],
     taskAssignmentHistory = [],
     session,
-  } = useStoreScope()
-  const [searchParams] = useSearchParams()
-  const requestedAssignmentId = String(searchParams.get('assignment') || '').trim()
+  } = remote ? { ...scope, ...history.state } : scope
   const canManageViolations = ['admin', 'business_support', 'manager', 'store_manager'].includes(session?.role)
   const [activeTaskTab, setActiveTaskTab] = useState('reward')
   const rewardRows = useMemo(() => workRewardRows({
@@ -940,7 +945,7 @@ export function StoreTasks() {
         role="tabpanel"
         aria-labelledby="store-task-reward-tab"
       >
-        {requestedAssignmentId && <Card className="store-task-progress-card" title="Kết quả công việc bắt buộc nhân viên đã gửi">
+        {requestedAssignmentId && (!remote || history.ready) && <Card className="store-task-progress-card" title="Kết quả công việc bắt buộc nhân viên đã gửi">
           {!requestedAssignment && <InfoNote tone="orange">Không tìm thấy lượt giao việc này trong phạm vi cửa hàng hiện tại.</InfoNote>}
           {requestedAssignment && !requestedProgress && <InfoNote tone="orange">Lượt giao việc chưa có kết quả nhân viên gửi.</InfoNote>}
           {requestedAssignment && requestedProgress && <>
@@ -965,7 +970,9 @@ export function StoreTasks() {
           </>}
         </Card>}
         <InfoNote>Danh sách thưởng do nhân viên tự tick và lưu trong mục <strong>“Công việc tính thưởng”</strong> sau khi điểm danh. Trang cửa hàng chỉ theo dõi lịch sử và thống kê.</InfoNote>
-        <UnitCompensationStatistics targetUnit="store" storeId={storeId} employees={storeEmployees} sections="reward" rewardRows={rewardRows} />
+        {remote && history.controls}
+        {(!remote || history.ready) && <UnitCompensationStatistics targetUnit="store" storeId={storeId} employees={storeEmployees} sections="reward" rewardRows={rewardRows} data={remote ? history.state : undefined} paged={Boolean(remote)} />}
+        {remote && history.pagination}
       </section>}
 
       {canManageViolations && activeTaskTab === 'violation' && <section
@@ -974,7 +981,7 @@ export function StoreTasks() {
         role="tabpanel"
         aria-labelledby="store-task-violation-tab"
       >
-        <ViolationManagementPage targetUnit="store" storeId={storeId} embedded />
+        {remote ? <StoreTaskViolations key={storeId} storeId={storeId} /> : <ViolationManagementPage targetUnit="store" storeId={storeId} embedded />}
       </section>}
     </div>
   )
