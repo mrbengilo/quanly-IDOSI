@@ -4,7 +4,7 @@ import { taskShiftContext, bindTaskShiftContext, mergeTaskShiftProgress, attenda
 import { normalizeOrderItems as normalizedHistoricalOrderItems, resolveOrderItems as resolveConfiguredOrderItems, totalOrderItemQuantity, totalOrderItemWeightKg } from '../src/domain/orderItems.js'
 import { orderRevenueByType, validateOrderRevenue } from '../src/domain/orderRevenue.js'
 import { salesOverviewFromSummary } from '../src/domain/salesOverview.js'
-import { customerDirectory, customerPublicInfo, customerSuggestions, customerPurchaseStatus, customerHistoryForStore, customerOrderDetails } from '../src/domain/customerLookup.js'
+import { customerDirectory, customerKey, customerPublicInfo, customerSuggestions, customerPurchaseStatus, customerPurchasedAtStore, customerMatchesHistoryQuery, customerOrderDetails } from '../src/domain/customerLookup.js'
 import { applyRevenueSnapshotPointPolicy, normalizeViolationPointInput, restorePointBonusRecord, restorePointRevenueSnapshot, storeViolationPointAssessment, violationPointsOf, isActivePointViolation, violationPointPeriod, formatViolationPoints } from '../src/domain/violationPoints.js'
 import { attendanceMatchesWindow, scheduleAssignmentIsUsable, scheduleConflict, scheduleWindows, scheduledCheckInChoices, shiftWindow, supportAllowsScheduling, supportForScheduledWindow } from '../src/domain/supportScheduling.js'
 import {
@@ -6007,8 +6007,6 @@ const getCustomerLookup = async (request, env, context, url) => {
   } else {
     ;({ user, storeId } = await resolveHistoryReadScope(request, db, context, url))
   }
-  const storeFilter = scope === 'store' ? 'AND store_id = ? COLLATE NOCASE' : ''
-  const storeParameters = scope === 'store' ? [storeId] : []
   const mode = url.searchParams.get('mode') || 'list'
   const field = url.searchParams.get('field') || 'phone'
   const query = String(url.searchParams.get('query') || '').trim()
@@ -6019,10 +6017,11 @@ const getCustomerLookup = async (request, env, context, url) => {
     || !Number.isSafeInteger(offset) || offset < 0 || (mode === 'history' && !key)) {
     throw new ApiError(400, 'CUSTOMER_QUERY_INVALID', 'Thông tin tra cứu khách hàng không hợp lệ.')
   }
-  // Order entry can discover global contacts and whether they have purchased;
-  // other employees' orders, profile fields and counts remain inaccessible.
-  if (user.role === 'employee' && !['suggest', 'status'].includes(mode)) {
-    throw new ApiError(403, 'ROLE_FORBIDDEN', 'Nhân viên chỉ được xem gợi ý khách hàng khi tạo đơn.')
+  // Employee order entry may open one matching contact, never enumerate the
+  // directory. The assigned working store is still validated above.
+  if (user.role === 'employee' && (mode === 'list' || (mode === 'history'
+    && (field === 'phone' ? query.replace(/\D/gu, '') : query).length < 2))) {
+    throw new ApiError(403, 'ROLE_FORBIDDEN', 'Nhân viên cần tìm và chọn khách hàng khi tạo đơn để xem lịch sử.')
   }
   if (mode === 'suggest' && (field === 'phone' ? query.replace(/\D/gu, '') : query).length < 2) {
     return jsonResponse(apiPayload(context, { storeId, suggestions: [] }))
@@ -6031,7 +6030,7 @@ const getCustomerLookup = async (request, env, context, url) => {
   // JSON (items, audit snapshots, etc.) is read for the selected page only.
   const contacts = await all(db, `SELECT entity_key, json_object(
     'id', json_extract(value_json, '$.id'), 'code', json_extract(value_json, '$.code'),
-    'storeId', store_id, 'customerName', json_extract(value_json, '$.customerName'),
+    'storeId', store_id, 'storeName', json_extract(value_json, '$.storeName'), 'customerName', json_extract(value_json, '$.customerName'),
     'customerPhone', json_extract(value_json, '$.customerPhone'),
     'createdAt', json_extract(value_json, '$.createdAt'), 'date', json_extract(value_json, '$.date'),
     'businessDate', json_extract(value_json, '$.businessDate'),
@@ -6042,7 +6041,10 @@ const getCustomerLookup = async (request, env, context, url) => {
   const orders = contacts.map((row) => ({ ...parseStoredJson(row.contact_json, {}), entityKey: row.entity_key }))
   const customers = customerDirectory(orders, { query: mode === 'list' ? query : '' })
   if (mode === 'suggest') {
-    const suggestions = customerSuggestions(customers, query, field, limit)
+    const stores = await all(db, `SELECT json_extract(value_json, '$.id') AS id,
+      json_extract(value_json, '$.code') AS code, json_extract(value_json, '$.name') AS name
+      FROM state_entities WHERE scope_key = 'global' AND collection_key = 'stores'`)
+    const suggestions = customerSuggestions(customers, query, field, limit, stores)
     return jsonResponse(apiPayload(context, { storeId, suggestions }))
   }
   if (mode === 'status') {
@@ -6050,17 +6052,20 @@ const getCustomerLookup = async (request, env, context, url) => {
       hasSuggestions: customerSuggestions(customers, query, field, 1).length > 0 }))
   }
   if (mode === 'list') {
-    return jsonResponse(apiPayload(context, { storeId, customers: customers.slice(offset, offset + limit)
-      .map((customer) => customerPublicInfo(customerHistoryForStore(customer, storeId))),
-      total: customers.length, offset, limit }))
+    const visible = scope === 'global' ? customers : customers.filter((customer) => customerPurchasedAtStore(customer, storeId))
+    return jsonResponse(apiPayload(context, { storeId, customers: visible.slice(offset, offset + limit).map(customerPublicInfo),
+      total: visible.length, offset, limit }))
   }
   const contact = customers.find((candidate) => candidate.key === key)
-  if (!contact) throw new ApiError(404, 'CUSTOMER_NOT_FOUND', 'Không tìm thấy khách hàng trong hệ thống.')
-  const customer = customerHistoryForStore(contact, storeId)
+  if (!contact || (user.role === 'employee' ? !customerMatchesHistoryQuery(contact, query, field)
+    : scope === 'store' && !customerPurchasedAtStore(contact, storeId))) {
+    throw new ApiError(404, 'CUSTOMER_NOT_FOUND', 'Không tìm thấy khách hàng tại cửa hàng này.')
+  }
+  const customer = contact
   const keys = customer.orders.slice(offset, offset + limit).map((order) => order.entityKey)
   const rows = keys.length ? await all(db, `SELECT entity_key, value_json, value_bytes FROM state_entities
-    WHERE scope_key = 'global' AND collection_key = 'orders' ${storeFilter}
-    AND entity_key IN (${keys.map(() => '?').join(',')})`, ...storeParameters, ...keys) : []
+    WHERE scope_key = 'global' AND collection_key = 'orders'
+    AND entity_key IN (${keys.map(() => '?').join(',')})`, ...keys) : []
   const byKey = new Map(rows.map((row) => {
     if (jsonByteLength(String(row.value_json)) !== Number(row.value_bytes) || Number(row.value_bytes) > MAX_STATE_ENTITY_BYTES) {
       throw new ApiError(500, 'STATE_ENTITY_CORRUPT', 'Bản ghi lịch sử không hợp lệ.')
@@ -6068,6 +6073,11 @@ const getCustomerLookup = async (request, env, context, url) => {
     return [row.entity_key, sanitizeStateValue(parseStoredJson(row.value_json, null))]
   }))
   const records = keys.map((recordKey) => byKey.get(recordKey)).filter(Boolean)
+  // A customer correction/deletion between the compact scan and page read must
+  // never return an order that now belongs to a different contact.
+  if (records.length !== keys.length || records.some((order) => customerKey(order) !== key || !orderMatchesFilters(order))) {
+    throw new ApiError(409, 'CUSTOMER_HISTORY_CHANGED', 'Lịch sử khách hàng vừa thay đổi. Vui lòng thử lại.')
+  }
   const identifiers = [...new Set(records.flatMap((order) => [order.storeId, order.employeeId])
     .filter(Boolean).map((id) => String(id).trim().toLowerCase()))]
   const placeholders = identifiers.map(() => '?').join(',')

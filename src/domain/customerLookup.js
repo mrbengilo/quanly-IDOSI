@@ -12,7 +12,9 @@ export const customerKey = (order) => customerPhone(order.customerPhone)
 export function customerOrderDetails(order, { stores = [], employees = [], deletedEmployees = [] } = {}) {
   const matches = (record, id) => Boolean(id) && [record.id, record.code].some((value) =>
     String(value || '').trim().toLowerCase() === String(id).trim().toLowerCase())
-  return { ...order,
+  const fields = ['id', 'code', 'storeId', 'employeeId', 'customerName', 'customerPhone',
+    'createdAt', 'date', 'businessDate', 'amount', 'items', 'customFields', 'paymentMethod', 'shiftName', 'status']
+  return { ...Object.fromEntries(fields.filter((field) => Object.hasOwn(order, field)).map((field) => [field, order[field]])),
     storeName: order.storeName || stores.find((store) => matches(store, order.storeId))?.name || '',
     employeeName: order.employeeName || [...employees, ...deletedEmployees]
       .find((employee) => matches(employee, order.employeeId))?.name || '',
@@ -54,13 +56,18 @@ export function customerHistoryForStore(customer, storeId = '') {
     isReturningCustomer: customer.orderCount >= 2 }
 }
 
+// Store membership controls discovery, while a selected customer's purchases
+// remain grouped across the system by normalized phone (never by name alone).
+export const customerPurchasedAtStore = (customer, storeId) => customer.orders.some((order) =>
+  String(order.storeId || '').toLowerCase() === String(storeId || '').toLowerCase())
+
 export const customerPublicInfo = ({ key, customerName, customerPhone, orderCount, hasPurchaseHistory = orderCount > 0,
   isReturningCustomer = orderCount >= 2 }) => ({
   key, customerName, customerPhone, orderCount, hasPurchaseHistory, isReturningCustomer,
 })
 
-// Suggestions expose contacts and a history flag, never order counts/details.
-export function customerSuggestions(customers, query, field = 'phone', limit = 10) {
+// Suggestions expose contacts and purchase locations, never complete orders.
+export function customerSuggestions(customers, query, field = 'phone', limit = 10, stores = []) {
   const text = field === 'phone' ? customerPhone(query) : searchText(query)
   if (text.length < 2) return []
   return customers.filter((customer) => field === 'phone'
@@ -68,8 +75,15 @@ export function customerSuggestions(customers, query, field = 'phone', limit = 1
     : customer.orders.some((order) => searchText(order.customerName).includes(text)))
     .slice(0, limit).map((customer) => ({ key: customer.key, customerName: customer.customerName,
       customerPhone: customer.customerPhone, hasPurchaseHistory: customer.orderCount > 0,
-      isReturningCustomer: customer.orderCount >= 2 }))
+      isReturningCustomer: customer.orderCount >= 2,
+      purchaseStores: [...new Map(customer.orders.filter((order) => order.storeId).map((order) => [
+        String(order.storeId).toLowerCase(), { storeId: order.storeId,
+          storeName: customerOrderDetails(order, { stores }).storeName || order.storeId },
+      ])).values()] }))
 }
+
+export const customerMatchesHistoryQuery = (customer, query, field) =>
+  customerSuggestions([customer], query, field, 1).length > 0
 
 // Exact matching is separate from the capped substring suggestions. The caller
 // chooses phone whenever supplied, so an unrelated namesake cannot override it.

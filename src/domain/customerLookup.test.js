@@ -1,5 +1,5 @@
 import { expect, it } from 'vitest'
-import { customerDirectory, customerHasPurchaseHistory, customerPurchaseStatus, customerPublicInfo, customerSuggestions, customerHistoryForStore, customerOrderDetails } from './customerLookup'
+import { customerDirectory, customerHasPurchaseHistory, customerPurchaseStatus, customerPublicInfo, customerSuggestions, customerHistoryForStore, customerOrderDetails, customerPurchasedAtStore } from './customerLookup'
 
 const order = (id, overrides = {}) => ({ id, storeId: 'S1', customerName: 'Nguyễn Ánh', customerPhone: '090 123 4567', ...overrides })
 const directory = () => customerDirectory([
@@ -13,7 +13,8 @@ const directory = () => customerDirectory([
 it('suggests by accented/unaccented name aliases or normalized phone, with compact history tags', () => {
   const customers = directory()
   expect(customerSuggestions(customers, 'nguyen anh', 'name')).toEqual([
-    { key: 'phone:0901234567', customerName: 'Ánh Nguyễn', customerPhone: '0901234567', hasPurchaseHistory: true, isReturningCustomer: true },
+    { key: 'phone:0901234567', customerName: 'Ánh Nguyễn', customerPhone: '0901234567', hasPurchaseHistory: true, isReturningCustomer: true,
+      purchaseStores: [{ storeId: 'S1', storeName: 'S1' }] },
   ])
   expect(customerSuggestions(customers, 'dang', 'name')[0].customerName).toBe('Đặng An')
   expect(customerSuggestions(customers, '090 123')).toHaveLength(1)
@@ -96,4 +97,27 @@ it('resolves directory names and archived seller codes, preserves sale snapshots
   expect(customerOrderDetails(order('O', { employeeId: 'UNKNOWN', storeId: 'UNKNOWN' }), directories))
     .toMatchObject({ storeName: '', employeeName: '' })
   expect(customerOrderDetails(order('O'), directories).salary).toBeUndefined()
+  expect(customerOrderDetails(order('O', { audit: { secret: 'private' }, editedBy: 'ADMIN', attendanceId: 'PRIVATE' }), directories))
+    .not.toHaveProperty('audit')
+  expect(customerOrderDetails(order('O', { editedBy: 'ADMIN', attendanceId: 'PRIVATE' }), directories))
+    .not.toHaveProperty('attendanceId')
+})
+
+it('summarizes distinct purchase stores with directory names, snapshots and ID fallback', () => {
+  const customers = customerDirectory([order('A'), order('B', { storeId: 's1' }),
+    order('C', { storeId: 'S2', storeName: 'Tên lúc mua' }), order('D', { storeId: 'S3' })])
+  const [suggestion] = customerSuggestions(customers, '090', 'phone', 10, [{ id: 'S1', name: 'Cửa hàng Một' }])
+  expect(suggestion.purchaseStores).toEqual(expect.arrayContaining([
+    expect.objectContaining({ storeName: 'Cửa hàng Một' }), { storeId: 'S2', storeName: 'Tên lúc mua' },
+    { storeId: 'S3', storeName: 'S3' },
+  ]))
+  expect(suggestion.purchaseStores).toHaveLength(3)
+})
+
+it('requires a purchase at the selected store without changing the global contact group', () => {
+  const [customer] = customerDirectory([order('A'), order('B', { storeId: 'S2' }), order('D', { storeId: 'S3', deletedAt: '2026-10-30' })])
+  expect(customerPurchasedAtStore(customer, 's1')).toBe(true)
+  expect(customerPurchasedAtStore(customer, 'S2')).toBe(true)
+  expect(customerPurchasedAtStore(customer, 'S3')).toBe(false)
+  expect(customer.orderCount).toBe(2)
 })

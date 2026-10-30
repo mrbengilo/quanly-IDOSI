@@ -1,5 +1,6 @@
 // @vitest-environment node
 import { mkdtemp, rm } from 'node:fs/promises'
+import { Buffer } from 'node:buffer'
 import { tmpdir } from 'node:os'
 import { resolve } from 'node:path'
 import { afterAll, beforeAll, expect, it } from 'vitest'
@@ -32,7 +33,8 @@ beforeAll(async () => {
       { id: 'H1', name: 'Support', unit: 'business_support', storeId: 'BUSINESS_SUPPORT' }],
     deletedEmployees: [{ id: 'E-OLD', code: 'OLD-STAFF', name: 'Former employee', salary: 8888888 }],
     orderInformationOptions: DEFAULT_ORDER_INFORMATION_OPTIONS,
-    orders: [order('OLD'), order('NEW', { customerName: 'Ánh Nguyễn', customerPhone: '0901234567', createdAt: '2026-10-30T09:00:00+07:00' }),
+    orders: [order('OLD', { attendanceId: 'PRIVATE-ATTENDANCE', internalAudit: { secret: 'PRIVATE-AUDIT' }, editedBy: 'PRIVATE-ADMIN' }),
+      order('NEW', { customerName: 'Ánh Nguyễn', customerPhone: '0901234567', createdAt: '2026-10-30T09:00:00+07:00' }),
       order('OTHER', { storeId: 'S2', customerName: 'Trần Khách Liên Cửa Hàng', customerPhone: '0999999999' }),
       order('CROSS-STORE', { storeId: 'S2', employeeId: 'OLD-STAFF', createdAt: '2025-01-01T01:00:00Z' }),
       order('CLOSED-STORE', { storeId: 'S3', employeeId: 'MISSING', employeeName: 'Seller snapshot' }),
@@ -67,6 +69,11 @@ it('uses global purchase thresholds for tags across list, history, suggestions a
       const options = { scope, query: phone }
       const list = await lookup(options)
       expect(list.status).toBe(200)
+      if (scope === 'store' && phone === '0999999999') {
+        expect(list.body.customers).toEqual([])
+        expect((await lookup({ scope, mode: 'history', customerKey: `phone:${phone}` })).status).toBe(404)
+        continue
+      }
       expect(list.body.customers[0]).toMatchObject({ isReturningCustomer: returning, hasPurchaseHistory: true })
       const history = await lookup({ scope, mode: 'history', customerKey: `phone:${phone}` })
       expect(history.body.customer).toMatchObject({ isReturningCustomer: returning })
@@ -86,29 +93,29 @@ it('uses global purchase thresholds for tags across list, history, suggestions a
   expect(runtime.database.database.prepare("SELECT version FROM app_state WHERE scope_key='global'").get().version).toBe(before)
 })
 
-it('searches global contacts across all periods but keeps detailed history and counts within the selected store', async () => {
+it('lists only store contacts across all periods and returns the selected customer purchases across stores', async () => {
   const result = await lookup({}, manager)
   expect(result.status, JSON.stringify(result.body)).toBe(200)
-  expect(result.body.total).toBe(5)
+  expect(result.body.total).toBe(4)
   const customer = result.body.customers.find((row) => row.customerPhone === '0901234567')
-  expect(customer).toMatchObject({ customerName: 'Ánh Nguyễn', orderCount: 2 })
+  expect(customer).toMatchObject({ customerName: 'Ánh Nguyễn', orderCount: 4 })
   expect(customer.orders).toBeUndefined()
   expect((await lookup({ query: 'nguyen anh' })).body.customers).toHaveLength(4)
   expect((await lookup({ query: '090 123' }, support)).body.customers).toEqual([customer])
-  expect((await lookup({ query: '0999' })).body.customers).toEqual([
-    expect.objectContaining({ customerPhone: '0999999999', hasPurchaseHistory: true, orderCount: 0 }),
-  ])
+  expect((await lookup({ query: '0999' })).body.customers).toEqual([])
   const history = await lookup({ mode: 'history', customerKey: customer.key }, manager)
-  expect(history.body.records.map((row) => row.id)).toEqual(['NEW', 'OLD'])
+  expect(history.body.records.map((row) => row.id)).toEqual(['NEW', 'CROSS-STORE', 'OLD', 'CLOSED-STORE'])
   expect(history.body.records[0]).toMatchObject({ amount: 120000, items: [{ quantity: 2, productName: 'Áo' }] })
   expect((await lookup({ mode: 'history', customerKey: 'phone:0888888888', offset: 20 })).body.records).toHaveLength(3)
 })
 
-it('returns compact name/phone suggestions and exact history flags to employees, denying details and cross-store reads', async () => {
+it('returns purchase stores with name/phone suggestions while denying directory and unrelated store scope to employees', async () => {
   const result = await lookup({ mode: 'suggest', query: '090' }, employee)
   expect(result.status).toBe(200)
   expect(result.body.suggestions).toEqual([{ key: 'phone:0901234567', customerName: 'Ánh Nguyễn',
-    customerPhone: '0901234567', hasPurchaseHistory: true, isReturningCustomer: true }])
+    customerPhone: '0901234567', hasPurchaseHistory: true, isReturningCustomer: true,
+    purchaseStores: [{ storeId: 'S1', storeName: 'Store 1' }, { storeId: 'S2', storeName: 'Store 2' },
+      { storeId: 'S3', storeName: 'Closed store' }] }])
   const names = await lookup({ mode: 'suggest', field: 'name', query: 'nguyen anh' }, employee)
   expect(names.status).toBe(200)
   expect(names.body.suggestions).toHaveLength(4)
@@ -118,7 +125,8 @@ it('returns compact name/phone suggestions and exact history flags to employees,
   expect((await lookup({ mode: 'status', query: '090123' }, employee)).body).toMatchObject({ hasPurchaseHistory: false, hasSuggestions: true })
   expect((await lookup({ mode: 'status', query: '0999999999' }, employee)).body.hasPurchaseHistory).toBe(true)
   expect((await lookup({ mode: 'suggest', query: '099' }, employee)).body.suggestions).toEqual([
-    { key: 'phone:0999999999', customerName: 'Trần Khách Liên Cửa Hàng', customerPhone: '0999999999', hasPurchaseHistory: true, isReturningCustomer: false },
+    { key: 'phone:0999999999', customerName: 'Trần Khách Liên Cửa Hàng', customerPhone: '0999999999', hasPurchaseHistory: true, isReturningCustomer: false,
+      purchaseStores: [{ storeId: 'S2', storeName: 'Store 2' }] },
   ])
   expect((await lookup({ mode: 'suggest', field: 'name', query: 'tran khach' }, employee)).body.suggestions).toEqual([
     expect.objectContaining({ customerPhone: '0999999999', hasPurchaseHistory: true }),
@@ -138,9 +146,34 @@ it('returns compact name/phone suggestions and exact history flags to employees,
   expect((await lookup({}, '')).status).toBe(401)
   expect((await lookup({ offset: '-1' })).status).toBe(400)
   const outside = await lookup({ mode: 'history', customerKey: 'phone:0999999999' }, manager)
-  expect(outside.status).toBe(200)
-  expect(outside.body).toMatchObject({ total: 0, records: [], customer: { orderCount: 0, hasPurchaseHistory: true } })
+  expect(outside.status).toBe(404)
+  expect(outside.body.records).toBeUndefined()
   expect((await lookup({ mode: 'history', customerKey: 'phone:0777777777' })).status).toBe(404)
+})
+
+it('allows employees to inspect one searched customer across stores without exposing other contacts or internal metadata', async () => {
+  const before = runtime.database.database.prepare("SELECT version FROM app_state WHERE scope_key='global'").get().version
+  for (const [query, field, key, ids] of [
+    ['090 123', 'phone', 'phone:0901234567', ['NEW', 'CROSS-STORE', 'OLD', 'CLOSED-STORE']],
+    ['tran khach', 'name', 'phone:0999999999', ['OTHER']],
+    ['nguyen anh', 'name', 'order:NO-PHONE-1', ['NO-PHONE-1']],
+  ]) {
+    const history = await lookup({ mode: 'history', query, field, customerKey: key }, employee)
+    expect(history.status, JSON.stringify(history.body)).toBe(200)
+    expect(history.body.records.map((record) => record.id)).toEqual(ids)
+    expect(JSON.stringify(history.body)).not.toMatch(/salary|password|attendanceId|entityKey|editedBy|internalAudit|PRIVATE-/u)
+    expect(history.body.records.every((record) => 'storeName' in record && 'employeeName' in record)).toBe(true)
+  }
+  const page = await lookup({ mode: 'history', query: '088', customerKey: 'phone:0888888888', offset: 20 }, employee)
+  expect(page.body.records).toHaveLength(3)
+  expect(page.body.total).toBe(23)
+  expect((await lookup({ mode: 'history', query: '099', customerKey: 'phone:0901234567' }, employee)).status).toBe(404)
+  expect((await lookup({ mode: 'history', query: '0', customerKey: 'phone:0901234567' }, employee)).status).toBe(403)
+  expect((await lookup({ mode: 'history', query: '090', customerKey: 'phone:0901234567', storeId: 'S2' }, employee)).status).toBe(403)
+  for (const query of ['0111111111', '0222222222']) {
+    expect((await lookup({ mode: 'history', query, customerKey: `phone:${query}` }, employee)).status).toBe(404)
+  }
+  expect(runtime.database.database.prepare("SELECT version FROM app_state WHERE scope_key='global'").get().version).toBe(before)
 })
 
 it('loads the new store screen without hydrating order history or changing state', async () => {
@@ -150,6 +183,33 @@ it('loads the new store screen without hydrating order history or changing state
   expect(result.body.state?.orders || []).toHaveLength(0)
   await lookup({}, manager)
   expect(runtime.database.database.prepare("SELECT version FROM app_state WHERE scope_key='global'").get().version).toBe(before)
+})
+
+it('fails closed if a selected order changes contact between the directory scan and detail read', async () => {
+  const db = runtime.database.database
+  const prepare = db.prepare.bind(db)
+  const previous = prepare("SELECT value_json, value_bytes FROM state_entities WHERE collection_key='orders' AND record_id='OLD'").get()
+  let changed = false
+  db.prepare = (sql) => {
+    if (!changed && sql.includes('SELECT entity_key, value_json, value_bytes') && sql.includes('entity_key IN')) {
+      changed = true
+      const value = JSON.stringify({ ...JSON.parse(previous.value_json), customerPhone: '0777777777' })
+      prepare("UPDATE state_entities SET value_json=?, value_bytes=? WHERE collection_key='orders' AND record_id='OLD'")
+        .run(value, Buffer.byteLength(value))
+    }
+    return prepare(sql)
+  }
+  try {
+    const history = await lookup({ mode: 'history', query: '090', customerKey: 'phone:0901234567' }, employee)
+    expect(changed).toBe(true)
+    expect(history.status, JSON.stringify(history.body)).toBe(409)
+    expect(history.body.error.code).toBe('CUSTOMER_HISTORY_CHANGED')
+    expect(history.body.records).toBeUndefined()
+  } finally {
+    db.prepare = prepare
+    prepare("UPDATE state_entities SET value_json=?, value_bytes=? WHERE collection_key='orders' AND record_id='OLD'")
+      .run(previous.value_json, previous.value_bytes)
+  }
 })
 
 it.each(['admin', 'business_support', 'store_manager'])('provides cross-store all-period directory and detailed history to %s', async (role) => {
@@ -227,10 +287,15 @@ it.each(['S1', 'S2'])('recomputes tags from persisted orders through create, cus
     expect(suggestions.body.suggestions[0]).toMatchObject(expected)
     for (const storeId of ['S1', 'S2']) {
       const list = await lookup({ storeId, query: phone })
-      expect(list.body.customers[0]).toMatchObject({ ...expected, orderCount: storeCounts[storeId] || 0 })
       const history = await lookup({ storeId, mode: 'history', customerKey: `phone:${phone}` })
-      expect(history.body).toMatchObject({ total: storeCounts[storeId] || 0, customer: { ...expected, orderCount: storeCounts[storeId] || 0 } })
-      expect(history.body.records).toHaveLength(storeCounts[storeId] || 0)
+      if (!storeCounts[storeId]) {
+        expect(list.body.customers).toEqual([])
+        expect(history.status).toBe(404)
+      } else {
+        expect(list.body.customers[0]).toMatchObject({ ...expected, orderCount: count })
+        expect(history.body).toMatchObject({ total: count, customer: { ...expected, orderCount: count } })
+        expect(history.body.records).toHaveLength(count)
+      }
     }
   }
   await assertContact(phoneA, 0)

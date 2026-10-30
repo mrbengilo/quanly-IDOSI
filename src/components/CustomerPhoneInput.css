@@ -12,3 +12,5 @@
 .customer-input__contact { display: flex; flex-direction: column; gap: 3px; min-width: 0; overflow-wrap: anywhere; }
 .customer-input__option .badge, .customer-purchase-status .badge { flex-shrink: 0; }
 .customer-purchase-status { display: flex; align-items: flex-start; gap: 10px; font-size: 13px; }
+.customer-input__selected { display: flex; flex-direction: column; align-items: flex-start; gap: 8px; min-width: 0; overflow-wrap: anywhere; }
+.customer-input__selected .button { min-height: 44px; max-width: 100%; white-space: normal; text-align: left; }
