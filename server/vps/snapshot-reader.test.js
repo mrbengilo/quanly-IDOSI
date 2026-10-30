@@ -44,12 +44,15 @@ it('keeps health and real login responsive during a long read-only SQLite query'
     expect((await slow)[0].total).toBe(32000004000000)
 
     // Exactly the same SQL projection, including isolation, manifests and order.
-    const background = await db.readStoreStateSnapshot('global', 'S1', '', 'tasks')
+    const background = await db.readStoreStateSnapshot('global', 'S1')
+    const taskScreen = await db.readStoreStateSnapshot('global', 'S1', '', 'tasks')
     const reader = db.snapshotReader
     db.snapshotReader = null
-    const synchronous = db.readStoreStateSnapshot('global', 'S1', '', 'tasks')
+    const synchronous = db.readStoreStateSnapshot('global', 'S1')
+    const synchronousTaskScreen = db.readStoreStateSnapshot('global', 'S1', '', 'tasks')
     db.snapshotReader = reader
     expect(background).toEqual(synchronous)
+    expect(taskScreen).toEqual(synchronousTaskScreen)
     expect(background.entities.filter((row) => row.collection_key === 'tasks')
       .map((row) => JSON.parse(row.value_json).id)).toEqual(['T1'])
 
