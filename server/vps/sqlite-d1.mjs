@@ -6,6 +6,7 @@ import { performance } from 'node:perf_hooks'
 import { DatabaseSync } from 'node:sqlite'
 import { applyVpsDataFixes } from './data-fixes.mjs'
 import { REVENUE_BONUS_SNAPSHOT_SQL } from '../revenue-bonus-read.mjs'
+import { SnapshotReader } from './snapshot-reader.mjs'
 
 const MIGRATION_TABLE = '_vps_migrations'
 const requestMetrics = new AsyncLocalStorage()
@@ -1156,6 +1157,23 @@ const measuredStatement = (kind, operation, label = '') => {
 
 export const runWithSqliteMetrics = (metrics, operation) => requestMetrics.run(metrics, operation)
 
+const measuredSnapshotRead = async (reader, sql, bindings, label) => {
+  const metrics = requestMetrics.getStore()
+  const startedAt = performance.now()
+  try {
+    return decodeStateSnapshotRecords(await reader.query(sql, bindings))
+  } finally {
+    if (metrics) {
+      const durationMs = performance.now() - startedAt
+      metrics.statements += 1
+      metrics.reads += 1
+      metrics.totalMs += durationMs
+      if (durationMs >= metrics.maxMs) metrics.maxStatement = label
+      metrics.maxMs = Math.max(metrics.maxMs, durationMs)
+    }
+  }
+}
+
 const decodeStateSnapshotRecords = (records) => {
   let row = null
   const manifests = []
@@ -1279,7 +1297,7 @@ const applyMigrations = (database, migrationsDirectory) => {
 }
 
 export class SqliteD1 {
-  constructor({ databasePath, migrationsDirectory }) {
+  constructor({ databasePath, migrationsDirectory, backgroundSnapshotReads = false }) {
     if (!databasePath) throw new Error('Thiếu đường dẫn IDOSI_DB_PATH.')
     mkdirSync(dirname(databasePath), { recursive: true })
     this.database = new DatabaseSync(databasePath)
@@ -1290,6 +1308,7 @@ export class SqliteD1 {
     ))
     this.database.exec('PRAGMA foreign_keys = ON; PRAGMA journal_mode = WAL; PRAGMA busy_timeout = 5000;')
     applyMigrations(this.database, migrationsDirectory)
+    this.snapshotReader = backgroundSnapshotReads ? new SnapshotReader(databasePath) : null
     this.dataFixResult = applyVpsDataFixes(this.database)
     if (this.dataFixResult.status === 'applied') {
       console.info(JSON.stringify({ event: 'idosi.data_fix', ...this.dataFixResult.marker }))
@@ -1316,6 +1335,9 @@ export class SqliteD1 {
       }
     }
 
+    if (this.snapshotReader) {
+      return measuredSnapshotRead(this.snapshotReader, STATE_SNAPSHOT_SQL, [scope, scope, scope], 'readStateSnapshot:background')
+    }
     const records = measuredStatement('reads', () => (
       this.database.prepare(STATE_SNAPSHOT_SQL).all(scope, scope, scope)
     ), 'readStateSnapshot')
@@ -1326,6 +1348,11 @@ export class SqliteD1 {
   // history to the operational window; empty loads the complete history.
   readStoreStateSnapshot(scope, storeId, actorEmployeeId = '', screen = '', period = '', operationalDate = '') {
     const windowed = Boolean(String(operationalDate || '').trim())
+    if (this.snapshotReader && (screen === 'tasks' || !screen)) {
+      return measuredSnapshotRead(this.snapshotReader, storeStateSnapshotSql(screen, windowed),
+        [scope, storeId, actorEmployeeId, period, String(operationalDate || '')],
+        `readStoreStateSnapshot:${screen || 'default'}:background`)
+    }
     const records = measuredStatement('reads', () => (
       this.database.prepare(storeStateSnapshotSql(screen, windowed))
         .all(scope, storeId, actorEmployeeId, period, String(operationalDate || ''))
@@ -1498,6 +1525,7 @@ export class SqliteD1 {
   }
 
   close() {
+    this.snapshotReader?.close()
     this.database.close()
   }
 }
@@ -1505,4 +1533,5 @@ export class SqliteD1 {
 export const createSqliteD1 = ({
   databasePath,
   migrationsDirectory = resolve(process.cwd(), 'drizzle'),
-} = {}) => new SqliteD1({ databasePath, migrationsDirectory })
+  backgroundSnapshotReads = false,
+} = {}) => new SqliteD1({ databasePath, migrationsDirectory, backgroundSnapshotReads })

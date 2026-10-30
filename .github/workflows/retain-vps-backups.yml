@@ -1,0 +1,90 @@
+name: Retain two IDOSI VPS backups
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: Inventory first; apply requires the returned manifest
+        required: true
+        type: choice
+        options: [inventory, apply]
+      manifest:
+        description: Exact SHA-256 of the reviewed archive inventory
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: idosi-production
+  cancel-in-progress: false
+
+jobs:
+  inspect:
+    if: >-
+      github.repository == 'mrbengilo/quanly-IDOSI' &&
+      github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment:
+      name: production
+      url: https://idosi.io.vn
+    steps:
+      - name: Checkout retention script
+        uses: actions/checkout@v6
+
+      - name: Test retention safeguards
+        run: python3 deploy/vps/retain-backups.test.py
+
+      - name: Configure production SSH
+        env:
+          VPS_HOST: ${{ secrets.IDOSI_VPS_HOST }}
+          VPS_USER: ${{ secrets.IDOSI_VPS_USER }}
+          VPS_PORT: ${{ secrets.IDOSI_VPS_PORT }}
+          VPS_SSH_PRIVATE_KEY: ${{ secrets.IDOSI_VPS_SSH_PRIVATE_KEY }}
+          VPS_KNOWN_HOSTS: ${{ secrets.IDOSI_VPS_KNOWN_HOSTS }}
+        run: |
+          set -Eeuo pipefail
+          : "${VPS_HOST:?Missing IDOSI_VPS_HOST production secret}"
+          : "${VPS_USER:?Missing IDOSI_VPS_USER production secret}"
+          : "${VPS_SSH_PRIVATE_KEY:?Missing IDOSI_VPS_SSH_PRIVATE_KEY production secret}"
+          : "${VPS_KNOWN_HOSTS:?Missing IDOSI_VPS_KNOWN_HOSTS production secret}"
+          [[ "${VPS_PORT:-22}" =~ ^[0-9]+$ ]]
+          install -m 700 -d "$HOME/.ssh"
+          printf '%s\n' "$VPS_SSH_PRIVATE_KEY" >"$HOME/.ssh/id_ed25519"
+          chmod 600 "$HOME/.ssh/id_ed25519"
+          printf '%s\n' "$VPS_KNOWN_HOSTS" >"$HOME/.ssh/known_hosts"
+          chmod 600 "$HOME/.ssh/known_hosts"
+          echo "VPS_PORT=${VPS_PORT:-22}" >>"$GITHUB_ENV"
+
+      - name: Inventory or retain the newest two verified backups
+        env:
+          VPS_HOST: ${{ secrets.IDOSI_VPS_HOST }}
+          VPS_USER: ${{ secrets.IDOSI_VPS_USER }}
+          MODE: ${{ inputs.mode }}
+          MANIFEST: ${{ inputs.manifest }}
+        run: |
+          set -Eeuo pipefail
+          [[ "$MODE" == inventory || "$MODE" == apply ]]
+          [[ -z "$MANIFEST" || "$MANIFEST" =~ ^[0-9a-f]{64}$ ]]
+          [[ "$MODE" != apply || "$MANIFEST" =~ ^[0-9a-f]{64}$ ]]
+          ssh -i "$HOME/.ssh/id_ed25519" -p "$VPS_PORT" \
+            -o BatchMode=yes -o ConnectTimeout=15 -o ServerAliveInterval=15 \
+            -o ServerAliveCountMax=3 -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \
+            "$VPS_USER@$VPS_HOST" "python3 - '$MODE' '$MANIFEST'" \
+            < deploy/vps/retain-backups.py | tee "$RUNNER_TEMP/backup-retention.jsonl"
+          curl --fail --silent --show-error --max-time 30 https://idosi.io.vn/api/health
+          curl --fail --silent --show-error --max-time 30 https://idosi.io.vn/api/release
+
+      - name: Save exact inventory and deletion evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: backup-retention-${{ github.run_id }}
+          path: ${{ runner.temp }}/backup-retention.jsonl
+          if-no-files-found: ignore
+
+      - name: Cleanup SSH material
+        if: always()
+        run: rm -rf "$HOME/.ssh"
