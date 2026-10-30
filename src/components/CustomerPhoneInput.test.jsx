@@ -1,4 +1,5 @@
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { useState } from 'react'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import { MemoryRouter } from 'react-router-dom'
 import { CustomerNameInput, CustomerPhoneInput, CustomerPurchaseStatus } from './CustomerPhoneInput'
@@ -12,6 +13,61 @@ beforeEach(() => {
   mocked.app = { apiStatus: 'local', session: { role: 'employee', storeId: 'S1' }, orders: [] }
 })
 afterEach(cleanup)
+
+it.each(['name', 'phone'])('shows purchase locations and opens only the selected customer history from the %s input', (field) => {
+  const app = { ...mocked.app, stores: [{ id: 'S1', name: 'Cửa hàng Một' }, { id: 'S2', name: 'Cửa hàng Hai' }], orders: [
+    { id: 'A', storeId: 'S1', customerName: 'Đặng Ánh', customerPhone: '0901234567', amount: 100000 },
+    { id: 'B', storeId: 'S2', customerName: 'Đặng Ánh', customerPhone: '0901234567', amount: 200000 },
+    { id: 'OTHER', storeId: 'S2', customerName: 'Đặng Ánh', customerPhone: '0999999999', amount: 999999 },
+  ] }
+  function Form() {
+    const [value, setValue] = useState(field === 'phone' ? '090' : 'dang')
+    const Component = field === 'phone' ? CustomerPhoneInput : CustomerNameInput
+    return <Component app={app} storeId="S1" value={value} onChange={(event) => setValue(event.target.value)} />
+  }
+  render(<Form />)
+  fireEvent.focus(screen.getByRole('combobox'))
+  const option = screen.getByRole('option', { name: /0901234567/ })
+  expect(option.textContent).toContain('Cửa hàng Một')
+  expect(option.textContent).toContain('Cửa hàng Hai')
+  fireEvent.click(option)
+  const trigger = screen.getByRole('button', { name: /Xem lịch sử mua hàng/ })
+  trigger.focus()
+  fireEvent.click(trigger)
+  const dialog = screen.getByRole('dialog', { name: 'Lịch sử mua hàng' })
+  expect(within(dialog).getByText('2 đơn hàng')).toBeTruthy()
+  expect(within(dialog).getByText('Cửa hàng Một')).toBeTruthy()
+  expect(within(dialog).getByText('Cửa hàng Hai')).toBeTruthy()
+  expect(within(dialog).queryByText('OTHER')).toBeNull()
+  expect(document.activeElement).toBe(within(dialog).getByRole('button', { name: 'Đóng hộp thoại' }))
+  fireEvent.keyDown(document.activeElement, { key: 'Tab', shiftKey: true })
+  expect(document.activeElement).toBe(within(dialog).getByRole('button', { name: 'Đóng' }))
+  fireEvent.keyDown(document.activeElement, { key: 'Escape' })
+  expect(screen.queryByRole('dialog')).toBeNull()
+  expect(document.activeElement).toBe(trigger)
+  expect(screen.getByRole('combobox').value).toBe(field === 'phone' ? '0901234567' : 'Đặng Ánh')
+  fireEvent.change(screen.getByRole('combobox'), { target: { value: 'Khách khác' } })
+  expect(screen.queryByRole('button', { name: /Xem lịch sử mua hàng/ })).toBeNull()
+})
+
+it('requests selected history with its search context, retries errors and closes it on a store change', async () => {
+  const app = { ...mocked.app, apiStatus: 'connected' }
+  mocked.read.mockImplementation(async ({ mode }) => mode === 'suggest' ? { suggestions: [{ key: 'phone:0901234567',
+    customerName: 'Khách', customerPhone: '0901234567', purchaseStores: [{ storeId: 'S2', storeName: 'Cửa hàng Hai' }] }] }
+    : Promise.reject(new Error('Không tải được lịch sử')))
+  const view = render(<CustomerPhoneInput app={app} storeId="S1" value="0901234567" onChange={vi.fn()} />)
+  fireEvent.focus(screen.getByRole('combobox'))
+  fireEvent.click(await screen.findByRole('option'))
+  fireEvent.click(screen.getByRole('button', { name: /Xem lịch sử mua hàng/ }))
+  await screen.findByText('Không tải được lịch sử')
+  expect(mocked.read).toHaveBeenLastCalledWith(expect.objectContaining({ storeId: 'S1', mode: 'history',
+    field: 'phone', query: '0901234567', customerKey: 'phone:0901234567' }))
+  mocked.read.mockResolvedValueOnce({ customer: { customerName: 'Khách', customerPhone: '0901234567' }, records: [], total: 0, limit: 20 })
+  fireEvent.click(screen.getByRole('button', { name: 'Thử lại' }))
+  await screen.findByText('Chưa có lịch sử mua hàng')
+  view.rerender(<CustomerPhoneInput app={app} storeId="S2" value="0901234567" onChange={vi.fn()} />)
+  expect(screen.queryByRole('dialog')).toBeNull()
+})
 
 it('refreshes an open suggestion after order creation, customer edits and deletion without changing the typed phone or stateVersion', async () => {
   const first = { id: 'FIRST', storeId: 'S1', customerPhone: '0901234567' }
@@ -121,7 +177,7 @@ it('fills a customer purchased only at another store into the create dialog as K
   const employee = { id: 'E1', name: 'Employee', storeId: 'S1' }
   mocked.app = { ...mocked.app, activeStoreId: 'S1', currentEmployee: employee, employees: [employee],
     session: { role: 'employee', employeeId: 'E1', storeId: 'S1' },
-    orders: [{ id: 'O1', storeId: 'S2', customerName: 'Đặng Ánh', customerPhone: '0901234567' }],
+    orders: [{ id: 'O1', storeId: 'S2', customerName: 'Đặng Ánh', customerPhone: '0901234567', amount: 100000 }],
     stores: [{ id: 'S1', name: 'Home' }], attendance: [{ id: 'A1', employeeId: 'E1', storeId: 'S1', checkInAt: '2026-10-30T08:00:00+07:00', date: '2026-10-30' }],
     createOrder: vi.fn(), notify: vi.fn() }
   render(<MemoryRouter><EmployeeOrdersPage /></MemoryRouter>)
@@ -132,6 +188,13 @@ it('fills a customer purchased only at another store into the create dialog as K
   expect(name.value).toBe('Đặng Ánh')
   expect(screen.getByRole('combobox', { name: /Số điện thoại/ }).value).toBe('0901234567')
   expect(screen.getByText('KH mới')).toBeTruthy()
+  fireEvent.click(screen.getByRole('button', { name: /Xem lịch sử mua hàng/ }))
+  const history = screen.getByRole('dialog', { name: 'Lịch sử mua hàng' })
+  expect(within(history).getByText('S2')).toBeTruthy()
+  expect(within(history).getByText('O1')).toBeTruthy()
+  fireEvent.click(within(history).getByRole('button', { name: 'Đóng' }))
+  expect(screen.getByRole('dialog', { name: /Tạo đơn hàng/ })).toBeTruthy()
+  expect(name.value).toBe('Đặng Ánh')
   expect(mocked.app.createOrder).not.toHaveBeenCalled()
 })
 

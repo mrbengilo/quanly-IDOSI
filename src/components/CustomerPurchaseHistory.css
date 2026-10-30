@@ -1,0 +1,29 @@
+.customer-purchase-history .customer-lookup__contact { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; margin-bottom: 20px; }
+.customer-history-table td { vertical-align: top; }
+.customer-history-table td:nth-child(3) { min-width: 220px; }
+.customer-purchase-history .modal--wide { width: min(1180px, 100%); }
+.customer-history-table td:nth-child(5),
+.customer-history-table td:nth-child(6) { min-width: 120px; overflow-wrap: anywhere; }
+@media (max-width: 640px) {
+  .customer-purchase-history .customer-lookup__contact { align-items: flex-start; flex-direction: column; gap: 8px; }
+  :is(.customer-purchase-history, .customer-lookup-page) .table-scroll { border: 0; overflow: visible; background: transparent; }
+  :is(.customer-purchase-history, .customer-lookup-page) .table-scroll table,
+  :is(.customer-purchase-history, .customer-lookup-page) .table-scroll tbody { display: block; width: 100%; min-width: 0; }
+  :is(.customer-purchase-history, .customer-lookup-page) .table-scroll thead { display: none; }
+  :is(.customer-purchase-history, .customer-lookup-page) .table-scroll tr {
+    display: block; margin-bottom: 12px; padding: 8px 12px;
+    border: 1px solid #b9cfc1; border-radius: 10px; background: #fff;
+  }
+  :is(.customer-purchase-history, .customer-lookup-page) .table-scroll td {
+    display: block; width: auto; min-width: 0; max-width: 100%; padding: 8px 0;
+    border: 0; text-align: left; white-space: normal; overflow-wrap: anywhere; font-size: 14px;
+  }
+  :is(.customer-purchase-history, .customer-lookup-page) .table-scroll td::before {
+    content: attr(data-label); display: block; margin-bottom: 4px;
+    color: #536b5b; font-size: 12px; font-weight: 600;
+  }
+  :is(.customer-purchase-history, .customer-lookup-page) .table-scroll td .button { width: 100%; min-height: 44px; }
+  :is(.customer-purchase-history, .customer-lookup-page) .table-note { font-size: 12px; }
+  :is(.customer-purchase-history, .customer-lookup-page) .order-items-summary { min-width: 0; }
+  .customer-purchase-history .customer-history-table td { min-width: 0; }
+}

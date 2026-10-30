@@ -1,51 +1,10 @@
 import { useId, useState } from 'react'
 import { Search, RefreshCw } from 'lucide-react'
-import { Badge, Button, Card, EmptyState, Field, Input, Modal, PageHeader, TablePagination, TableWrap } from '../../components/UI'
-import { OrderItemsSummary } from '../../components/OrderItemSelector'
-import { OrderCustomFieldsSummary } from '../../components/OrderCustomFields'
-import { OrderRevenueDetails } from '../../components/OrderRevenue'
+import { Button, Card, EmptyState, Field, Input, PageHeader, TableWrap } from '../../components/UI'
 import { useCustomerLookup } from '../../components/useCustomerLookup'
-import { CustomerHistoryBadge } from '../../components/CustomerPhoneInput'
+import { CustomerHistoryBadge, CustomerPurchaseHistory, CustomerLookupPagination } from '../../components/CustomerPurchaseHistory'
 import { useApp } from '../../state/AppContext'
-import { money, shortDateTime24 } from '../../utils'
 import './CustomerLookupPage.css'
-
-function Pagination({ result, offset, onChange }) {
-  if (!result || result.total <= result.limit) return null
-  return <TablePagination page={Math.floor(offset / result.limit) + 1} totalPages={Math.ceil(result.total / result.limit)}
-    total={result.total} shown={Math.min(result.limit, result.total - offset)} from={offset + 1}
-    onPageChange={(page) => onChange((page - 1) * result.limit)} />
-}
-
-function CustomerHistory({ app, storeId, scope, customerKey, onClose, revision }) {
-  const [offset, setOffset] = useState(0)
-  const [retry, setRetry] = useState(0)
-  const { value, loading, error } = useCustomerLookup({ app, storeId, scope, mode: 'history', customerKey, offset, revision: revision + retry })
-  return <Modal open onClose={onClose} title="Lịch sử mua hàng" wide footer={<Button variant="outline" onClick={onClose}>Đóng</Button>}>
-    {value && <div className="customer-lookup__contact"><strong>{value.customer.customerName}</strong>
-      <span>{value.customer.customerPhone || 'Không có SĐT'}</span><CustomerHistoryBadge isReturningCustomer={value.customer.isReturningCustomer} /><Badge>{value.total} đơn hàng</Badge></div>}
-    {loading && <p role="status">Đang tải lịch sử mua hàng…</p>}
-    {error && <p role="alert">{error} <Button variant="outline" onClick={() => setRetry((current) => current + 1)}>Thử lại</Button></p>}
-    {value?.total === 0 && <EmptyState title="Chưa có lịch sử mua hàng" description="Chưa có đơn hàng phù hợp trên toàn hệ thống." />}
-    {value?.total > 0 && <>
-      <TableWrap paginate={false} tableLabel="Đơn hàng của khách" tableClassName="customer-history-table">
-        <thead><tr><th>STT</th><th>Đơn hàng / Thời gian mua</th><th>Mặt hàng / Số lượng</th><th>Số tiền</th><th>Cửa hàng</th><th>Nhân viên bán</th><th>Thông tin đơn</th></tr></thead>
-        <tbody>{value.records.map((order, index) => <tr key={order.id || order.code}>
-          <td data-label="STT">{offset + index + 1}</td>
-          <td data-label="Đơn hàng / Thời gian mua"><strong>{order.code || order.id}</strong><small className="table-note">{shortDateTime24(order.createdAt || order.date || order.businessDate)}</small>
-            <small className="table-note">{order.customerName} • {order.customerPhone || 'Không có SĐT'}</small></td>
-          <td data-label="Mặt hàng / Số lượng" data-wide><OrderItemsSummary items={order.items} /><OrderCustomFieldsSummary values={order.customFields} /></td>
-          <td data-label="Số tiền"><strong>{money(order.amount)}</strong><OrderRevenueDetails order={order} /></td>
-          <td data-label="Cửa hàng">{order.storeName || order.storeId || 'Chưa ghi nhận cửa hàng'}</td>
-          <td data-label="Nhân viên bán">{order.employeeName || order.employeeId || 'Chưa ghi nhận nhân viên'}</td>
-          <td data-label="Thông tin đơn"><span>{order.paymentMethod || 'Chưa ghi nhận thanh toán'}</span>
-            <small className="table-note">{order.shiftName || 'Chưa gắn ca'}</small><Badge>{order.status || 'Đã ghi nhận'}</Badge></td>
-        </tr>)}</tbody>
-      </TableWrap>
-      <Pagination result={value} offset={offset} onChange={setOffset} />
-    </>}
-  </Modal>
-}
 
 export function CustomerLookupPage({ systemWide = false }) {
   const app = useApp()
@@ -81,11 +40,11 @@ export function CustomerLookupPage({ systemWide = false }) {
             <td data-label="SĐT">{customer.customerPhone || 'Không có SĐT'}</td>
             <td data-label="Lịch sử toàn hệ thống"><Button variant="outline" onClick={() => setSelected({ storeId, key: customer.key })}>Lịch sử mua hàng ({customer.orderCount})</Button></td>
           </tr>)}</tbody>
-        </TableWrap><Pagination result={value} offset={offset} onChange={changeOffset} />
+        </TableWrap><CustomerLookupPagination result={value} offset={offset} onChange={changeOffset} />
       </>}
       {value?.customers.length === 0 && <EmptyState title={query ? 'Không tìm thấy khách hàng' : 'Chưa có khách hàng'} description={query ? (globalHistory ? 'Thử tên hoặc số điện thoại khác.' : 'Không có khách đã mua tại cửa hàng này khớp tên hoặc SĐT đã nhập.') : (globalHistory ? 'Khách hàng sẽ xuất hiện khi hệ thống có đơn hàng.' : 'Khách hàng sẽ xuất hiện khi có đơn mua tại cửa hàng này.')} />}
     </Card>
-    {selected?.storeId === storeId && <CustomerHistory key={`${scope}:${storeId}:${selected.key}`} app={app} storeId={storeId} scope={scope}
+    {selected?.storeId === storeId && <CustomerPurchaseHistory key={`${scope}:${storeId}:${selected.key}`} app={app} storeId={storeId} scope={scope}
       customerKey={selected.key} revision={revision} onClose={() => setSelected(null)} />}
   </div>
 }

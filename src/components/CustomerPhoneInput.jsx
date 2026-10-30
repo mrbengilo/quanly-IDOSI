@@ -1,28 +1,32 @@
 import { useId, useState } from 'react'
-import { Badge, Input } from './UI'
+import { Button, Input } from './UI'
 import { useCustomerLookup } from './useCustomerLookup'
 import { customerPhone } from '../domain/customerLookup'
+import { CustomerHistoryBadge, CustomerPurchaseHistory } from './CustomerPurchaseHistory'
 
 import './CustomerPhoneInput.css'
 
-export function CustomerHistoryBadge({ isReturningCustomer }) {
-  return <Badge tone={isReturningCustomer ? 'green' : 'blue'}>{isReturningCustomer ? 'KH cũ' : 'KH mới'}</Badge>
-}
+export { CustomerHistoryBadge } from './CustomerPurchaseHistory'
 
 function CustomerInput({ app, storeId, field, value, onChange, onSelect, enabled = true }) {
   const id = useId()
   const [focused, setFocused] = useState(false)
   const [active, setActive] = useState(-1)
+  const [selected, setSelected] = useState(null)
+  const [historyOpen, setHistoryOpen] = useState(false)
   const enough = (field === 'phone' ? customerPhone(value) : String(value || '').trim()).length >= 2
   const { value: result, error, loading } = useCustomerLookup({ app, storeId, mode: 'suggest', field, query: value,
     enabled: enabled && enough })
   const suggestions = result?.suggestions || []
   const expanded = focused && suggestions.length > 0
+  const selectionVisible = enabled && selected?.storeId === storeId && selected.query === value
   const select = (customer) => {
     if (onSelect) onSelect(customer)
     else onChange({ target: { value: field === 'phone' ? customer.customerPhone : customer.customerName } })
     setFocused(false)
     setActive(-1)
+    setSelected({ storeId, customer, query: field === 'phone' ? customer.customerPhone : customer.customerName })
+    setHistoryOpen(false)
   }
   const keyDown = (event) => {
     if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); setFocused(false); setActive(-1) }
@@ -47,10 +51,18 @@ function CustomerInput({ app, storeId, field, value, onChange, onSelect, enabled
       {suggestions.map((customer, index) => <span className="customer-input__option" role="option" id={`${id}-${index}`}
         key={customer.key} aria-selected={active === index} onMouseDown={(event) => event.preventDefault()}
         onClick={() => select(customer)}>
-        <span className="customer-input__contact"><strong>{customer.customerName}</strong><small>{customer.customerPhone || 'Không có SĐT'}</small></span>
+        <span className="customer-input__contact"><strong>{customer.customerName}</strong><small>{customer.customerPhone || 'Không có SĐT'}</small>
+          <small>Đã mua tại: {(customer.purchaseStores || []).map((store) => store.storeName || store.storeId).join(', ') || 'Chưa ghi nhận cửa hàng'}</small>
+          <small>Chọn khách để xem lịch sử mua hàng</small></span>
         <CustomerHistoryBadge isReturningCustomer={customer.isReturningCustomer} />
       </span>)}
     </span>}
+    {selectionVisible && <span className="customer-input__selected">
+      <small>Đã mua tại: {(selected.customer.purchaseStores || []).map((store) => store.storeName || store.storeId).join(', ') || 'Chưa ghi nhận cửa hàng'}</small>
+      <Button variant="outline" onClick={() => setHistoryOpen(true)}>Xem lịch sử mua hàng của {selected.customer.customerName}</Button>
+    </span>}
+    {selectionVisible && historyOpen && <CustomerPurchaseHistory key={`${storeId}:${selected.customer.key}`} app={app} storeId={storeId}
+      customerKey={selected.customer.key} query={selected.query} field={field} onClose={() => setHistoryOpen(false)} />}
     <small id={`${id}-hint`} role="status">{error || (loading ? 'Đang tìm khách hàng…'
       : enough && !suggestions.length ? 'Không có gợi ý phù hợp. Bạn có thể tiếp tục nhập khách hàng mới.'
         : `Nhập từ 2 ${field === 'phone' ? 'chữ số' : 'ký tự'} để xem gợi ý khách hàng trên toàn hệ thống.`)}</small>

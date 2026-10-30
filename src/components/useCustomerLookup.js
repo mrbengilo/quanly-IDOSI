@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { apiGetCustomerLookup } from '../services/idosiApi'
-import { customerDirectory, customerPublicInfo, customerSuggestions, customerPurchaseStatus, customerPurchasedAtStore, customerOrderDetails } from '../domain/customerLookup'
+import { customerDirectory, customerPublicInfo, customerSuggestions, customerPurchaseStatus, customerPurchasedAtStore, customerMatchesHistoryQuery, customerOrderDetails } from '../domain/customerLookup'
 
 export function useCustomerLookup({ app, storeId, scope = 'store', mode = 'list', field = 'phone', query = '', customerKey = '', offset = 0, enabled = true, revision = 0 }) {
   const remote = ['connected', 'connecting', 'syncing', 'error'].includes(app.apiStatus)
@@ -27,10 +27,14 @@ export function useCustomerLookup({ app, storeId, scope = 'store', mode = 'list'
   }, [customerKey, ready, field, identity, mode, offset, query, remote, scope, storeId])
   if (!allowed) return { value: null, error: 'Tài khoản không có quyền tra cứu toàn hệ thống.', loading: false }
   if (!ready) return { value: null, error: '', loading: false }
+  if (app.session?.role === 'employee' && (mode === 'list' || (mode === 'history'
+    && (field === 'phone' ? String(query).replace(/\D/gu, '') : query.trim()).length < 2))) {
+    return { value: null, error: 'Tìm và chọn khách hàng khi tạo đơn để xem lịch sử.', loading: false }
+  }
   if (remote) return result.identity === identity
     ? { ...result, loading: false } : { value: null, error: '', loading: true }
   const customers = customerDirectory(app.orders || [], { query: mode === 'list' ? query : '' })
-  if (mode === 'suggest') return { loading: false, error: '', value: { suggestions: customerSuggestions(customers, query, field) } }
+  if (mode === 'suggest') return { loading: false, error: '', value: { suggestions: customerSuggestions(customers, query, field, 10, app.stores) } }
   if (mode === 'status') return { loading: false, error: '', value: { ...customerPurchaseStatus(customers, query, field),
     hasSuggestions: customerSuggestions(customers, query, field, 1).length > 0 } }
   if (mode === 'list') {
@@ -38,7 +42,8 @@ export function useCustomerLookup({ app, storeId, scope = 'store', mode = 'list'
     return { loading: false, error: '', value: { customers: visible.slice(offset, offset + 20).map(customerPublicInfo), total: visible.length, limit: 20 } }
   }
   const contact = customers.find((candidate) => candidate.key === customerKey)
-  const customer = contact && (scope === 'global' || customerPurchasedAtStore(contact, storeId)) ? contact : null
+  const customer = contact && (app.session?.role === 'employee' ? customerMatchesHistoryQuery(contact, query, field)
+    : scope === 'global' || customerPurchasedAtStore(contact, storeId)) ? contact : null
   return customer ? { loading: false, error: '', value: { customer: customerPublicInfo(customer), records: customer.orders.slice(offset, offset + 20).map((order) => customerOrderDetails(order, app)), total: customer.orderCount, limit: 20 } }
     : { loading: false, value: null, error: 'Không tìm thấy khách hàng trong hệ thống.' }
 }
