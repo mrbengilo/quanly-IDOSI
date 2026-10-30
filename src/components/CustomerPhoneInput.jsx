@@ -53,7 +53,7 @@ function CustomerInput({ app, storeId, field, value, onChange, onSelect, enabled
     </span>}
     <small id={`${id}-hint`} role="status">{error || (loading ? 'Đang tìm khách hàng…'
       : enough && !suggestions.length ? 'Không có gợi ý phù hợp. Bạn có thể tiếp tục nhập khách hàng mới.'
-        : `Nhập từ 2 ${field === 'phone' ? 'chữ số' : 'ký tự'} để xem gợi ý khách hàng tại cửa hàng.`)}</small>
+        : `Nhập từ 2 ${field === 'phone' ? 'chữ số' : 'ký tự'} để xem gợi ý khách hàng trên toàn hệ thống.`)}</small>
   </span>
 }
 
@@ -70,7 +70,7 @@ export function CustomerPurchaseStatus({ app, storeId, customerName, phone, enab
     {loading ? 'Đang đối chiếu lịch sử mua hàng…' : error ? `Chưa xác định loại khách hàng: ${error}`
       : value && !value.hasPurchaseHistory && value.hasSuggestions ? 'Có khách hàng phù hợp. Chọn gợi ý hoặc tiếp tục nhập đầy đủ thông tin để đối chiếu.'
         : value && <><CustomerHistoryBadge hasPurchaseHistory={value.hasPurchaseHistory} />
-        <span>{value.hasPurchaseHistory ? 'Đã có lịch sử mua hàng tại cửa hàng.' : 'Chưa có lịch sử mua hàng khớp thông tin đã nhập tại cửa hàng.'}
+        <span>{value.hasPurchaseHistory ? 'Đã có lịch sử mua hàng trên toàn hệ thống.' : 'Chưa có lịch sử mua hàng khớp thông tin đã nhập trên toàn hệ thống.'}
           {field === 'name' && ' Đang đối chiếu theo tên; nhập SĐT để xác định chính xác hơn.'}</span></>}
   </div>
 }
