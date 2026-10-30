@@ -5981,8 +5981,8 @@ const getCustomerLookup = async (request, env, context, url) => {
   let user, storeId = ''
   if (scope === 'global') {
     user = await requireStateReadSession(request, db, context)
-    if (!['admin', 'business_support'].includes(user.role)) {
-      throw new ApiError(403, 'ROLE_FORBIDDEN', 'Chỉ Admin và Hỗ trợ KD được tra cứu khách hàng toàn hệ thống.')
+    if (!['admin', 'business_support', 'store_manager'].includes(user.role)) {
+      throw new ApiError(403, 'ROLE_FORBIDDEN', 'Chỉ Admin, Hỗ trợ KD và quản lý cửa hàng được tra cứu khách hàng toàn hệ thống.')
     }
   } else {
     ;({ user, storeId } = await resolveHistoryReadScope(request, db, context, url))

@@ -150,8 +150,8 @@ it('loads the new store screen without hydrating order history or changing state
   expect(runtime.database.database.prepare("SELECT version FROM app_state WHERE scope_key='global'").get().version).toBe(before)
 })
 
-it.each(['admin', 'business_support'])('provides cross-store all-period directory and detailed history to %s', async (role) => {
-  const authorization = role === 'admin' ? token : support
+it.each(['admin', 'business_support', 'store_manager'])('provides cross-store all-period directory and detailed history to %s', async (role) => {
+  const authorization = role === 'admin' ? token : role === 'store_manager' ? manager : support
   const before = runtime.database.database.prepare("SELECT version FROM app_state WHERE scope_key='global'").get().version
   const result = await lookup({ scope: 'global', storeId: '', query: '090 123' }, authorization)
   expect(result.status, JSON.stringify(result.body)).toBe(200)
@@ -171,13 +171,13 @@ it.each(['admin', 'business_support'])('provides cross-store all-period director
   const secondPage = await lookup({ scope: 'global', storeId: '', mode: 'history', customerKey: 'phone:0888888888', offset: 20 }, authorization)
   expect(secondPage.body.records).toHaveLength(3)
   const screen = await request('/api/system-screens/customer-lookup', authorization)
-  expect(screen.status, JSON.stringify(screen.body)).toBe(200)
+  expect(screen.status, JSON.stringify(screen.body)).toBe(role === 'store_manager' ? 403 : 200)
   expect(screen.body.state?.orders || []).toEqual([])
   expect(runtime.database.database.prepare("SELECT version FROM app_state WHERE scope_key='global'").get().version).toBe(before)
 })
 
-it('denies every global lookup mode and global screen to store roles, and requires authentication', async () => {
-  for (const authorization of [manager, employee]) {
+it('denies global lookup to employees and keeps the Admin workspace inaccessible to store roles', async () => {
+  for (const authorization of [employee]) {
     for (const mode of ['list', 'history', 'suggest', 'status']) {
       const result = await lookup({ scope: 'global', mode, customerKey: 'phone:0901234567', query: '090' }, authorization)
       expect(result.status).toBe(403)
@@ -185,6 +185,7 @@ it('denies every global lookup mode and global screen to store roles, and requir
     }
     expect((await request('/api/system-screens/customer-lookup', authorization)).status).toBe(403)
   }
+  expect((await request('/api/system-screens/customer-lookup', manager)).status).toBe(403)
   expect((await lookup({ scope: 'global', storeId: '' }, '')).status).toBe(401)
   expect((await lookup({ scope: 'all' })).status).toBe(400)
   expect((await lookup({ scope: 'global', offset: '0.1' })).status).toBe(400)
