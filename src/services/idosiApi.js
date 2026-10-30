@@ -214,6 +214,10 @@ export const apiGetOrderSummary = ({ storeId, period, signal, ...filters } = {})
   appendOrderFilters(query, filters)
   return stateReadRequest(`/api/order-summary?${query.toString()}`, { signal })
 }
+export const apiGetCustomerLookup = ({ signal, ...options } = {}) => {
+  const query = new URLSearchParams(Object.entries(options).map(([key, value]) => [key, String(value ?? '')]))
+  return stateReadRequest(`/api/customer-lookup?${query.toString()}`, { signal })
+}
 export const apiGetHistory = (kind, {
   storeId, orderId = '', period = '', cursor = '', limit = 50, signal, ...filters
 } = {}) => {

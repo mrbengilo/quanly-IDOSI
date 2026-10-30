@@ -2,6 +2,7 @@ import { taskShiftContext, bindTaskShiftContext, mergeTaskShiftProgress, attenda
 import { normalizeOrderItems as normalizedHistoricalOrderItems, resolveOrderItems as resolveConfiguredOrderItems, totalOrderItemQuantity, totalOrderItemWeightKg } from '../src/domain/orderItems.js'
 import { orderRevenueByType, validateOrderRevenue } from '../src/domain/orderRevenue.js'
 import { salesOverviewFromSummary } from '../src/domain/salesOverview.js'
+import { customerDirectory, customerPublicInfo, customerPhone } from '../src/domain/customerLookup.js'
 import { applyRevenueSnapshotPointPolicy, normalizeViolationPointInput, restorePointBonusRecord, restorePointRevenueSnapshot, storeViolationPointAssessment, violationPointsOf, isActivePointViolation, violationPointPeriod, formatViolationPoints } from '../src/domain/violationPoints.js'
 import { attendanceMatchesWindow, scheduleAssignmentIsUsable, scheduleConflict, scheduleWindows, scheduledCheckInChoices, shiftWindow, supportAllowsScheduling, supportForScheduledWindow } from '../src/domain/supportScheduling.js'
 import {
@@ -176,6 +177,7 @@ const STORE_SCREEN_NAMES = new Set([
   'employees',
   'orders',
   'statistics',
+  'customer-lookup',
   'tasks',
   'imports',
   'expenses',
@@ -5962,6 +5964,66 @@ const resolveHistoryReadScope = async (request, db, context, url) => {
     throw new ApiError(403, 'EMPLOYEE_SCOPE_FORBIDDEN', 'Nhân viên chỉ được xem lịch sử của chính mình.')
   }
   return { user, storeId, employeeId }
+}
+
+const getCustomerLookup = async (request, env, context, url) => {
+  const db = getDatabase(env)
+  const { user, storeId } = await resolveHistoryReadScope(request, db, context, url)
+  const mode = url.searchParams.get('mode') || 'list'
+  const query = String(url.searchParams.get('query') || '').trim()
+  const key = String(url.searchParams.get('customerKey') || '')
+  const offset = Number(url.searchParams.get('offset') || 0)
+  const limit = mode === 'suggest' ? 10 : 20
+  if (!['list', 'history', 'suggest'].includes(mode) || query.length > 200 || key.length > 250
+    || !Number.isSafeInteger(offset) || offset < 0 || (mode === 'history' && !key)) {
+    throw new ApiError(400, 'CUSTOMER_QUERY_INVALID', 'Thông tin tra cứu khách hàng không hợp lệ.')
+  }
+  // Employees can discover phone numbers for order entry, but never another
+  // employee's orders, customer profiles, counts or purchase history.
+  if (user.role === 'employee' && mode !== 'suggest') {
+    throw new ApiError(403, 'ROLE_FORBIDDEN', 'Nhân viên chỉ được xem gợi ý số điện thoại khi tạo đơn.')
+  }
+  if (mode === 'suggest' && customerPhone(query).length < 2) {
+    return jsonResponse(apiPayload(context, { storeId, suggestions: [] }))
+  }
+  // Only compact contact fields are materialized across history; full order
+  // JSON (items, audit snapshots, etc.) is read for the selected page only.
+  const contacts = await all(db, `SELECT entity_key, json_object(
+    'id', json_extract(value_json, '$.id'), 'code', json_extract(value_json, '$.code'),
+    'storeId', store_id, 'customerName', json_extract(value_json, '$.customerName'),
+    'customerPhone', json_extract(value_json, '$.customerPhone'),
+    'createdAt', json_extract(value_json, '$.createdAt'), 'date', json_extract(value_json, '$.date'),
+    'businessDate', json_extract(value_json, '$.businessDate'),
+    'deletedAt', json_extract(value_json, '$.deletedAt'), 'status', json_extract(value_json, '$.status'),
+    'source', json_extract(value_json, '$.source')) AS contact_json
+    FROM state_entities WHERE scope_key = 'global' AND collection_key = 'orders'
+    AND store_id = ? COLLATE NOCASE ORDER BY entity_order DESC, entity_key DESC`, storeId)
+  const orders = contacts.map((row) => ({ ...parseStoredJson(row.contact_json, {}), entityKey: row.entity_key }))
+  const customers = customerDirectory(orders, { storeId, query: mode === 'list' ? query : '' })
+  if (mode === 'suggest') {
+    const digits = customerPhone(query)
+    const suggestions = customers.filter((customer) => customer.customerPhone.includes(digits))
+      .slice(0, limit).map((customer) => ({ customerPhone: customer.customerPhone }))
+    return jsonResponse(apiPayload(context, { storeId, suggestions }))
+  }
+  if (mode === 'list') {
+    return jsonResponse(apiPayload(context, { storeId, customers: customers.slice(offset, offset + limit).map(customerPublicInfo),
+      total: customers.length, offset, limit }))
+  }
+  const customer = customers.find((candidate) => candidate.key === key)
+  if (!customer) throw new ApiError(404, 'CUSTOMER_NOT_FOUND', 'Không tìm thấy khách hàng trong cửa hàng này.')
+  const keys = customer.orders.slice(offset, offset + limit).map((order) => order.entityKey)
+  const rows = keys.length ? await all(db, `SELECT entity_key, value_json, value_bytes FROM state_entities
+    WHERE scope_key = 'global' AND collection_key = 'orders' AND store_id = ? COLLATE NOCASE
+    AND entity_key IN (${keys.map(() => '?').join(',')})`, storeId, ...keys) : []
+  const byKey = new Map(rows.map((row) => {
+    if (jsonByteLength(String(row.value_json)) !== Number(row.value_bytes) || Number(row.value_bytes) > MAX_STATE_ENTITY_BYTES) {
+      throw new ApiError(500, 'STATE_ENTITY_CORRUPT', 'Bản ghi lịch sử không hợp lệ.')
+    }
+    return [row.entity_key, sanitizeStateValue(parseStoredJson(row.value_json, null))]
+  }))
+  return jsonResponse(apiPayload(context, { storeId, customer: customerPublicInfo(customer),
+    records: keys.map((recordKey) => byKey.get(recordKey)).filter(Boolean), total: customer.orderCount, offset, limit }))
 }
 
 const getEntityHistory = async (request, env, context, url, historyKind) => {
@@ -27011,6 +27073,10 @@ const handleApi = async (request, env, context, url) => {
   if (path === '/api/order-summary') {
     if (request.method !== 'GET') return methodNotAllowed(['GET'])
     return getOrderSummary(request, env, context, url)
+  }
+  if (path === '/api/customer-lookup') {
+    if (request.method !== 'GET') return methodNotAllowed(['GET'])
+    return getCustomerLookup(request, env, context, url)
   }
   const historyMatch = path.match(/^\/api\/history\/([^/]+)$/u)
   if (historyMatch) {

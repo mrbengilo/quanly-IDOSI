@@ -222,6 +222,7 @@ export const STORE_SCREEN_COLLECTIONS = Object.freeze({
   orders: ['orderInformationOptions'],
   // Statistics uses /api/order-summary and only needs shift labels locally.
   statistics: ['shiftDefinitions'],
+  'customer-lookup': [],
   tasks: [
     'tasks', 'taskAssignmentHistory', 'supportWorkAssignments', 'workCatalogProgress',
     'compensationEntries', 'attendance', 'notifications', 'workCatalogItems', 'violations',

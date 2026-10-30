@@ -57,6 +57,7 @@ import {
   StorePayrollV2,
   StoreReportsV2,
   StoreStatisticsPage,
+  CustomerLookupPage,
   UnifiedSchedule,
   ManagerCompensationPage,
   MyCompensationPage,
@@ -338,6 +339,7 @@ export default function AppRoutes() {
         <Route path="/store/employees" element={<StoreEmployees />} />
         <Route path="/store/orders" element={<StoreOrdersPage />} />
         <Route path="/store/statistics" element={<StoreStatisticsPage />} />
+        <Route path="/store/customer-lookup" element={<CustomerLookupPage />} />
         <Route path="/store/tasks" element={<StoreTasks />} />
         <Route path="/store/imports" element={<StoreImportsV2 />} />
         <Route path="/store/expenses" element={<StoreExpensesV2 />} />
