@@ -11,12 +11,6 @@ export const VIOLATION_POINT_MILESTONES = Object.freeze([
 ])
 
 export const VIOLATION_POINT_STEP = 0.5
-export const VIOLATION_POINT_MAX = 10
-// Configurable values: 0; 0,5; 1; 1,5 … 10. Zero records the occurrence without
-// adding to the monthly total.
-export const VIOLATION_POINT_OPTIONS = Object.freeze(
-  Array.from({ length: VIOLATION_POINT_MAX / VIOLATION_POINT_STEP + 1 }, (_, index) => index * VIOLATION_POINT_STEP),
-)
 
 // Reader for persisted catalog items and violation snapshots. Historical rows may
 // carry one-decimal values configured before the 0,5-point step was enforced.
@@ -24,7 +18,9 @@ export function normalizeViolationPoints(value) {
   const source = typeof value === 'number' || typeof value === 'string' ? text(value) : ''
   if (!/^\d+(?:[.,]\d)?$/u.test(source)) throw new TypeError('Điểm vi phạm phải là số, tối đa một chữ số thập phân.')
   const points = Number(source.replace(',', '.'))
-  if (!(points >= 0 && points <= VIOLATION_POINT_MAX)) throw new RangeError('Điểm vi phạm phải từ 0 đến 10 điểm.')
+  if (points < 0 || !Number.isSafeInteger(Math.round(points * 10))) {
+    throw new RangeError('Điểm vi phạm phải là số không âm trong phạm vi tính toán an toàn.')
+  }
   return Math.round(points * 10) / 10
 }
 
@@ -32,7 +28,7 @@ export function normalizeViolationPoints(value) {
 export function normalizeViolationPointInput(value) {
   const points = normalizeViolationPoints(value)
   if (Math.round(points * 10) % Math.round(VIOLATION_POINT_STEP * 10) !== 0) {
-    throw new RangeError('Điểm vi phạm chỉ nhận các mức 0; 0,5; 1; 1,5; … tối đa 10 điểm.')
+    throw new RangeError('Điểm vi phạm chỉ nhận các mức 0; 0,5; 1; 1,5; … theo bước 0,5 điểm.')
   }
   return points
 }

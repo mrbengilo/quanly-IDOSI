@@ -21618,7 +21618,7 @@ const assertWorkCatalogScopeAccess = (state, actor, item) => {
 // Violations in every unit are recorded as points; money deductions are retired.
 const assertViolationPointsConfigured = (item) => {
   if (item.kind === 'VIOLATION' && item.violationPoints == null) {
-    throw new ApiError(400, 'VIOLATION_POINTS_REQUIRED', 'Vi phạm phải được cài điểm trừ (0; 0,5; 1; 1,5 … tối đa 10 điểm).')
+    throw new ApiError(400, 'VIOLATION_POINTS_REQUIRED', 'Vi phạm phải được cài điểm trừ từ 0, theo bước 0,5 điểm.')
   }
 }
 

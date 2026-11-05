@@ -67,10 +67,11 @@ it.each([false, true])('saves every catalog kind without hydrating operational h
       for (const kind of ['VIOLATION', 'FIXED_TASK', 'REWARD_TASK']) {
         const payload = { code: `${targetGroup}.${kind.toLowerCase()}.test`, targetGroup, kind, name: `${targetGroup} ${kind}`,
           ...(targetGroup === 'store' ? { storeId: 'S1' } : {}),
-          ...(kind === 'VIOLATION' ? { violationPoints: 0.5 } : { amountVnd: kind === 'FIXED_TASK' ? 0 : 3000 }) }
+          ...(kind === 'VIOLATION' ? { violationPoints: 20.5 } : { amountVnd: kind === 'FIXED_TASK' ? 0 : 3000 }) }
         const key = crypto.randomUUID()
         const created = await command('admin', 'work_catalog.create', payload, key)
         expect(created.status, JSON.stringify(created.body)).toBe(201)
+        if (kind === 'VIOLATION') expect(created.body.item).toMatchObject({ violationPoints: 20.5, amountVnd: 0 })
         const replay = await command('admin', 'work_catalog.create', payload, key)
         expect(replay.body).toEqual(created.body)
         const id = created.body.item.id
