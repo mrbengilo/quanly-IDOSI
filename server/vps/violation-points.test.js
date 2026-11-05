@@ -83,6 +83,34 @@ const fixture = async (initial = {}) => {
 }
 
 describe('violation point policy through VPS commands and projections', () => {
+  it('persists more than 10 points through violation snapshots, payroll and restoration', async () => {
+    const f = await fixture()
+    const originalAwards = f.rows('compensationEntries')
+    const configured = await f.command('admin', 'work_catalog.update', { itemId: 'POINT', violationPoints: '20,5' })
+    expect(configured.status, JSON.stringify(configured.body)).toBe(200)
+    const created = await f.command('M1', 'violation.create_batch', f.batch())
+    expect(created.status, JSON.stringify(created.body)).toBe(201)
+    expect(created.body.violations[0]).toMatchObject({ violationPoints: 20.5, amountVnd: 0, catalogSnapshot: { violationPoints: 20.5 } })
+    expect(created.body.pointAssessments[0]).toMatchObject({ points: 20.5, threshold: 6, revenueBonusBlocked: true, workBonusBlocked: true })
+    await f.command('admin', 'work_catalog.update', { itemId: 'POINT', violationPoints: 30 })
+    expect(f.rows('violations')[0].violationPoints).toBe(20.5)
+    const checkPayroll = async (blocked) => {
+      const close = await f.command('admin', 'payroll.close', { storeId: 'S1', period: '2026-09' })
+      expect([200, 201], JSON.stringify(close.body)).toContain(close.status)
+      expect(close.body.period.rows.find((row) => row.employeeId === 'E1')).toMatchObject({
+        violationPoints: blocked ? 20.5 : 0, violationVnd: 0,
+        workBonusVnd: blocked ? 0 : 10000, revenueBonusVnd: blocked ? 0 : 20000, manualBonusVnd: 3000,
+      })
+    }
+    await checkPayroll(true)
+    const own = (await f.read('E1', '/api/system-screens/employee-compensation')).state
+    expect(own.violationPointSummaries).toEqual([expect.objectContaining({ points: 20.5 })])
+    const voided = await f.command('M1', 'violation.void', { violationId: created.body.violations[0].id, reason: 'Fixture correction' })
+    expect(voided.status, JSON.stringify(voided.body)).toBe(200)
+    await checkPayroll(false)
+    expect(f.rows('compensationEntries').filter((row) => originalAwards.some(({ id }) => id === row.id))).toEqual(originalAwards)
+  }, 30000)
+
   it('keeps saved awards intact while live, history and payroll block and restore the same amounts', async () => {
     const f = await fixture({
       violations: [point('PREVIOUS', 4.5)],
@@ -151,7 +179,7 @@ describe('violation point policy through VPS commands and projections', () => {
   it('requires valid configured points for new store violations without changing historical amounts', async () => {
     const catalog = { id: 'LEGACY', code: 'store.violation.custom_legacy', kind: 'VIOLATION', targetGroup: 'store', storeId: 'S1', name: 'Nội dung cũ', amountVnd: 2000, active: true, version: 1 }
     const f = await fixture({ workCatalogItems: [catalog] })
-    for (const violationPoints of [-1, 10.5, '0,55', '0,3', 1.2, 'không hợp lệ']) {
+    for (const violationPoints of [-1, 10.1, '0,55', '0,3', 1.2, 'không hợp lệ']) {
       const invalid = await f.command('admin', 'work_catalog.update', { itemId: 'LEGACY', violationPoints })
       expect(invalid.status, JSON.stringify(invalid.body)).toBe(400)
     }

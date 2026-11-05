@@ -1,21 +1,21 @@
 import { describe, expect, it } from 'vitest'
-import { applyBonusAllocationPointPolicy, applyRevenueSnapshotPointPolicy, restorePointRevenueSnapshot, assessViolationPoints, normalizeViolationPointInput, normalizeViolationPoints, storeViolationPointAssessment, VIOLATION_POINT_OPTIONS, violationPointsOf } from './violationPoints'
+import { applyBonusAllocationPointPolicy, applyRevenueSnapshotPointPolicy, restorePointRevenueSnapshot, assessViolationPoints, normalizeViolationPointInput, normalizeViolationPoints, storeViolationPointAssessment, violationPointsOf } from './violationPoints'
 import { normalizeWorkCatalogItem } from './workCatalog'
 
 const violation = (overrides = {}) => ({ id: 'V1', employeeId: 'E1', targetUnit: 'store', status: 'ACTIVE', period: '2026-09', violationPoints: 0.5, amountVnd: 0, ...overrides })
 const assess = (entries, period = '2026-09') => storeViolationPointAssessment(entries, { employeeId: 'E1', period })
 
 describe('violation point contract', () => {
-  it.each([['0', 0], ['0,5', 0.5], ['1', 1], [1.5, 1.5], [2, 2], ['10', 10], ['0.1', 0.1]])('reads stored %s points', (input, expected) => {
+  it.each([['0', 0], ['0,5', 0.5], ['1', 1], [1.5, 1.5], [2, 2], ['10', 10], ['10.1', 10.1], ['20,5', 20.5], ['1000', 1000], ['0.1', 0.1]])('reads stored %s points', (input, expected) => {
     expect(normalizeViolationPoints(input)).toBe(expected)
   })
-  it.each(['', null, undefined, true, [], -1, 10.1, '1e0', '1,000', 0.55, Infinity, NaN])('rejects invalid points %s', (input) => {
+  it.each(['', null, undefined, true, [], -1, Number.MAX_SAFE_INTEGER, '9'.repeat(400), '1e0', '1,000', 0.55, Infinity, NaN])('rejects invalid points %s', (input) => {
     expect(() => normalizeViolationPoints(input)).toThrow()
   })
-  it('accepts only 0,5-point steps from 0 to 10 for new configuration', () => {
-    expect(VIOLATION_POINT_OPTIONS).toEqual([0, 0.5, 1, 1.5, 2, 2.5, 3, 3.5, 4, 4.5, 5, 5.5, 6, 6.5, 7, 7.5, 8, 8.5, 9, 9.5, 10])
-    for (const value of VIOLATION_POINT_OPTIONS) expect(normalizeViolationPointInput(String(value).replace('.', ','))).toBe(value)
-    for (const value of ['0.1', '0,3', 1.2, 10.5, -0.5, '']) expect(() => normalizeViolationPointInput(value)).toThrow()
+  it('accepts 0,5-point steps without the former 10-point cap', () => {
+    for (const value of [0, 0.5, 1, 1.5, 10, 10.5, 20, 20.5, 1000]) expect(normalizeViolationPointInput(String(value).replace('.', ','))).toBe(value)
+    for (const value of ['0.1', '0,3', 1.2, 10.1, -0.5, '']) expect(() => normalizeViolationPointInput(value)).toThrow()
+    expect(assess([violation({ violationPoints: 20.5 })])).toMatchObject({ points: 20.5, threshold: 6, revenueBonusBlocked: true, workBonusBlocked: true })
   })
   it('keeps old money snapshots distinct and applies points to every unit', () => {
     expect(violationPointsOf({ targetUnit: 'store', amountVnd: 2000 })).toBeNull()

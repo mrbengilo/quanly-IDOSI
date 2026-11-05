@@ -197,9 +197,7 @@ export const STORE_SCREEN_COLLECTIONS = Object.freeze({
     ...STORE_PAYROLL_COMMAND_COLLECTIONS,
   ],
   'command-work-catalog': [
-    'workCatalogItems', 'workCatalogProgress', 'storeShiftTaskTemplates', 'attendance',
-    'tasks', 'taskAssignmentHistory', 'schedule', 'shiftDefinitions',
-    'compensationEntries', 'teamRewardClaims',
+    'workCatalogItems',
   ],
   'command-work-reward': [
     'attendance', 'schedule', 'shiftDefinitions', 'workCatalogProgress',

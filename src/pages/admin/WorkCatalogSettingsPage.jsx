@@ -1,5 +1,5 @@
-import { formatViolationPoints, normalizeViolationPointInput, VIOLATION_POINT_OPTIONS } from '../../domain/violationPoints'
-import { useMemo, useState } from 'react'
+import { formatViolationPoints, normalizeViolationPointInput } from '../../domain/violationPoints'
+import { useMemo, useRef, useState } from 'react'
 import { ClipboardList, Edit3, Plus, RefreshCcw, Save, Search, Trash2 } from 'lucide-react'
 import {
   Badge,
@@ -56,6 +56,7 @@ const makeCode = (kind) => `${String(kind || 'item').toLocaleLowerCase('en-US')}
 
 export function WorkCatalogSettingsPage() {
   const app = useApp()
+  const saveRequest = useRef(null)
   const items = useMemo(() => (Array.isArray(app.workCatalogItems) ? app.workCatalogItems : [])
     .map((item) => {
       try { return normalizeWorkCatalogItem(item) } catch { return null }
@@ -91,6 +92,7 @@ export function WorkCatalogSettingsPage() {
   ))
 
   const openCreate = () => {
+    saveRequest.current = null
     const initialTarget = target === 'all' ? WORK_CATALOG_TARGET.STORE : target
     const initialKind = kind === 'all' ? WORK_CATALOG_KIND.FIXED_TASK : kind
     setEditing({ id: '' })
@@ -103,6 +105,7 @@ export function WorkCatalogSettingsPage() {
   }
 
   const openEdit = (item) => {
+    saveRequest.current = null
     setEditing(item)
     setForm({
       targetGroup: item.targetGroup,
@@ -119,6 +122,7 @@ export function WorkCatalogSettingsPage() {
   }
 
   const resetEditor = () => {
+    saveRequest.current = null
     setEditing(null)
     setForm(EMPTY_FORM)
   }
@@ -163,12 +167,29 @@ export function WorkCatalogSettingsPage() {
         effectiveFrom: form.effectiveFrom || null,
         effectiveTo: form.effectiveTo || null,
       }
+      // A timed-out POST may already be committed. Retain the exact intent and
+      // receipt key while the form is unchanged so retrying cannot create a
+      // second item (or reapply an update with an obsolete entity version).
+      const intent = editing?.id ? { ...payload, id: editing.id, expectedVersion: editing.version } : payload
+      const signature = JSON.stringify(intent)
+      if (saveRequest.current?.signature !== signature) {
+        saveRequest.current = {
+          signature,
+          payload: {
+            ...intent,
+            ...(!editing?.id ? { code: makeCode(form.kind) } : {}),
+            idempotencyKey: `work-catalog-${editing?.id ? 'update' : 'create'}:${crypto.randomUUID()}`,
+          },
+        }
+      }
       const result = editing?.id
-        ? await app.updateWorkCatalogItem?.({ ...payload, id: editing.id, expectedVersion: editing.version })
-        : await app.createWorkCatalogItem?.({ ...payload, code: makeCode(form.kind) })
+        ? await app.updateWorkCatalogItem?.(saveRequest.current.payload)
+        : await app.createWorkCatalogItem?.(saveRequest.current.payload)
       if (result?.ok !== false) resetEditor()
     } catch (error) {
-      app.notify?.(error.message || 'Không thể lưu danh mục.', 'info')
+      app.notify?.(['TIMEOUT', 'NETWORK_ERROR'].includes(error.code)
+        ? 'Chưa xác nhận được kết quả lưu. Bấm LƯU lại để tiếp tục cùng yêu cầu và tránh tạo trùng.'
+        : error.message || 'Không thể lưu danh mục.', 'info')
     } finally {
       setSaving(false)
     }
@@ -244,7 +265,7 @@ export function WorkCatalogSettingsPage() {
           <Field label="Ca làm việc" hint="Để trống nếu áp dụng cho mọi ca"><Select value={form.shiftId} onChange={update('shiftId')}><option value="">Mọi ca</option>{applicableShifts.map((shift) => <option key={shift.id} value={shift.id}>{shift.name} · {shift.start || shift.startTime || '--:--'}–{shift.end || shift.endTime || '--:--'}</option>)}</Select></Field>
         </>}
         <Field label="Tên hiển thị" required className="span-2"><Input value={form.name} maxLength="300" onChange={update('name')} placeholder="Nhập tên công việc hoặc vi phạm" /></Field>
-        {pointViolation ? <Field label="Điểm trừ khi vi phạm" required hint="Các mức 0; 0,5; 1; 1,5 … tối đa 10 điểm. Vi phạm không trừ tiền."><Select aria-label="Điểm vi phạm" value={form.violationPoints} onChange={update('violationPoints')}><option value="">Chọn số điểm</option>{VIOLATION_POINT_OPTIONS.map((points) => <option key={points} value={String(points)}>{formatViolationPoints(points)}</option>)}</Select></Field> : <Field label="Số tiền" required={form.kind !== WORK_CATALOG_KIND.FIXED_TASK} hint={form.kind === WORK_CATALOG_KIND.FIXED_TASK ? 'Có thể để 0 đồng' : 'Tiền thưởng khi hoàn thành'}><MoneyInput value={form.amountVnd} onChange={update('amountVnd')} placeholder="Nhập đúng số tiền bằng đồng" /></Field>}
+        {pointViolation ? <Field label="Điểm trừ khi vi phạm" required hint="Nhập từ 0 điểm, theo bước 0,5; không giới hạn 10 điểm. Vi phạm không trừ tiền."><Input aria-label="Điểm vi phạm" inputMode="decimal" value={form.violationPoints} onChange={update('violationPoints')} placeholder="Ví dụ: 0,5; 12; 20,5" /></Field> : <Field label="Số tiền" required={form.kind !== WORK_CATALOG_KIND.FIXED_TASK} hint={form.kind === WORK_CATALOG_KIND.FIXED_TASK ? 'Có thể để 0 đồng' : 'Tiền thưởng khi hoàn thành'}><MoneyInput value={form.amountVnd} onChange={update('amountVnd')} placeholder="Nhập đúng số tiền bằng đồng" /></Field>}
         <Field label="Thứ tự"><Input type="number" min="0" step="1" value={form.sortOrder} onChange={update('sortOrder')} /></Field>
         <Field label="Hiệu lực từ"><Input type="date" value={form.effectiveFrom} onChange={update('effectiveFrom')} /></Field>
         <Field label="Hiệu lực đến"><Input type="date" value={form.effectiveTo} min={form.effectiveFrom || today()} onChange={update('effectiveTo')} /></Field>
