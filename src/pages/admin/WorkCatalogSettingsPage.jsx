@@ -1,5 +1,5 @@
 import { formatViolationPoints, normalizeViolationPointInput, VIOLATION_POINT_OPTIONS } from '../../domain/violationPoints'
-import { useMemo, useState } from 'react'
+import { useMemo, useRef, useState } from 'react'
 import { ClipboardList, Edit3, Plus, RefreshCcw, Save, Search, Trash2 } from 'lucide-react'
 import {
   Badge,
@@ -56,6 +56,7 @@ const makeCode = (kind) => `${String(kind || 'item').toLocaleLowerCase('en-US')}
 
 export function WorkCatalogSettingsPage() {
   const app = useApp()
+  const saveRequest = useRef(null)
   const items = useMemo(() => (Array.isArray(app.workCatalogItems) ? app.workCatalogItems : [])
     .map((item) => {
       try { return normalizeWorkCatalogItem(item) } catch { return null }
@@ -91,6 +92,7 @@ export function WorkCatalogSettingsPage() {
   ))
 
   const openCreate = () => {
+    saveRequest.current = null
     const initialTarget = target === 'all' ? WORK_CATALOG_TARGET.STORE : target
     const initialKind = kind === 'all' ? WORK_CATALOG_KIND.FIXED_TASK : kind
     setEditing({ id: '' })
@@ -103,6 +105,7 @@ export function WorkCatalogSettingsPage() {
   }
 
   const openEdit = (item) => {
+    saveRequest.current = null
     setEditing(item)
     setForm({
       targetGroup: item.targetGroup,
@@ -119,6 +122,7 @@ export function WorkCatalogSettingsPage() {
   }
 
   const resetEditor = () => {
+    saveRequest.current = null
     setEditing(null)
     setForm(EMPTY_FORM)
   }
@@ -163,12 +167,29 @@ export function WorkCatalogSettingsPage() {
         effectiveFrom: form.effectiveFrom || null,
         effectiveTo: form.effectiveTo || null,
       }
+      // A timed-out POST may already be committed. Retain the exact intent and
+      // receipt key while the form is unchanged so retrying cannot create a
+      // second item (or reapply an update with an obsolete entity version).
+      const intent = editing?.id ? { ...payload, id: editing.id, expectedVersion: editing.version } : payload
+      const signature = JSON.stringify(intent)
+      if (saveRequest.current?.signature !== signature) {
+        saveRequest.current = {
+          signature,
+          payload: {
+            ...intent,
+            ...(!editing?.id ? { code: makeCode(form.kind) } : {}),
+            idempotencyKey: `work-catalog-${editing?.id ? 'update' : 'create'}:${crypto.randomUUID()}`,
+          },
+        }
+      }
       const result = editing?.id
-        ? await app.updateWorkCatalogItem?.({ ...payload, id: editing.id, expectedVersion: editing.version })
-        : await app.createWorkCatalogItem?.({ ...payload, code: makeCode(form.kind) })
+        ? await app.updateWorkCatalogItem?.(saveRequest.current.payload)
+        : await app.createWorkCatalogItem?.(saveRequest.current.payload)
       if (result?.ok !== false) resetEditor()
     } catch (error) {
-      app.notify?.(error.message || 'Không thể lưu danh mục.', 'info')
+      app.notify?.(['TIMEOUT', 'NETWORK_ERROR'].includes(error.code)
+        ? 'Chưa xác nhận được kết quả lưu. Bấm LƯU lại để tiếp tục cùng yêu cầu và tránh tạo trùng.'
+        : error.message || 'Không thể lưu danh mục.', 'info')
     } finally {
       setSaving(false)
     }

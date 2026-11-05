@@ -8371,11 +8371,9 @@ export const commandStateProjection = (body) => {
   if (type.startsWith('work_catalog.')) {
     return projection(
       'command-work-catalog',
-      [
-        'workCatalogItems', 'workCatalogProgress', 'storeShiftTaskTemplates', 'attendance',
-        'tasks', 'taskAssignmentHistory', 'schedule', 'shiftDefinitions',
-        'compensationEntries', 'teamRewardClaims',
-      ],
+      // Catalog mutations change definitions only; existing shifts and rewards
+      // retain their snapshots. Do not hydrate operational history on Save.
+      ['workCatalogItems'],
       'workCatalogItems',
       payload.itemId || payload.catalogItemId || payload.id,
       payload.employeeId,
