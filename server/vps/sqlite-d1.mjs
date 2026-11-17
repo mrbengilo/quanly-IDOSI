@@ -1610,18 +1610,30 @@ export class SqliteD1 {
     ), `readEntityHistory:${collectionKey}`)
   }
 
-  readOrderSummaryRows({ scope = 'global', storeId, employeeId = '', period }) {
+  readSalesOverviewRows({ scope = 'global', storeIds, period }) {
+    return this.readOrderSummaryRows({ scope, storeIds, period })
+  }
+
+  readOrderSummaryRevision(scope = 'global') {
+    // Migration 0018 increments this revision on every order insert/update/delete,
+    // including soft-delete, restore and scope moves, not just contact changes.
+    return measuredStatement('reads', () => (
+      this.database.prepare('SELECT revision FROM customer_contact_revisions WHERE scope_key = ?').get(scope)?.revision || 0
+    ), 'orderSummary:revision')
+  }
+
+  readOrderSummaryRows({ scope = 'global', storeId, storeIds = null, employeeId = '', period }) {
     const [year, month] = String(period).split('-').map(Number)
     const periods = [-1, 0, 1].map((offset) => {
       const date = new Date(Date.UTC(year, month - 1 + offset, 1))
       return `${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(2, '0')}`
     })
     const sql = `
-      SELECT value_json, value_bytes
-      FROM state_entities
+      SELECT entity.value_json, entity.value_bytes
+      FROM ${storeIds ? 'json_each(?) AS selected_store CROSS JOIN ' : ''}state_entities AS entity${storeIds ? ' INDEXED BY idx_state_entities_store_period' : ''}
       WHERE scope_key = ?
         AND collection_key = 'orders'
-        AND store_id = ? COLLATE NOCASE
+        AND store_id = ${storeIds ? 'CAST(selected_store.value AS TEXT)' : '?'} COLLATE NOCASE
         AND (? = '' OR employee_id = ? COLLATE NOCASE)
         AND (
           period_key IN (?, ?, ?)
@@ -1634,9 +1646,9 @@ export class SqliteD1 {
             NULLIF(trim(CAST(json_extract(value_json, '$.updatedAt') AS TEXT)), '')
           ), 1, 7) IN (?, ?, ?)
         )
-      ORDER BY entity_order DESC, entity_key DESC
+      ORDER BY ${storeIds ? 'selected_store.key, ' : ''}entity_order DESC, entity_key DESC
     `
-    const bindings = [scope, storeId, employeeId, employeeId, ...periods, ...periods]
+    const bindings = [...(storeIds ? [JSON.stringify(storeIds), scope] : [scope, storeId]), employeeId, employeeId, ...periods, ...periods]
     return this.snapshotReader
       ? measuredRowsRead(this.snapshotReader, sql, bindings, 'readOrderSummaryRows:background')
       : measuredStatement('reads', () => this.database.prepare(sql).all(...bindings), 'readOrderSummaryRows')

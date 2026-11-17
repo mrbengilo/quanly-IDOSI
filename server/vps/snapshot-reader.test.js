@@ -67,6 +67,7 @@ it('keeps health and real login responsive during a long read-only SQLite query'
     const overview = Promise.all([
       db.readFinanceOverview('2026-11'),
       db.readOrderSummaryRows({ storeId: 'S1', period: '2026-11' }),
+      db.readSalesOverviewRows({ storeIds: ['s1', 's2'], period: '2026-11' }),
     ]).then((rows) => { overviewFinished = true; return rows })
     const storeScreens = ['employee-home', 'employee-orders', 'command-order', 'command-attendance']
     let storesFinished = false
@@ -86,7 +87,7 @@ it('keeps health and real login responsive during a long read-only SQLite query'
     expect(storesFinished, 'employee and pre-write store reads must not block authentication').toBe(false)
     expect((await slow)[0].total).toBe(32000004000000)
     const backgroundScreen = await screen
-    const [finance, orders] = await overview
+    const [finance, orders, salesOrders] = await overview
     const storeSnapshots = await stores
     const bonusSnapshot = await bonus
     const duplicateScreen = await duplicateScreenRead
@@ -95,6 +96,8 @@ it('keeps health and real login responsive during a long read-only SQLite query'
     expect(backgroundScreen).toEqual(db.readSystemStateSnapshot('global', collections, 'support-transfers', ['E1']))
     expect(finance).toEqual(db.readFinanceOverview('2026-11'))
     expect(orders).toEqual(db.readOrderSummaryRows({ storeId: 'S1', period: '2026-11' }))
+    expect(salesOrders).toEqual(db.readSalesOverviewRows({ storeIds: ['s1', 's2'], period: '2026-11' }))
+    expect(salesOrders.map(row => JSON.parse(row.value_json).id)).toEqual(['O1', 'O2'])
     expect(orders.map(row => JSON.parse(row.value_json).id)).toEqual(['O1'])
     for (const [index, screen] of storeScreens.entries()) {
       expect(storeSnapshots[index]).toEqual(db.readStoreStateSnapshot('global', 'S1', 'E1', screen, '',

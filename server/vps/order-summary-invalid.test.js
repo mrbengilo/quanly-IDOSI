@@ -49,6 +49,11 @@ it('names the malformed order instead of failing the report with a generic error
       details: { orderId: 'O-BAD', orderCode: 'S1-00002', storeId: 'S1', reason: 'ORDER_REVENUE_MISMATCH' },
     })
     expect(payload.error.message).toContain('S1-00002')
+    const salesResponse = await fetch(`${base}/api/sales-overview?period=2026-09`, {
+      headers: { authorization: `Bearer ${login.token}` },
+    })
+    expect(salesResponse.status).toBe(422)
+    expect((await salesResponse.json()).error).toEqual(payload.error)
   } finally {
     consoleError.mockRestore()
     await new Promise((done) => server.close(done))

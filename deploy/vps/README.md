@@ -341,6 +341,14 @@ model. SQLite triggers update its rows and revision in the same transaction as
 every order insert/update/delete, including imports, restores and cascades.
 The first lookup reads compact contacts with their revision in one snapshot;
 later lookups reuse the canonical customer grouping until an order changes.
+The sales overview reuses the same all-order revision (incremented by migration
+0018 on every order write), together with the requested month, configured store
+IDs and current product catalog, to cache at most six compact results per runtime.
+It never caches sessions or authorization. Concurrent identical requests share
+one calculation; errors and results spanning an order revision change are not
+retained. A cold overview uses one store-indexed worker query and canonical
+totals/product calculations without the four unused detailed grouping views.
+Detailed reports and the D1 fallback retain their existing contracts.
 Unrelated attendance writes do not invalidate it. Each request still validates
 its role/store and selected-history permissions; selected full order details
 are reread and checked against the customer's key. The D1 path keeps its

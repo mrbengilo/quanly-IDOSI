@@ -130,6 +130,7 @@ const MAX_PBKDF2_VERIFICATION_ITERATIONS = 1_000_000
 const VALID_ROLES = new Set(['admin', 'business_support', 'store_manager', 'employee'])
 const VALID_ACCOUNT_STATUSES = new Set(['active', 'locked', 'inactive'])
 const globalStateSnapshotCaches = new WeakMap()
+const salesOverviewCaches = new WeakMap()
 // Authentication must stay bounded as operational history grows. The Admin
 // landing screen only needs the store directory; detailed finance/history is
 // loaded explicitly by the destination workspace.
@@ -6267,11 +6268,42 @@ const getSalesOverview = async (request, env, context, url) => {
   const state = row ? parseStoredJson(row.value_json, {}) : {}
   const storeIds = [...new Set((state.stores || []).map((store) => String(store.id || '').trim().toLowerCase()).filter(Boolean))]
   const productCatalog = Array.isArray(state.orderInformationOptions) ? state.orderInformationOptions : []
-  // Reuse store-indexed history reads; never hydrate unrelated payroll/task history.
-  const rows = []
-  for (const storeId of storeIds) rows.push(await readOrderSummaryRows(db, storeId, '', period))
-  const summary = summarizeOrderRows(rows.flat(), { period, productCatalog })
-  return jsonResponse(apiPayload(context, { period, ...salesOverviewFromSummary(summary) }))
+  const load = async () => {
+    // One read-only SQLite snapshot covers the configured stores, avoiding a
+    // worker startup and queue round trip per store. D1 keeps its scoped fallback.
+    let rows
+    if (typeof db?.readSalesOverviewRows === 'function') {
+      rows = await db.readSalesOverviewRows({ scope: 'global', storeIds, period })
+    } else {
+      const storeRows = []
+      for (const storeId of storeIds) storeRows.push(await readOrderSummaryRows(db, storeId, '', period))
+      rows = storeRows.flat()
+    }
+    return salesOverviewFromSummary(summarizeOrderRows(rows, { period, productCatalog, includeGroups: false }))
+  }
+  let overview
+  if (typeof db?.readOrderSummaryRevision === 'function') {
+    const revision = db.readOrderSummaryRevision('global')
+    // Only compact derived results are retained. Authentication and the current
+    // catalog/store list are read on every request. Never cache request metadata.
+    const key = JSON.stringify([revision, period, storeIds, productCatalog])
+    let cache = salesOverviewCaches.get(db)
+    if (!cache) {
+      cache = new Map()
+      salesOverviewCaches.set(db, cache)
+    }
+    if (!cache.has(key)) {
+      const remove = () => { if (cache.get(key) === pending) cache.delete(key) }
+      const pending = load().then((result) => {
+        if (db.readOrderSummaryRevision('global') !== revision) remove()
+        return result
+      }).catch((error) => { remove(); throw error })
+      cache.set(key, pending)
+      while (cache.size > 6) cache.delete(cache.keys().next().value)
+    }
+    overview = await cache.get(key)
+  } else overview = await load()
+  return jsonResponse(apiPayload(context, { period, ...overview }))
 }
 
 // Product identity comes from the catalog, never from a hard-coded name list.
