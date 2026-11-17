@@ -13989,13 +13989,37 @@ const createSupportCompensationProjectionContext = (state) => {
   }
 
   const allowanceAttendanceIds = new WeakMap()
+  let attendanceByEmployeeAndStore = null
+  const attendanceForTransfer = (transfer) => {
+    if (!attendanceByEmployeeAndStore) {
+      attendanceByEmployeeAndStore = new Map()
+      for (const record of Array.isArray(state.attendance) ? state.attendance : []) {
+        if (!isPlainRecord(record) || record.deletedAt) continue
+        const storeKey = normalizeIdentifierKey(record.storeId)
+        if (!storeKey) continue
+        // Reuse the canonical recursive legacy-reference resolver. Index each
+        // row once per folded identity, retaining the original attendance order.
+        const employeeKeys = new Set(employeeReferences(record).map(normalizeIdentifierKey).filter(Boolean))
+        for (const employeeKey of employeeKeys) {
+          const key = JSON.stringify([employeeKey, storeKey])
+          if (!attendanceByEmployeeAndStore.has(key)) attendanceByEmployeeAndStore.set(key, [])
+          attendanceByEmployeeAndStore.get(key).push(record)
+        }
+      }
+    }
+    return attendanceByEmployeeAndStore.get(JSON.stringify([
+      normalizeIdentifierKey(transfer.employeeId), normalizeIdentifierKey(transfer.toStoreId),
+    ])) || []
+  }
   return {
     transferForId: (transferId) => transfersById.get(normalizeIdentifierKey(transferId)) || null,
     storeNameForId: (storeId) => storeNamesById.get(normalizeIdentifierKey(storeId)) || null,
     allowanceAttendanceIdFor: (transfer) => {
       if (!isPlainRecord(transfer)) return null
       if (!allowanceAttendanceIds.has(transfer)) {
-        allowanceAttendanceIds.set(transfer, supportAllowanceAttendanceId(state, transfer))
+        allowanceAttendanceIds.set(transfer, supportAllowanceAttendanceId({
+          ...state, attendance: attendanceForTransfer(transfer),
+        }, transfer))
       }
       return allowanceAttendanceIds.get(transfer)
     },

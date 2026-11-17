@@ -14453,6 +14453,32 @@ describe('IDOSI Worker security primitives', () => {
     ])
   })
 
+  it('keeps indexed transfer allowances equal to canonical legacy, nested and case-colliding attendance calculations', () => {
+    const transfer = { id: 'TR1', employeeId: 'E1', fromStoreId: 'S0', toStoreId: 'S1',
+      fromDate: '2026-08-31', toDate: '2026-09-01', hourlySupportRate: 29000, allowance: 50000, status: 'Hoàn tất' }
+    const base = { storeId: 'S1', checkInAt: '2026-08-31T16:00:00Z', checkOutAt: '2026-08-31T18:00:00Z', hours: 2 }
+    const attendance = [
+      { ...base, id: 'A1', employee_id: ' e1 ', supportTransferId: ' tr1 ' },
+      { ...base, id: 'a1', employeeId: 'E1', supportTransferId: 'TR1' },
+      { ...base, id: 'A2', nested: { employeeCode: 'e1' }, supportTransferId: 'TR1', checkInAt: 'invalid', createdAt: '2026-09-01T01:00:00Z' },
+      { ...base, id: 'LEGACY', employee_code: 'E1', date: '2026-09-01', checkInAt: '', checkOutAt: '', checkOutTime: '05:00', workedSeconds: 7200, hours: undefined },
+      { ...base, id: 'OPEN', employeeId: 'E1', supportTransferId: 'TR1', checkOutAt: null, hours: 0 },
+      { ...base, id: 'OUTSIDE', employeeId: 'E1', checkInAt: '2026-09-02T01:00:00Z' },
+      { ...base, id: 'OTHER-STORE', employeeId: 'E1', storeId: 'S2', supportTransferId: 'TR2' },
+      { ...base, id: 'OTHER-EMPLOYEE', employeeId: 'E2', supportTransferId: 'TR1' },
+      { ...base, id: 'DELETED', employeeId: 'E1', supportTransferId: 'TR1', deletedAt: '2026-09-02' },
+      { ...base, id: 'ORPHAN', employeeId: 'MISSING', supportCompensation: { transferId: 'MISSING', totalPay: 17 } },
+    ]
+    const state = { stores: [{ id: 'S1' }, { id: 'S2' }], employees: [], attendance,
+      supportTransfers: [transfer, { ...transfer, id: 'TR2', toStoreId: 'S2' }, { ...transfer, id: 'CANCELLED', status: 'Đã hủy' }] }
+    const projected = projectSharedState(state, { role: 'admin' })
+    for (const [i, record] of attendance.entries()) {
+      const expected = supportCompensationForAttendance(state, record)
+      expect(projected.attendance[i].supportCompensation, record.id).toEqual(expected || record.supportCompensation)
+    }
+    expect(projected.attendance.filter((record) => record.supportAllowanceApplied).map((record) => record.id)).toEqual(['a1', 'OTHER-STORE'])
+  })
+
   it('projects a large support-attendance snapshot without recalculating the transfer allowance per row', () => {
     const attendanceCount = 1_000
     const transfer = {
