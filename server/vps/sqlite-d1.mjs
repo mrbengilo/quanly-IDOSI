@@ -480,6 +480,14 @@ const systemStateSnapshotSql = (collectionKeys = [], screen = '') => {
   // Transfer management never renders task checklists. Strip their potentially
   // large snapshots in SQLite, before Node hydrates/normalizes the screen.
   const transferAttendanceSql = "json_remove(entity.value_json, '$.checklistSnapshot')"
+  const transferSelections = [
+    { index: 'idx_state_entities_employee_history', predicate: "employee_id IN (SELECT employee_key COLLATE NOCASE FROM transfer_employee_ids)" },
+    ...['employeeId', 'employee_id', 'employeeCode', 'employee_code'].map((field) => (
+      { index: `idx_transfer_${field}`, predicate: `lower(trim(CAST(json_extract(value_json, '$.${field}') AS TEXT))) IN (SELECT employee_key FROM transfer_employee_ids)` }
+    )),
+  ].map(({ index, predicate }) => `SELECT collection_key, entity_key FROM state_entities INDEXED BY ${index}
+    WHERE scope_key = (SELECT scope_key FROM params)
+      AND collection_key IN ('attendance', 'schedule') AND ${predicate}`).join('\nUNION\n')
   const transferReferencesSql = `
     transfer_references AS MATERIALIZED (
       SELECT lower(trim(CAST(json_extract(value_json, '$.employeeId') AS TEXT))) AS employee_key
@@ -508,23 +516,23 @@ const systemStateSnapshotSql = (collectionKeys = [], screen = '') => {
           WHERE lower(trim(CAST(reference.value AS TEXT))) IN (SELECT employee_key FROM transfer_references)
         )
         AND trim(CAST(alias.value AS TEXT)) <> ''
+    ),
+    transfer_selected_entities AS MATERIALIZED (
+      ${transferSelections}
+      UNION
+      SELECT collection_key, entity_key FROM state_entities INDEXED BY idx_transfer_linked_attendance
+      WHERE scope_key = (SELECT scope_key FROM params) AND collection_key = 'attendance'
+        AND COALESCE(
+          NULLIF(trim(CAST(json_extract(value_json, '$.supportTransferId') AS TEXT)), ''),
+          NULLIF(trim(CAST(json_extract(value_json, '$.supportCompensation.transferId') AS TEXT)), '')
+        ) IS NOT NULL
     ),`
   const entityFilter = transferScreen
     ? `AND (
         entity.collection_key NOT IN ('attendance', 'schedule')
-        OR entity.employee_id IN (SELECT employee_key COLLATE NOCASE FROM transfer_employee_ids)
-        OR EXISTS (
-          SELECT 1 FROM json_each(json_array(
-            json_extract(entity.value_json, '$.employeeId'), json_extract(entity.value_json, '$.employee_id'),
-            json_extract(entity.value_json, '$.employeeCode'), json_extract(entity.value_json, '$.employee_code')
-          )) AS reference
-          WHERE lower(trim(CAST(reference.value AS TEXT))) IN (SELECT employee_key FROM transfer_employee_ids)
+        OR (entity.collection_key, entity.entity_key) IN (
+          SELECT collection_key, entity_key FROM transfer_selected_entities
         )
-        OR (entity.collection_key = 'attendance'
-          AND COALESCE(
-            NULLIF(trim(CAST(json_extract(entity.value_json, '$.supportTransferId') AS TEXT)), ''),
-            NULLIF(trim(CAST(json_extract(entity.value_json, '$.supportCompensation.transferId') AS TEXT)), '')
-          ) IS NOT NULL)
       )`
     : normalizedScreen === 'support-overview'
     ? `AND (

@@ -172,4 +172,5 @@ export const migrations = [
   'drizzle/0016_staff_violation_points.sql',
   'drizzle/0017_state_change_partitions.sql',
   'drizzle/0018_customer_contact_index.sql',
+  'drizzle/0019_transfer_reference_indexes.sql',
 ] as const

@@ -35,7 +35,7 @@ it('backfills existing orders without changing canonical state, then tracks writ
     const oldMigrations = resolve(directory, 'old-migrations')
     await mkdir(oldMigrations)
     for (const name of await readdir(resolve('drizzle'))) {
-      if (name.endsWith('.sql') && name !== '0018_customer_contact_index.sql') {
+      if (name.endsWith('.sql') && name < '0018_') {
         await copyFile(resolve('drizzle', name), resolve(oldMigrations, name))
       }
     }

@@ -325,6 +325,16 @@ Heavy system-screen snapshots (including transfer management) also use the
 read-only worker. Simultaneous reads of an identical screen, actor identifiers
 and state version share an in-flight query. Small session/identity reads stay
 outside that queue; authentication and authorization are not cached.
+Finance and sales overview SQL uses the same worker with unchanged calculation
+inputs, so opening the landing dashboard does not block other logins.
+
+Migration `0019_transfer_reference_indexes.sql` adds partial reference indexes
+for attendance/schedule aliases and explicitly linked transfer attendance.
+Transfer reads union indexed candidate keys before loading JSON, retaining all
+legacy ID/code aliases and archived/orphaned links. The SQL names the indexes
+explicitly because fresh SQLite planner statistics can otherwise choose a
+primary-key scan of large checklist rows. Regression tests check both projected
+values and the query plan. No attendance/schedule values are rewritten.
 
 Migration `0018_customer_contact_index.sql` adds a compact order-contact read
 model. SQLite triggers update its rows and revision in the same transaction as
