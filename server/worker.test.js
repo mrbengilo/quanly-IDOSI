@@ -2785,6 +2785,16 @@ describe('IDOSI Worker security primitives', () => {
     database.close()
   })
 
+  it('keeps reused Vietnam date formatting independent across year/month boundary reads', () => {
+    for (let repeat = 0; repeat < 3; repeat += 1) {
+      for (const [timestamp, month] of [
+        ['2026-12-31T16:59:59.999Z', '2026-12'], ['2026-12-31T17:00:00Z', '2027-01'],
+        ['2026-02-28T17:00:00Z', '2026-03'], ['2028-02-29T16:59:59Z', '2028-02'],
+        ['2026-09-01T00:00:00+07:00', '2026-09'], ['2026-09-01T00:00:00+09:00', '2026-08'],
+      ]) expect(monthFromRecord({ createdAt: timestamp })).toBe(month)
+    }
+  })
+
   it('sanitizes mixed and long credential keys after large imported field-name sets', () => {
     const secret = {
       'PaSS-word_HASH': 'hidden-password',

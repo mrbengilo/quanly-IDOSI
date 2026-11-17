@@ -1500,17 +1500,19 @@ const parseStoredJson = (value, fallback = null) => {
   }
 }
 
+const vietnamDateTimeFormatter = new Intl.DateTimeFormat('en-CA', {
+  timeZone: 'Asia/Ho_Chi_Minh',
+  year: 'numeric',
+  month: '2-digit',
+  day: '2-digit',
+  hour: '2-digit',
+  minute: '2-digit',
+  second: '2-digit',
+  hourCycle: 'h23',
+})
+
 const localDateTimeParts = (isoTimestamp) => {
-  const parts = Object.fromEntries(new Intl.DateTimeFormat('en-CA', {
-    timeZone: 'Asia/Ho_Chi_Minh',
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-    second: '2-digit',
-    hourCycle: 'h23',
-  }).formatToParts(new Date(isoTimestamp)).map(({ type, value }) => [type, value]))
+  const parts = Object.fromEntries(vietnamDateTimeFormatter.formatToParts(new Date(isoTimestamp)).map(({ type, value }) => [type, value]))
   return {
     date: `${parts.year}-${parts.month}-${parts.day}`,
     time: `${parts.hour}:${parts.minute}`,
@@ -1785,6 +1787,7 @@ const SECRET_STATE_FIELDS = new Set([
 // normalization of names only, never values or authorization decisions. Bound
 // both entry count and key length because imported JSON may use arbitrary keys.
 const normalizedStateKeys = new Map()
+const secretStateKeys = new Map()
 const normalizedStateKey = (key) => {
   const source = String(key || '')
   if (normalizedStateKeys.has(source)) return normalizedStateKeys.get(source)
@@ -1798,8 +1801,10 @@ const normalizedStateKey = (key) => {
 
 const isSecretStateField = (key) => {
   if (SECRET_STATE_FIELDS.has(key)) return true
+  const cached = secretStateKeys.get(key)
+  if (cached !== undefined) return cached
   const normalized = normalizedStateKey(key)
-  return [
+  const secret = [
     'password',
     'passwordhash',
     'passwordsalt',
@@ -1827,6 +1832,11 @@ const isSecretStateField = (key) => {
     || normalized.includes('credential')
     || normalized.includes('authorization')
     || normalized.includes('cookie')
+  if (key.length <= 128) {
+    if (secretStateKeys.size >= 1024) secretStateKeys.delete(secretStateKeys.keys().next().value)
+    secretStateKeys.set(key, secret)
+  }
+  return secret
 }
 
 const isCredentialEnvelope = (value) => {
