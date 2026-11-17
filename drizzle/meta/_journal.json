@@ -127,6 +127,20 @@
       "when": 1792195200000,
       "tag": "0017_state_change_partitions",
       "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "6",
+      "when": 1794873600000,
+      "tag": "0018_customer_contact_index",
+      "breakpoints": true
+    },
+    {
+      "idx": 19,
+      "version": "6",
+      "when": 1794873600001,
+      "tag": "0019_transfer_reference_indexes",
+      "breakpoints": true
     }
   ]
 }

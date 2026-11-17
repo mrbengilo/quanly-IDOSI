@@ -8,11 +8,11 @@ import { createIdosiServer } from './server.mjs'
 import { hydrateStateSnapshot, projectSharedState } from '../worker.js'
 import { attendanceMatchesWindow, scheduleWindows, supportForScheduledWindow } from '../../src/domain/supportScheduling.js'
 
-it('loads transfer management without unrelated attendance/checklists or global repair writes', async () => {
+it.each([false, true])('loads transfer management without unrelated attendance/checklists or global repair writes (background=%s)', async (backgroundSnapshotReads) => {
   const directory = await mkdtemp(resolve(tmpdir(), 'idosi-transfer-screen-'))
   const { server, runtime } = createIdosiServer({
     databasePath: resolve(directory, 'state.sqlite'), imagesDirectory: resolve(directory, 'images'),
-    bootstrapToken: 'transfer-screen-fixture', automaticRevenueBonusEnabled: false,
+    bootstrapToken: 'transfer-screen-fixture', automaticRevenueBonusEnabled: false, backgroundSnapshotReads,
   })
   await new Promise((done) => server.listen(0, '127.0.0.1', done))
   const base = `http://127.0.0.1:${server.address().port}`
@@ -69,6 +69,10 @@ it('loads transfer management without unrelated attendance/checklists or global 
     insert('attendance', { ...attendance, id: 'ATT-ORPHAN', employeeCode: '', employeeId: 'MISSING', supportTransferId: 'TR1' }, 4)
     insert('attendance', { ...attendance, id: 'ATT-SUPPORT-OPEN', employeeCode: '', employeeId: 'H1',
       storeId: 'BUSINESS_SUPPORT', unit: 'business_support', supportTransferId: '', checkOutAt: null }, 5)
+    insert('attendance', { ...attendance, id: 'ATT-SNAKE-ID', employeeId: '', employeeCode: '',
+      employee_id: ' e1 ', supportTransferId: '', date: '2026-10-01' }, 6)
+    insert('attendance', { ...attendance, id: 'ATT-SNAKE-CODE', employeeId: '', employeeCode: '',
+      employee_code: ' nv-001 ', supportTransferId: '', date: '2026-10-01' }, 7)
     for (let index = 0; index < 200; index += 1) {
       // A repairable open row must not cause a read-only transfer page to load
       // and rewrite the complete global task/attendance history.
@@ -80,9 +84,10 @@ it('loads transfer management without unrelated attendance/checklists or global 
     const persistedBefore = db.prepare('SELECT * FROM state_entities ORDER BY collection_key, entity_key').all()
     const headBefore = db.prepare("SELECT version, last_request_id FROM app_state WHERE scope_key='global'").get()
     const globalRead = vi.spyOn(runtime.database, 'readStateSnapshot')
+    const statements = vi.spyOn(db, 'prepare')
     const screenRead = vi.spyOn(runtime.database, 'readSystemStateSnapshot')
     const collections = ['stores', 'employees', 'supportTransfers', 'attendance', 'schedule', 'shiftDefinitions', 'notifications']
-    const fullSnapshot = runtime.database.readSystemStateSnapshot('global', collections)
+    const fullSnapshot = await runtime.database.readSystemStateSnapshot('global', collections)
     const fullState = JSON.parse(hydrateStateSnapshot(fullSnapshot.row, fullSnapshot.manifests, fullSnapshot.entities).value_json)
     const read = async (token) => {
       const response = await fetch(`${base}/api/system-screens/support-transfers`, { headers: { authorization: `Bearer ${token}` } })
@@ -94,6 +99,7 @@ it('loads transfer management without unrelated attendance/checklists or global 
       expect(payload.state.attendance.map(({ id }) => id)).toEqual([
         'ATT1', 'ATT-LEGACY', 'ATT-ARCHIVED', 'ATT-ORPHAN',
         ...(actor.user.role === 'business_support' ? ['ATT-SUPPORT-OPEN'] : []),
+        'ATT-SNAKE-ID', 'ATT-SNAKE-CODE',
       ])
       expect(payload.state.schedule.map(({ id }) => id)).toEqual(['SCH1'])
       expect(payload.state.supportTransfers.map(({ id }) => id)).toEqual(['TR1', 'TR-DELETED'])
@@ -117,9 +123,17 @@ it('loads transfer management without unrelated attendance/checklists or global 
     expect(db.prepare('SELECT * FROM state_entities ORDER BY collection_key, entity_key').all()).toEqual(persistedBefore)
     expect(db.prepare("SELECT version, last_request_id FROM app_state WHERE scope_key='global'").get()).toEqual(headBefore)
     // Other consumers retain the complete canonical checklist snapshots.
-    const unchanged = runtime.database.readSystemStateSnapshot('global', collections)
+    const unchanged = await runtime.database.readSystemStateSnapshot('global', collections)
     expect(unchanged.entities.find(({ entity_key: id }) => id === 'ATT1').value_json).toContain('CHECKLIST-PAYLOAD')
     expect(Buffer.byteLength(JSON.stringify(fullState))).toBeGreaterThan(3_000_000)
+    if (!backgroundSnapshotReads) {
+      const [sql] = statements.mock.calls.find(([sql]) => sql.includes('transfer_selected_entities AS MATERIALIZED'))
+      const plan = db.prepare(`EXPLAIN QUERY PLAN ${sql}`).all('global', '[]').map(row => row.detail).join('\n')
+      for (const field of ['employeeId', 'employee_id', 'employeeCode', 'employee_code']) {
+        expect(plan).toContain(`idx_transfer_${field}`)
+      }
+      expect(plan).toContain('idx_transfer_linked_attendance')
+    }
   } finally {
     vi.restoreAllMocks()
     await new Promise((done) => server.close(done))

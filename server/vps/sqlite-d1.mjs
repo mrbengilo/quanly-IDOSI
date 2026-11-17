@@ -1,4 +1,5 @@
 import { orderMatchesFilters } from '../../src/domain/orderSummary.js'
+import { customerDirectory } from '../../src/domain/customerLookup.js'
 import { AsyncLocalStorage } from 'node:async_hooks'
 import { mkdirSync, readFileSync, readdirSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
@@ -452,6 +453,7 @@ const STORE_SCREEN_PERIOD_COLLECTIONS = Object.freeze({
 })
 
 const systemSnapshotSqlCache = new Map()
+const BACKGROUND_SYSTEM_COLLECTIONS = new Set(['attendance', 'schedule', 'orders', 'tasks', 'taskAssignmentHistory'])
 const SYSTEM_ACTOR_SCOPED_SCREENS = new Set(['tasks', 'office', 'support-tasks', 'support-assigned-work'])
 const SYSTEM_ACTOR_GLOBAL_COLLECTIONS = new Set(['stores', 'employees', 'workCatalogItems', 'shiftDefinitions'])
 
@@ -478,6 +480,14 @@ const systemStateSnapshotSql = (collectionKeys = [], screen = '') => {
   // Transfer management never renders task checklists. Strip their potentially
   // large snapshots in SQLite, before Node hydrates/normalizes the screen.
   const transferAttendanceSql = "json_remove(entity.value_json, '$.checklistSnapshot')"
+  const transferSelections = [
+    { index: 'idx_state_entities_employee_history', predicate: "employee_id IN (SELECT employee_key COLLATE NOCASE FROM transfer_employee_ids)" },
+    ...['employeeId', 'employee_id', 'employeeCode', 'employee_code'].map((field) => (
+      { index: `idx_transfer_${field}`, predicate: `lower(trim(CAST(json_extract(value_json, '$.${field}') AS TEXT))) IN (SELECT employee_key FROM transfer_employee_ids)` }
+    )),
+  ].map(({ index, predicate }) => `SELECT collection_key, entity_key FROM state_entities INDEXED BY ${index}
+    WHERE scope_key = (SELECT scope_key FROM params)
+      AND collection_key IN ('attendance', 'schedule') AND ${predicate}`).join('\nUNION\n')
   const transferReferencesSql = `
     transfer_references AS MATERIALIZED (
       SELECT lower(trim(CAST(json_extract(value_json, '$.employeeId') AS TEXT))) AS employee_key
@@ -506,23 +516,23 @@ const systemStateSnapshotSql = (collectionKeys = [], screen = '') => {
           WHERE lower(trim(CAST(reference.value AS TEXT))) IN (SELECT employee_key FROM transfer_references)
         )
         AND trim(CAST(alias.value AS TEXT)) <> ''
+    ),
+    transfer_selected_entities AS MATERIALIZED (
+      ${transferSelections}
+      UNION
+      SELECT collection_key, entity_key FROM state_entities INDEXED BY idx_transfer_linked_attendance
+      WHERE scope_key = (SELECT scope_key FROM params) AND collection_key = 'attendance'
+        AND COALESCE(
+          NULLIF(trim(CAST(json_extract(value_json, '$.supportTransferId') AS TEXT)), ''),
+          NULLIF(trim(CAST(json_extract(value_json, '$.supportCompensation.transferId') AS TEXT)), '')
+        ) IS NOT NULL
     ),`
   const entityFilter = transferScreen
     ? `AND (
         entity.collection_key NOT IN ('attendance', 'schedule')
-        OR entity.employee_id IN (SELECT employee_key COLLATE NOCASE FROM transfer_employee_ids)
-        OR EXISTS (
-          SELECT 1 FROM json_each(json_array(
-            json_extract(entity.value_json, '$.employeeId'), json_extract(entity.value_json, '$.employee_id'),
-            json_extract(entity.value_json, '$.employeeCode'), json_extract(entity.value_json, '$.employee_code')
-          )) AS reference
-          WHERE lower(trim(CAST(reference.value AS TEXT))) IN (SELECT employee_key FROM transfer_employee_ids)
+        OR (entity.collection_key, entity.entity_key) IN (
+          SELECT collection_key, entity_key FROM transfer_selected_entities
         )
-        OR (entity.collection_key = 'attendance'
-          AND COALESCE(
-            NULLIF(trim(CAST(json_extract(entity.value_json, '$.supportTransferId') AS TEXT)), ''),
-            NULLIF(trim(CAST(json_extract(entity.value_json, '$.supportCompensation.transferId') AS TEXT)), '')
-          ) IS NOT NULL)
       )`
     : normalizedScreen === 'support-overview'
     ? `AND (
@@ -1206,11 +1216,11 @@ const measuredStatement = (kind, operation, label = '') => {
 
 export const runWithSqliteMetrics = (metrics, operation) => requestMetrics.run(metrics, operation)
 
-const measuredSnapshotRead = async (reader, sql, bindings, label) => {
+const measuredRowsRead = async (reader, sql, bindings, label) => {
   const metrics = requestMetrics.getStore()
   const startedAt = performance.now()
   try {
-    return decodeStateSnapshotRecords(await reader.query(sql, bindings))
+    return await reader.query(sql, bindings)
   } finally {
     if (metrics) {
       const durationMs = performance.now() - startedAt
@@ -1222,6 +1232,8 @@ const measuredSnapshotRead = async (reader, sql, bindings, label) => {
     }
   }
 }
+
+const measuredSnapshotRead = async (...args) => decodeStateSnapshotRecords(await measuredRowsRead(...args))
 
 const decodeStateSnapshotRecords = (records) => {
   let row = null
@@ -1358,6 +1370,7 @@ export class SqliteD1 {
     this.database.exec('PRAGMA foreign_keys = ON; PRAGMA journal_mode = WAL; PRAGMA busy_timeout = 5000;')
     applyMigrations(this.database, migrationsDirectory)
     this.snapshotReader = backgroundSnapshotReads ? new SnapshotReader(databasePath) : null
+    this.pendingSystemSnapshots = new Map()
     this.dataFixResult = applyVpsDataFixes(this.database)
     if (this.dataFixResult.status === 'applied') {
       console.info(JSON.stringify({ event: 'idosi.data_fix', ...this.dataFixResult.marker }))
@@ -1425,9 +1438,25 @@ export class SqliteD1 {
 
   readSystemStateSnapshot(scope, collectionKeys, screen = '', employeeIds = []) {
     const identifiers = Array.isArray(employeeIds) ? employeeIds : [employeeIds]
+    const sql = systemStateSnapshotSql(collectionKeys, screen)
+    const bindings = [scope, JSON.stringify(identifiers)]
+    // Small identity/bootstrap reads stay independent of history's worker
+    // queue. Heavy screens use the exact same SQL on a read-only connection.
+    if (this.snapshotReader && collectionKeys.some((key) => BACKGROUND_SYSTEM_COLLECTIONS.has(key))) {
+      const head = measuredStatement('reads', () => (
+        this.database.prepare(STATE_SNAPSHOT_HEAD_SQL).get(scope)
+      ), 'readSystemStateSnapshot:head')
+      const key = JSON.stringify([scope, collectionKeys, screen, identifiers, head?.version, head?.last_request_id])
+      if (this.pendingSystemSnapshots.has(key)) return this.pendingSystemSnapshots.get(key)
+      const pending = measuredSnapshotRead(this.snapshotReader, sql, bindings,
+        `readSystemStateSnapshot:${screen || 'default'}:background`)
+      this.pendingSystemSnapshots.set(key, pending)
+      const remove = () => { this.pendingSystemSnapshots.delete(key) }
+      void pending.then(remove, remove)
+      return pending
+    }
     const records = measuredStatement('reads', () => (
-      this.database.prepare(systemStateSnapshotSql(collectionKeys, screen))
-        .all(scope, JSON.stringify(identifiers))
+      this.database.prepare(sql).all(...bindings)
     ), `readSystemStateSnapshot:${screen || 'default'}`)
     return decodeStateSnapshotRecords(records)
   }
@@ -1439,7 +1468,42 @@ export class SqliteD1 {
     return decodeStateSnapshotRecords(records)
   }
 
+  async readCustomerDirectory() {
+    const revision = measuredStatement('reads', () => (
+      this.database.prepare("SELECT revision FROM customer_contact_revisions WHERE scope_key = 'global'").get()?.revision || 0
+    ), 'customerContacts:revision')
+    if (this.customerDirectoryCache?.revision === revision) return this.customerDirectoryCache.customers
+    if (this.pendingCustomerDirectory?.revision === revision) return this.pendingCustomerDirectory.promise
+    // Revision and contacts are read in one SQLite snapshot. A write while a
+    // worker is queued cannot label new rows with an old cache revision.
+    const sql = `SELECT 0 AS row_kind, COALESCE((
+        SELECT revision FROM customer_contact_revisions WHERE scope_key = 'global'
+      ), 0) AS revision, NULL AS entity_key, NULL AS entity_order, NULL AS contact_json
+      UNION ALL SELECT 1, NULL, entity_key, entity_order, contact_json
+      FROM customer_order_contacts WHERE scope_key = 'global'
+      ORDER BY row_kind, entity_order DESC, entity_key DESC`
+    const load = async () => {
+      const rows = this.snapshotReader
+        ? await measuredRowsRead(this.snapshotReader, sql, [], 'customerContacts:background')
+        : measuredStatement('reads', () => this.database.prepare(sql).all(), 'customerContacts')
+      const customers = customerDirectory(rows.slice(1).map((row) => ({
+        ...JSON.parse(row.contact_json), entityKey: row.entity_key,
+      })))
+      this.customerDirectoryCache = { revision: rows[0].revision, customers }
+      return customers
+    }
+    const pending = { revision, promise: load() }
+    this.pendingCustomerDirectory = pending
+    try {
+      return await pending.promise
+    } finally {
+      if (this.pendingCustomerDirectory === pending) this.pendingCustomerDirectory = null
+    }
+  }
+
   readFinanceOverview(period) {
+    if (this.snapshotReader) return measuredRowsRead(this.snapshotReader, FINANCE_OVERVIEW_SQL,
+      [period, period, period], 'readFinanceOverview:background')
     return measuredStatement('reads', () => (
       this.database.prepare(FINANCE_OVERVIEW_SQL).all(period, period, period)
     ), 'readFinanceOverview')
@@ -1537,7 +1601,7 @@ export class SqliteD1 {
       const date = new Date(Date.UTC(year, month - 1 + offset, 1))
       return `${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(2, '0')}`
     })
-    return measuredStatement('reads', () => this.database.prepare(`
+    const sql = `
       SELECT value_json, value_bytes
       FROM state_entities
       WHERE scope_key = ?
@@ -1556,7 +1620,11 @@ export class SqliteD1 {
           ), 1, 7) IN (?, ?, ?)
         )
       ORDER BY entity_order DESC, entity_key DESC
-    `).all(scope, storeId, employeeId, employeeId, ...periods, ...periods), 'readOrderSummaryRows')
+    `
+    const bindings = [scope, storeId, employeeId, employeeId, ...periods, ...periods]
+    return this.snapshotReader
+      ? measuredRowsRead(this.snapshotReader, sql, bindings, 'readOrderSummaryRows:background')
+      : measuredStatement('reads', () => this.database.prepare(sql).all(...bindings), 'readOrderSummaryRows')
   }
 
   async batch(statements) {

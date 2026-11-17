@@ -135,6 +135,16 @@ export const schema = {
     primaryKey: ['scope_key', 'partition_key'],
     columns: ['scope_key', 'partition_key', 'version', 'updated_at'],
   },
+  customerOrderContacts: {
+    table: 'customer_order_contacts',
+    primaryKey: ['scope_key', 'entity_key'],
+    columns: ['scope_key', 'entity_key', 'entity_order', 'contact_json'],
+  },
+  customerContactRevisions: {
+    table: 'customer_contact_revisions',
+    primaryKey: ['scope_key'],
+    columns: ['scope_key', 'revision'],
+  },
   commandReceiptChunks: {
     table: 'command_receipt_chunks',
     primaryKey: ['actor_id', 'idempotency_key', 'chunk_index'],
@@ -161,4 +171,6 @@ export const migrations = [
   'drizzle/0015_retire_legacy_product_names.sql',
   'drizzle/0016_staff_violation_points.sql',
   'drizzle/0017_state_change_partitions.sql',
+  'drizzle/0018_customer_contact_index.sql',
+  'drizzle/0019_transfer_reference_indexes.sql',
 ] as const

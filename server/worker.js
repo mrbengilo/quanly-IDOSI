@@ -4,7 +4,7 @@ import { taskShiftContext, bindTaskShiftContext, mergeTaskShiftProgress, attenda
 import { normalizeOrderItems as normalizedHistoricalOrderItems, resolveOrderItems as resolveConfiguredOrderItems, totalOrderItemQuantity, totalOrderItemWeightKg } from '../src/domain/orderItems.js'
 import { orderRevenueByType, validateOrderRevenue } from '../src/domain/orderRevenue.js'
 import { salesOverviewFromSummary } from '../src/domain/salesOverview.js'
-import { customerDirectory, customerKey, customerPublicInfo, customerSuggestions, customerPurchaseStatus, customerPurchasedAtStore, customerMatchesHistoryQuery, customerOrderDetails } from '../src/domain/customerLookup.js'
+import { customerDirectory, filterCustomerDirectory, customerKey, customerPublicInfo, customerSuggestions, customerPurchaseStatus, customerPurchasedAtStore, customerMatchesHistoryQuery, customerOrderDetails } from '../src/domain/customerLookup.js'
 import { applyRevenueSnapshotPointPolicy, normalizeViolationPointInput, restorePointBonusRecord, restorePointRevenueSnapshot, storeViolationPointAssessment, violationPointsOf, isActivePointViolation, violationPointPeriod, formatViolationPoints } from '../src/domain/violationPoints.js'
 import { attendanceMatchesWindow, scheduleAssignmentIsUsable, scheduleConflict, scheduleWindows, scheduledCheckInChoices, shiftWindow, supportAllowsScheduling, supportForScheduledWindow } from '../src/domain/supportScheduling.js'
 import {
@@ -6030,7 +6030,11 @@ const getCustomerLookup = async (request, env, context, url) => {
   }
   // Only compact contact fields are materialized across history; full order
   // JSON (items, audit snapshots, etc.) is read for the selected page only.
-  const contacts = await all(db, `SELECT entity_key, json_object(
+  let customers
+  if (typeof db.readCustomerDirectory === 'function') {
+    customers = filterCustomerDirectory(await db.readCustomerDirectory(), mode === 'list' ? query : '')
+  } else {
+    const contacts = await all(db, `SELECT entity_key, json_object(
     'id', json_extract(value_json, '$.id'), 'code', json_extract(value_json, '$.code'),
     'storeId', store_id, 'storeName', json_extract(value_json, '$.storeName'), 'customerName', json_extract(value_json, '$.customerName'),
     'customerPhone', json_extract(value_json, '$.customerPhone'),
@@ -6040,8 +6044,9 @@ const getCustomerLookup = async (request, env, context, url) => {
     'source', json_extract(value_json, '$.source')) AS contact_json
     FROM state_entities WHERE scope_key = 'global' AND collection_key = 'orders'
     ORDER BY entity_order DESC, entity_key DESC`)
-  const orders = contacts.map((row) => ({ ...parseStoredJson(row.contact_json, {}), entityKey: row.entity_key }))
-  const customers = customerDirectory(orders, { query: mode === 'list' ? query : '' })
+    const orders = contacts.map((row) => ({ ...parseStoredJson(row.contact_json, {}), entityKey: row.entity_key }))
+    customers = customerDirectory(orders, { query: mode === 'list' ? query : '' })
+  }
   if (mode === 'suggest') {
     const stores = await all(db, `SELECT json_extract(value_json, '$.id') AS id,
       json_extract(value_json, '$.code') AS code, json_extract(value_json, '$.name') AS name

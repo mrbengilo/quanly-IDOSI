@@ -185,6 +185,29 @@ it('loads the new store screen without hydrating order history or changing state
   expect(runtime.database.database.prepare("SELECT version FROM app_state WHERE scope_key='global'").get().version).toBe(before)
 })
 
+it('keeps indexed and fallback customer responses identical across scopes, search, classification and selected history', async () => {
+  const normalize = (body) => JSON.parse(JSON.stringify(body,
+    (key, value) => ['requestId', 'serverTime'].includes(key) ? undefined : value))
+  const read = runtime.database.readCustomerDirectory
+  for (const [options, authorization] of [
+    [{}, manager],
+    [{ scope: 'global', query: 'nguyen anh' }, token],
+    [{ mode: 'suggest', field: 'name', query: 'nguyen anh' }, employee],
+    [{ mode: 'status', query: '0901234567' }, employee],
+    [{ mode: 'history', customerKey: 'phone:0901234567', query: '090' }, employee],
+  ]) {
+    const indexed = await lookup(options, authorization)
+    try {
+      runtime.database.readCustomerDirectory = undefined
+      const fallback = await lookup(options, authorization)
+      expect(fallback.status).toBe(indexed.status)
+      expect(normalize(fallback.body)).toEqual(normalize(indexed.body))
+    } finally {
+      runtime.database.readCustomerDirectory = read
+    }
+  }
+})
+
 it('fails closed if a selected order changes contact between the directory scan and detail read', async () => {
   const db = runtime.database.database
   const prepare = db.prepare.bind(db)

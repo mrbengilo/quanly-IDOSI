@@ -321,6 +321,36 @@ backup mới nhất, report cần audit hoặc previous image còn dùng để r
 
 ### Login latency during large history reads
 
+Heavy system-screen snapshots (including transfer management) also use the
+read-only worker. Simultaneous reads of an identical screen, actor identifiers
+and state version share an in-flight query. Small session/identity reads stay
+outside that queue; authentication and authorization are not cached.
+Finance and sales overview SQL uses the same worker with unchanged calculation
+inputs, so opening the landing dashboard does not block other logins.
+
+Migration `0019_transfer_reference_indexes.sql` adds partial reference indexes
+for attendance/schedule aliases and explicitly linked transfer attendance.
+Transfer reads union indexed candidate keys before loading JSON, retaining all
+legacy ID/code aliases and archived/orphaned links. The SQL names the indexes
+explicitly because fresh SQLite planner statistics can otherwise choose a
+primary-key scan of large checklist rows. Regression tests check both projected
+values and the query plan. No attendance/schedule values are rewritten.
+
+Migration `0018_customer_contact_index.sql` adds a compact order-contact read
+model. SQLite triggers update its rows and revision in the same transaction as
+every order insert/update/delete, including imports, restores and cascades.
+The first lookup reads compact contacts with their revision in one snapshot;
+later lookups reuse the canonical customer grouping until an order changes.
+Unrelated attendance writes do not invalidate it. Each request still validates
+its role/store and selected-history permissions; selected full order details
+are reread and checked against the customer's key. The D1 path keeps its
+existing scan and the same API contract.
+
+Deploy with the normal stopped-app backup and exact-SHA verification. This
+additive migration neither changes orders nor removes history. An older app
+image can ignore the new read model; triggers continue tracking its writes,
+so reverting this optimization does not require restoring older user data.
+
 The production runtime reads full global snapshots and the large store `tasks`
 snapshot through one read-only SQLite worker at a time. The SQL, projections,
 authorization and optimistic version checks are unchanged. Initial login data
