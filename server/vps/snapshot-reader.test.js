@@ -52,6 +52,12 @@ it('keeps health and real login responsive during a long read-only SQLite query'
     const slow = db.snapshotReader.query(`WITH RECURSIVE n(x) AS (
       VALUES(0) UNION ALL SELECT x+1 FROM n WHERE x < 8000000
     ) SELECT sum(x) AS total FROM n`, []).then((rows) => { finished = true; return rows })
+    let screenFinished = false
+    const collections = ['stores', 'employees', 'supportTransfers', 'attendance', 'schedule']
+    const screenRead = db.readSystemStateSnapshot('global', collections, 'support-transfers', ['E1'])
+    // Duplicate polling of the same version must share one worker read.
+    expect(db.readSystemStateSnapshot('global', collections, 'support-transfers', ['E1'])).toBe(screenRead)
+    const screen = screenRead.then((result) => { screenFinished = true; return result })
     const health = await fetch(`${base}/api/health`)
     expect(health.status).toBe(200)
     await health.arrayBuffer()
@@ -59,7 +65,13 @@ it('keeps health and real login responsive during a long read-only SQLite query'
       .map((username) => post('/api/login', { username, password })))
     expect(logins.every((login) => Boolean(login.token))).toBe(true)
     expect(finished, 'authentication must finish while the SQL worker is still busy').toBe(false)
+    expect(screenFinished, 'the heavy screen must wait off the HTTP thread, without delaying authentication').toBe(false)
     expect((await slow)[0].total).toBe(32000004000000)
+    const backgroundScreen = await screen
+    const systemReader = db.snapshotReader
+    db.snapshotReader = null
+    expect(backgroundScreen).toEqual(db.readSystemStateSnapshot('global', collections, 'support-transfers', ['E1']))
+    db.snapshotReader = systemReader
 
     // Exactly the same SQL projection, including isolation, manifests and order.
     const background = await db.readStoreStateSnapshot('global', 'S1')

@@ -452,6 +452,7 @@ const STORE_SCREEN_PERIOD_COLLECTIONS = Object.freeze({
 })
 
 const systemSnapshotSqlCache = new Map()
+const BACKGROUND_SYSTEM_COLLECTIONS = new Set(['attendance', 'schedule', 'orders', 'tasks', 'taskAssignmentHistory'])
 const SYSTEM_ACTOR_SCOPED_SCREENS = new Set(['tasks', 'office', 'support-tasks', 'support-assigned-work'])
 const SYSTEM_ACTOR_GLOBAL_COLLECTIONS = new Set(['stores', 'employees', 'workCatalogItems', 'shiftDefinitions'])
 
@@ -1358,6 +1359,7 @@ export class SqliteD1 {
     this.database.exec('PRAGMA foreign_keys = ON; PRAGMA journal_mode = WAL; PRAGMA busy_timeout = 5000;')
     applyMigrations(this.database, migrationsDirectory)
     this.snapshotReader = backgroundSnapshotReads ? new SnapshotReader(databasePath) : null
+    this.pendingSystemSnapshots = new Map()
     this.dataFixResult = applyVpsDataFixes(this.database)
     if (this.dataFixResult.status === 'applied') {
       console.info(JSON.stringify({ event: 'idosi.data_fix', ...this.dataFixResult.marker }))
@@ -1425,9 +1427,25 @@ export class SqliteD1 {
 
   readSystemStateSnapshot(scope, collectionKeys, screen = '', employeeIds = []) {
     const identifiers = Array.isArray(employeeIds) ? employeeIds : [employeeIds]
+    const sql = systemStateSnapshotSql(collectionKeys, screen)
+    const bindings = [scope, JSON.stringify(identifiers)]
+    // Small identity/bootstrap reads stay independent of history's worker
+    // queue. Heavy screens use the exact same SQL on a read-only connection.
+    if (this.snapshotReader && collectionKeys.some((key) => BACKGROUND_SYSTEM_COLLECTIONS.has(key))) {
+      const head = measuredStatement('reads', () => (
+        this.database.prepare(STATE_SNAPSHOT_HEAD_SQL).get(scope)
+      ), 'readSystemStateSnapshot:head')
+      const key = JSON.stringify([scope, collectionKeys, screen, identifiers, head?.version, head?.last_request_id])
+      if (this.pendingSystemSnapshots.has(key)) return this.pendingSystemSnapshots.get(key)
+      const pending = measuredSnapshotRead(this.snapshotReader, sql, bindings,
+        `readSystemStateSnapshot:${screen || 'default'}:background`)
+      this.pendingSystemSnapshots.set(key, pending)
+      const remove = () => { this.pendingSystemSnapshots.delete(key) }
+      void pending.then(remove, remove)
+      return pending
+    }
     const records = measuredStatement('reads', () => (
-      this.database.prepare(systemStateSnapshotSql(collectionKeys, screen))
-        .all(scope, JSON.stringify(identifiers))
+      this.database.prepare(sql).all(...bindings)
     ), `readSystemStateSnapshot:${screen || 'default'}`)
     return decodeStateSnapshotRecords(records)
   }
