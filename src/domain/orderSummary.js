@@ -198,7 +198,7 @@ const invalidOrderDataError = (order, cause) => Object.assign(
   },
 )
 
-export const summarizeOrders = (orders = [], { storeId = '', period = '', employeeId = '', productCatalog = null, ...filters } = {}) => {
+export const summarizeOrders = (orders = [], { storeId = '', period = '', employeeId = '', productCatalog = null, includeGroups = true, ...filters } = {}) => {
   // Passing the catalog makes product identity data-driven; leaving it out keeps
   // the previous behaviour for callers that have no catalog at hand.
   const resolveIdentity = productCatalog ? productIdentityResolver(productCatalog) : null
@@ -211,6 +211,10 @@ export const summarizeOrders = (orders = [], { storeId = '', period = '', employ
   weightAccumulatorFor(weights, totals)
   const storeKey = identifierKey(storeId)
   const employeeKey = identifierKey(employeeId)
+  // Compact overview callers consume only totals/products. Keep their exact
+  // canonical calculations without repeating revenue/weight work for four
+  // unused grouping views; detailed reports retain all groups by default.
+  const groupViews = includeGroups ? Object.keys(groups) : []
 
   for (const order of Array.isArray(orders) ? orders : []) {
     if (!orderMatchesFilters(order, filters)) continue
@@ -222,7 +226,7 @@ export const summarizeOrders = (orders = [], { storeId = '', period = '', employ
       addOrder(totals, order, amount)
       addOrderWeight(weightAccumulatorFor(weights, totals), order)
       addOrderProducts(products, productItems, order, weights, combinedProducts, resolveIdentity)
-      for (const view of Object.keys(groups)) {
+      for (const view of groupViews) {
         const key = String(orderGroupKey(order, view))
         const groupTotals = groups[view].get(key) || { ...emptyTotals(), ...(view === 'shift' ? shiftMetadata(order) : {}) }
         addOrder(groupTotals, order, amount)
