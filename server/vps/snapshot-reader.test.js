@@ -1,4 +1,5 @@
 // @vitest-environment node
+import { Buffer } from 'node:buffer'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { resolve } from 'node:path'
@@ -7,7 +8,7 @@ import { createIdosiServer } from './server.mjs'
 import { runWithSqliteMetrics } from './sqlite-d1.mjs'
 import { hydrateStateSnapshot } from '../worker.js'
 
-it('keeps health and real login responsive during a long read-only SQLite query', async () => {
+it('keeps health and real login responsive during long SQLite reads and cold sales calculations', async () => {
   const directory = await mkdtemp(resolve(tmpdir(), 'idosi-background-snapshot-'))
   const { server, runtime } = createIdosiServer({
     databasePath: resolve(directory, 'state.sqlite'), imagesDirectory: resolve(directory, 'images'),
@@ -135,6 +136,24 @@ it('keeps health and real login responsive during a long read-only SQLite query'
     expect(Number((await db.readStateSnapshot('global')).row.version)).toBe(version + 1)
     await expect(reader.query("DELETE FROM app_state", [])).rejects.toThrow(/readonly|read-only/iu)
     expect(db.database.prepare('SELECT count(*) AS n FROM app_state').get().n).toBe(1)
+    // A cold summary must also perform CPU work off the HTTP loop, not merely
+    // SELECT in the worker and then transfer a large raw history back to it.
+    const serialized = JSON.stringify({ id: 'SYNTHETIC-CPU', date: '2026-11-17', amount: 1000,
+      items: [{ productId: 'P1', productName: 'Áo nữ', quantity: 2 }] })
+    const projection = { type: 'sales-overview', scope: { period: '2026-11' } }
+    let projectionFinished = false
+    const calculated = reader.query(`WITH RECURSIVE n(x) AS (
+      VALUES(1) UNION ALL SELECT x+1 FROM n WHERE x < 35000
+    ) SELECT ? AS value_json, ? AS value_bytes FROM n`, [serialized, Buffer.byteLength(serialized)], projection)
+      .then((result) => { projectionFinished = true; return result })
+    const concurrentHealth = await fetch(`${base}/api/health`)
+    expect(concurrentHealth.status).toBe(200)
+    await concurrentHealth.arrayBuffer()
+    expect((await post('/api/login', { username: 'background.admin', password })).token).toBeTruthy()
+    expect(projectionFinished, 'health must complete while the cold summary is still calculating').toBe(false)
+    expect(await calculated).toMatchObject({ orders: 35000, quantity: 70000, weight: { totalKg: 14000 } })
+    await expect(reader.query('SELECT ? AS value_json, 1 AS value_bytes', [serialized], projection))
+      .rejects.toMatchObject({ status: 500, code: 'STATE_ENTITY_CORRUPT' })
     // A failed query must not poison subsequent reads.
     expect((await reader.query('SELECT 42 AS value', []))[0].value).toBe(42)
     reader.close()

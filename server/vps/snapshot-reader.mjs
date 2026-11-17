@@ -15,11 +15,11 @@ export class SnapshotReader {
     this.closed = false
   }
 
-  query(sql, bindings) {
+  query(sql, bindings, projection = null) {
     if (this.closed) return Promise.reject(new Error('Snapshot reader is closed.'))
     if (this.queue.length >= MAX_QUEUED_READS) return Promise.reject(new Error('Snapshot read queue is full.'))
     return new Promise((resolve, reject) => {
-      this.queue.push({ sql, bindings, resolve, reject })
+      this.queue.push({ sql, bindings, projection, resolve, reject })
       this.startNext()
     })
   }
@@ -28,7 +28,7 @@ export class SnapshotReader {
     if (this.active || this.closed || !this.queue.length) return
     const job = this.queue.shift()
     const worker = new Worker(new URL(import.meta.url), {
-      workerData: { idosiSnapshotReader: true, databasePath: this.databasePath, sql: job.sql, bindings: job.bindings },
+      workerData: { idosiSnapshotReader: true, databasePath: this.databasePath, sql: job.sql, bindings: job.bindings, projection: job.projection },
       resourceLimits: { maxOldGenerationSizeMb: 768 },
     })
     this.active = { worker, job }
@@ -39,7 +39,12 @@ export class SnapshotReader {
     worker.once('exit', (code) => {
       this.active = null
       if (failure || code !== 0 || !result?.ok) {
-        job.reject(failure || new Error(result?.error || `Snapshot worker exited with code ${code}.`))
+        const detail = result?.error
+        const error = new Error(detail?.message || (typeof detail === 'string' ? detail : `Snapshot worker exited with code ${code}.`))
+        if (detail && typeof detail === 'object') {
+          Object.assign(error, { code: detail.code, status: detail.status, details: detail.details })
+        }
+        job.reject(failure || error)
       } else {
         job.resolve(result.rows)
       }
@@ -60,10 +65,15 @@ if (!isMainThread && workerData?.idosiSnapshotReader === true) {
   try {
     database = new DatabaseSync(workerData.databasePath, { readOnly: true })
     database.exec('PRAGMA query_only = ON; PRAGMA busy_timeout = 5000;')
-    const rows = database.prepare(workerData.sql).all(...workerData.bindings)
+    let rows = database.prepare(workerData.sql).all(...workerData.bindings)
+    if (workerData.projection) {
+      if (workerData.projection.type !== 'sales-overview') throw new Error('Unsupported snapshot projection.')
+      const { aggregateSalesOverviewRows } = await import('../worker.js')
+      rows = aggregateSalesOverviewRows(rows, workerData.projection.scope)
+    }
     parentPort.postMessage({ ok: true, rows })
   } catch (error) {
-    parentPort.postMessage({ ok: false, error: error.message })
+    parentPort.postMessage({ ok: false, error: { message: error.message, code: error.code, status: error.status, details: error.details } })
   } finally {
     database?.close()
     parentPort.close()
