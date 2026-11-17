@@ -6269,6 +6269,12 @@ const summarizeOrderRows = (rows, scope) => {
   }
 }
 
+// The VPS read-only worker uses this same validation and canonical projection;
+// it returns the compact result rather than cloning raw order history to HTTP.
+export const aggregateSalesOverviewRows = (rows, scope) => (
+  salesOverviewFromSummary(summarizeOrderRows(rows, { ...scope, includeGroups: false }))
+)
+
 const getSalesOverview = async (request, env, context, url) => {
   const db = getDatabase(env)
   const user = await requireSession(request, db, context, { resolveOperationalContext: false })
@@ -6279,6 +6285,18 @@ const getSalesOverview = async (request, env, context, url) => {
   const storeIds = [...new Set((state.stores || []).map((store) => String(store.id || '').trim().toLowerCase()).filter(Boolean))]
   const productCatalog = Array.isArray(state.orderInformationOptions) ? state.orderInformationOptions : []
   const load = async () => {
+    if (typeof db?.readSalesOverview === 'function') {
+      try {
+        const projected = await db.readSalesOverview({ scope: 'global', storeIds, period, productCatalog })
+        if (projected) return projected
+      } catch (error) {
+        // Reconstitute canonical API errors serialized across the worker boundary.
+        if (Number.isInteger(error?.status) && error.status >= 400 && error.status <= 599 && error.code) {
+          throw new ApiError(error.status, error.code, error.message, error.details)
+        }
+        throw error
+      }
+    }
     // One read-only SQLite snapshot covers the configured stores, avoiding a
     // worker startup and queue round trip per store. D1 keeps its scoped fallback.
     let rows
@@ -6289,7 +6307,7 @@ const getSalesOverview = async (request, env, context, url) => {
       for (const storeId of storeIds) storeRows.push(await readOrderSummaryRows(db, storeId, '', period))
       rows = storeRows.flat()
     }
-    return salesOverviewFromSummary(summarizeOrderRows(rows, { period, productCatalog, includeGroups: false }))
+    return aggregateSalesOverviewRows(rows, { period, productCatalog })
   }
   let overview
   if (typeof db?.readOrderSummaryRevision === 'function') {

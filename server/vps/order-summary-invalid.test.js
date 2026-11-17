@@ -5,13 +5,14 @@ import { resolve } from 'node:path'
 import { expect, it, vi } from 'vitest'
 import { createIdosiServer } from './server.mjs'
 
-it('names the malformed order instead of failing the report with a generic error', async () => {
+it.each([false, true])('names the malformed order instead of failing the report with a generic error (background=%s)', async (backgroundSnapshotReads) => {
   const directory = await mkdtemp(resolve(tmpdir(), 'idosi-order-invalid-'))
   const { server } = createIdosiServer({
     databasePath: resolve(directory, 'state.sqlite'),
     imagesDirectory: resolve(directory, 'images'),
     bootstrapToken: 'order-invalid-bootstrap',
     automaticRevenueBonusEnabled: false,
+    backgroundSnapshotReads,
   })
   await new Promise((done) => server.listen(0, '127.0.0.1', done))
   const base = `http://127.0.0.1:${server.address().port}`

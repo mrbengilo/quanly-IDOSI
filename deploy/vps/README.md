@@ -349,6 +349,12 @@ one calculation; errors and results spanning an order revision change are not
 retained. A cold overview uses one store-indexed worker query and canonical
 totals/product calculations without the four unused detailed grouping views.
 Detailed reports and the D1 fallback retain their existing contracts.
+Cold VPS sales overviews also validate and aggregate those rows inside the same
+read-only worker, using `aggregateSalesOverviewRows` from the canonical backend.
+Only the compact projection crosses back to HTTP. Worker errors preserve their
+API status/code/details (including corrupt rows and invalid orders); failures
+still clear the derived-result cache. The `readSalesOverview:background` metric
+includes queueing, SQL, validation and aggregation, not only SQLite execution.
 Unrelated attendance writes do not invalidate it. Each request still validates
 its role/store and selected-history permissions; selected full order details
 are reread and checked against the customer's key. The D1 path keeps its

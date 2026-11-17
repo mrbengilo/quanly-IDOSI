@@ -45,7 +45,7 @@ it.each([false, true])('summarizes all stores with scoped reads, Vietnam dates a
     expect(payload.state).toBeUndefined()
     expect(await concurrent.json()).toMatchObject({ orders: 2, quantity: 15 })
     expect(orderRead).toHaveBeenCalledTimes(1)
-    expect(orderRead).toHaveBeenCalledWith({ scope: 'global', storeIds: ['s1', 's2'], period: '2026-09' })
+    expect(orderRead).toHaveBeenCalledWith(expect.objectContaining({ scope: 'global', storeIds: ['s1', 's2'], period: '2026-09' }))
     if (!backgroundSnapshotReads) {
       const [sql] = statements.mock.calls.find(([sql]) => sql.includes('selected_store CROSS JOIN'))
       const plan = runtime.database.database.prepare(`EXPLAIN QUERY PLAN ${sql}`)
@@ -92,6 +92,7 @@ it.each([false, true])('summarizes all stores with scoped reads, Vietnam dates a
     expect((await read('period=2026-08')).status).toBe(500)
     expect(await (await read('period=2026-08')).json()).toMatchObject({ orders: 0, quantity: 0 })
     consoleError.mockRestore()
+    runtime.database.readSalesOverview = undefined
     runtime.database.readSalesOverviewRows = undefined
     runtime.database.readOrderSummaryRevision = undefined
     runtime.database.readOrderSummaryRows = undefined

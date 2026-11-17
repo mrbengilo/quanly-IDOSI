@@ -1216,11 +1216,11 @@ const measuredStatement = (kind, operation, label = '') => {
 
 export const runWithSqliteMetrics = (metrics, operation) => requestMetrics.run(metrics, operation)
 
-const measuredRowsRead = async (reader, sql, bindings, label) => {
+const measuredRowsRead = async (reader, sql, bindings, label, projection = null) => {
   const metrics = requestMetrics.getStore()
   const startedAt = performance.now()
   try {
-    return await reader.query(sql, bindings)
+    return await reader.query(sql, bindings, projection)
   } finally {
     if (metrics) {
       const durationMs = performance.now() - startedAt
@@ -1610,8 +1610,15 @@ export class SqliteD1 {
     ), `readEntityHistory:${collectionKey}`)
   }
 
-  readSalesOverviewRows({ scope = 'global', storeIds, period }) {
-    return this.readOrderSummaryRows({ scope, storeIds, period })
+  readSalesOverview({ scope = 'global', storeIds, period, productCatalog }) {
+    if (!this.snapshotReader) return null
+    return this.readSalesOverviewRows({ scope, storeIds, period,
+      projection: { type: 'sales-overview', scope: { period, productCatalog } },
+    })
+  }
+
+  readSalesOverviewRows({ scope = 'global', storeIds, period, projection = null }) {
+    return this.readOrderSummaryRows({ scope, storeIds, period, projection })
   }
 
   readOrderSummaryRevision(scope = 'global') {
@@ -1622,7 +1629,7 @@ export class SqliteD1 {
     ), 'orderSummary:revision')
   }
 
-  readOrderSummaryRows({ scope = 'global', storeId, storeIds = null, employeeId = '', period }) {
+  readOrderSummaryRows({ scope = 'global', storeId, storeIds = null, employeeId = '', period, projection = null }) {
     const [year, month] = String(period).split('-').map(Number)
     const periods = [-1, 0, 1].map((offset) => {
       const date = new Date(Date.UTC(year, month - 1 + offset, 1))
@@ -1650,7 +1657,8 @@ export class SqliteD1 {
     `
     const bindings = [...(storeIds ? [JSON.stringify(storeIds), scope] : [scope, storeId]), employeeId, employeeId, ...periods, ...periods]
     return this.snapshotReader
-      ? measuredRowsRead(this.snapshotReader, sql, bindings, 'readOrderSummaryRows:background')
+      ? measuredRowsRead(this.snapshotReader, sql, bindings,
+          projection ? 'readSalesOverview:background' : 'readOrderSummaryRows:background', projection)
       : measuredStatement('reads', () => this.database.prepare(sql).all(...bindings), 'readOrderSummaryRows')
   }
 
