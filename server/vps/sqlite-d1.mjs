@@ -1,4 +1,5 @@
 import { orderMatchesFilters } from '../../src/domain/orderSummary.js'
+import { customerDirectory } from '../../src/domain/customerLookup.js'
 import { AsyncLocalStorage } from 'node:async_hooks'
 import { mkdirSync, readFileSync, readdirSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
@@ -1207,11 +1208,11 @@ const measuredStatement = (kind, operation, label = '') => {
 
 export const runWithSqliteMetrics = (metrics, operation) => requestMetrics.run(metrics, operation)
 
-const measuredSnapshotRead = async (reader, sql, bindings, label) => {
+const measuredRowsRead = async (reader, sql, bindings, label) => {
   const metrics = requestMetrics.getStore()
   const startedAt = performance.now()
   try {
-    return decodeStateSnapshotRecords(await reader.query(sql, bindings))
+    return await reader.query(sql, bindings)
   } finally {
     if (metrics) {
       const durationMs = performance.now() - startedAt
@@ -1223,6 +1224,8 @@ const measuredSnapshotRead = async (reader, sql, bindings, label) => {
     }
   }
 }
+
+const measuredSnapshotRead = async (...args) => decodeStateSnapshotRecords(await measuredRowsRead(...args))
 
 const decodeStateSnapshotRecords = (records) => {
   let row = null
@@ -1455,6 +1458,39 @@ export class SqliteD1 {
       this.database.prepare(REVENUE_BONUS_SNAPSHOT_SQL).all(scope, storeId, dateKey)
     ), 'readRevenueBonusStateSnapshot')
     return decodeStateSnapshotRecords(records)
+  }
+
+  async readCustomerDirectory() {
+    const revision = measuredStatement('reads', () => (
+      this.database.prepare("SELECT revision FROM customer_contact_revisions WHERE scope_key = 'global'").get()?.revision || 0
+    ), 'customerContacts:revision')
+    if (this.customerDirectoryCache?.revision === revision) return this.customerDirectoryCache.customers
+    if (this.pendingCustomerDirectory?.revision === revision) return this.pendingCustomerDirectory.promise
+    // Revision and contacts are read in one SQLite snapshot. A write while a
+    // worker is queued cannot label new rows with an old cache revision.
+    const sql = `SELECT 0 AS row_kind, COALESCE((
+        SELECT revision FROM customer_contact_revisions WHERE scope_key = 'global'
+      ), 0) AS revision, NULL AS entity_key, NULL AS entity_order, NULL AS contact_json
+      UNION ALL SELECT 1, NULL, entity_key, entity_order, contact_json
+      FROM customer_order_contacts WHERE scope_key = 'global'
+      ORDER BY row_kind, entity_order DESC, entity_key DESC`
+    const load = async () => {
+      const rows = this.snapshotReader
+        ? await measuredRowsRead(this.snapshotReader, sql, [], 'customerContacts:background')
+        : measuredStatement('reads', () => this.database.prepare(sql).all(), 'customerContacts')
+      const customers = customerDirectory(rows.slice(1).map((row) => ({
+        ...JSON.parse(row.contact_json), entityKey: row.entity_key,
+      })))
+      this.customerDirectoryCache = { revision: rows[0].revision, customers }
+      return customers
+    }
+    const pending = { revision, promise: load() }
+    this.pendingCustomerDirectory = pending
+    try {
+      return await pending.promise
+    } finally {
+      if (this.pendingCustomerDirectory === pending) this.pendingCustomerDirectory = null
+    }
   }
 
   readFinanceOverview(period) {

@@ -40,9 +40,13 @@ export function customerDirectory(orders = [], { storeId = '', query = '' } = {}
     customer.orders.push(order)
     customer.orderCount += 1
   }
+  return filterCustomerDirectory([...groups.values()], query)
+}
+
+export function filterCustomerDirectory(customers, query = '') {
   const text = searchText(query)
   const digits = customerPhone(query)
-  return [...groups.values()].filter((customer) => !text
+  return customers.filter((customer) => !text
     || customer.orders.some((order) => searchText(order.customerName).includes(text))
     || (digits && /^[\d\s()+.-]+$/u.test(query) && customer.customerPhone.includes(digits)))
 }
