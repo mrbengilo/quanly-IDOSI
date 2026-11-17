@@ -128,6 +128,24 @@ describe('orderSummary', () => {
     expect(result.totals.orders).toBe(1)
     expect(result.products.totalQuantity).toBe(4)
   })
+  it('skips unrequested search fields and out-of-scope data while retaining eligible-order validation', () => {
+    const order = { id: 'ELIGIBLE', storeId: 'S1', employeeId: 'E1', date: '2026-09-01', amount: 1000,
+      items: [{ productId: 'P1', productName: 'Áo nữ', quantity: 2 }] }
+    // Search-only historical attributes must not be decoded for an unfiltered
+    // overview. Real text search still reads them and matches product aliases.
+    Object.defineProperty(order, 'customFields', { get: () => { throw new Error('Search-only field read') } })
+    const scope = { storeId: 'S1', employeeId: 'E1', period: '2026-09' }
+    expect(summarizeOrders([order], scope).totals.orders).toBe(1)
+    expect(summarizeOrders([order], { ...scope, query: '  ' }).products.totalQuantity).toBe(2)
+    expect(() => summarizeOrders([order], { ...scope, query: 'Áo nữ' })).toThrow('Search-only field read')
+    const outside = [
+      { ...order, id: 'OTHER-STORE', storeId: 'S2', amount: -1 },
+      { ...order, id: 'OTHER-EMPLOYEE', employeeId: 'E2', amount: -1 },
+      { ...order, id: 'OTHER-MONTH', date: '2026-10-01', amount: -1 },
+    ]
+    expect(summarizeOrders(outside, scope).totals.orders).toBe(0)
+    expect(() => summarizeOrders([{ ...outside[0], id: 'BAD-ELIGIBLE', storeId: 'S1' }], scope)).toThrow('BAD-ELIGIBLE')
+  })
   it('finds orders by configured custom attribute labels and values', () => {
     const order = { id: 'CUSTOM-SEARCH', storeId: 'S01', amount: 50_000, createdAt: '2026-09-12', customFields: [{ fieldId: 'ATTR-1', fieldCode: 'SIZE', fieldLabel: 'Kích cỡ', fieldType: 'select', value: 'XL' }] }
     expect(summarizeOrders([order], { storeId: 'S01', period: '2026-09', query: 'kích cỡ' }).totals.orders).toBe(1)

@@ -58,10 +58,15 @@ export const orderMatchesFilters = (order, { date = '', shiftId = '', paymentMet
   if (shiftId && shiftGroupKey(order) !== String(shiftId).trim()) return false
   if (paymentMethod && paymentChannel(order.paymentMethod) !== paymentChannel(paymentMethod)) return false
   if (amount !== null && amount !== '' && (!['number', 'string'].includes(typeof order.amount) || String(order.amount).trim() === '' || Number(order.amount) !== Number(amount))) return false
+  // Most reports have no text query. Avoid building a search document (including
+  // normalized products/custom fields) that cannot affect their eligibility.
+  if (!query) return true
+  const normalizedQuery = query.trim().toLocaleLowerCase('vi-VN')
+  if (!normalizedQuery) return true
   const productNames = normalizeOrderItems(order.items).map((item) => item.productName || item.productCode).join(' ')
   const customValues = normalizeOrderCustomFields(order.customFields).map((entry) => `${entry.fieldLabel} ${orderCustomFieldDisplayValue(entry)}`).join(' ')
   const haystack = [order.code, order.customerName, order.customerPhone, order.employeeName, productNames, customValues].join(' ').toLocaleLowerCase('vi-VN')
-  return !query || haystack.includes(query.trim().toLocaleLowerCase('vi-VN'))
+  return haystack.includes(normalizedQuery)
 }
 const emptyTotals = () => ({ orders: 0, cash: 0, transfer: 0, revenue: 0, cashOrders: 0, transferOrders: 0, revenueByType: emptyRevenueByType(), unclassifiedRevenue: 0, unclassifiedOrders: 0 })
 const checkedAmount = (order) => {
@@ -217,10 +222,11 @@ export const summarizeOrders = (orders = [], { storeId = '', period = '', employ
   const groupViews = includeGroups ? Object.keys(groups) : []
 
   for (const order of Array.isArray(orders) ? orders : []) {
-    if (!orderMatchesFilters(order, filters)) continue
+    if (!order) continue
     if (storeKey && identifierKey(order.storeId) !== storeKey) continue
     if (employeeKey && identifierKey(order.employeeId) !== employeeKey) continue
     if (period && orderBusinessDate(order).slice(0, 7) !== period) continue
+    if (!orderMatchesFilters(order, filters)) continue
     try {
       const amount = checkedAmount(order)
       addOrder(totals, order, amount)
