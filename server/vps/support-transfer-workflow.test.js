@@ -11,7 +11,7 @@ it('persists support schedules, notifications and checkout precedence through th
   vi.setSystemTime(new Date('2026-09-07T05:10:00Z'))
   const directory = await mkdtemp(resolve(tmpdir(), 'idosi-transfer-'))
   const { server, runtime } = createIdosiServer({ databasePath: resolve(directory, 'state.sqlite'),
-    imagesDirectory: resolve(directory, 'images'), bootstrapToken: 'transfer-fixture' })
+    imagesDirectory: resolve(directory, 'images'), bootstrapToken: 'transfer-fixture', backgroundSnapshotReads: true })
   await new Promise((done) => server.listen(0, '127.0.0.1', done))
   const base = `http://127.0.0.1:${server.address().port}`
   const post = async (path, body, headers = {}) => {

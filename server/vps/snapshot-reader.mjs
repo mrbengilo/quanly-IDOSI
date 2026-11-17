@@ -1,6 +1,10 @@
 import { Worker, isMainThread, parentPort, workerData } from 'node:worker_threads'
 import { DatabaseSync } from 'node:sqlite'
 
+// Queue descriptors contain SQL/bindings, not result sets. Keep a bounded
+// burst of store requests while still executing only one memory-heavy read.
+const MAX_QUEUED_READS = 64
+
 // One read-only connection at a time keeps large history SELECTs off the HTTP
 // event loop without allowing concurrent readers to exhaust the VPS memory.
 export class SnapshotReader {
@@ -13,7 +17,7 @@ export class SnapshotReader {
 
   query(sql, bindings) {
     if (this.closed) return Promise.reject(new Error('Snapshot reader is closed.'))
-    if (this.queue.length >= 8) return Promise.reject(new Error('Snapshot read queue is full.'))
+    if (this.queue.length >= MAX_QUEUED_READS) return Promise.reject(new Error('Snapshot read queue is full.'))
     return new Promise((resolve, reject) => {
       this.queue.push({ sql, bindings, resolve, reject })
       this.startNext()

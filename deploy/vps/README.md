@@ -358,7 +358,12 @@ continues to use the small synchronous queries, so it does not queue behind
 history reads. Each background query opens a fresh WAL reader, without applying
 migrations or data fixes. Its connection closes after the query. Snapshot timing
 labels end in `:background` and include queue wait and worker startup. The queue
-is bounded to eight waiting queries; worker errors fail the requesting operation.
+is bounded to 64 waiting SQL/binding descriptors, with only one result-producing
+query active; worker errors fail the requesting operation. Store-screen and
+pre-write command snapshots also use this worker. Small `session`/`initial-*`
+reads remain independent of the queue. Identical in-flight snapshots share SQL
+rows, but decode a separate mutable row and hydration/persistence metadata for
+each request; no request can mutate another request's command snapshot.
 The worker shares the VPS memory budget: its configured V8 resource limit can be
 overridden by the parent Node heap flag, so serialized execution is essential.
 This mitigation does not make large historical responses smaller or eliminate

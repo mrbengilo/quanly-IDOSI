@@ -23,7 +23,8 @@ const lookup = (options = {}, authorization = token) => request(`/api/customer-l
 beforeAll(async () => {
   directory = await mkdtemp(resolve(tmpdir(), 'idosi-customer-lookup-'))
   ;({ server, runtime } = createIdosiServer({ databasePath: resolve(directory, 'state.sqlite'),
-    imagesDirectory: resolve(directory, 'images'), bootstrapToken: 'customer-fixture', automaticRevenueBonusEnabled: false }))
+    imagesDirectory: resolve(directory, 'images'), bootstrapToken: 'customer-fixture', automaticRevenueBonusEnabled: false,
+    backgroundSnapshotReads: true }))
   await new Promise((done) => server.listen(0, '127.0.0.1', done))
   origin = `http://127.0.0.1:${server.address().port}`
   expect((await request('/api/bootstrap', '', { username: 'customer.admin', password, initialState: {
@@ -61,6 +62,36 @@ afterAll(async () => {
   if (server) await new Promise((done) => server.close(done))
   if (directory) await rm(directory, { recursive: true, force: true })
 })
+
+it('commits concurrent order intents once each without shared-snapshot mutation or lost customer updates', async () => {
+  const db = runtime.database.database
+  const version = db.prepare("SELECT version FROM app_state WHERE scope_key='global'").get().version
+  const before = db.prepare("SELECT count(*) AS n FROM state_entities WHERE collection_key='orders'").get().n
+  const payload = (phone) => ({ storeId:'S1', customerName:'Concurrent synthetic contact', customerPhone:phone,
+    gender:'Nam', occupation:'Kỹ sư', acquisitionChannel:'Facebook', paymentMethod:'Tiền mặt', amount:100000,
+    items:[{productId:'order-product-001',quantity:1}] })
+  const keyA = crypto.randomUUID()
+  const create = (phone, key) => request('/api/command', token,
+    {type:'order.create',payload:payload(phone),expectedVersion:version}, {'idempotency-key':key})
+  const results = await Promise.all([
+    create('0966000111',keyA), create('0966000111',keyA), create('0966000222',crypto.randomUUID()),
+  ])
+  expect(results.map(row=>row.status), JSON.stringify(results.map(row=>row.body.error))).toEqual([201,201,201])
+  expect(results[0].body.order.id).toBe(results[1].body.order.id)
+  expect(results[0].body.order.id).not.toBe(results[2].body.order.id)
+  expect(db.prepare("SELECT count(*) AS n FROM state_entities WHERE collection_key='orders'").get().n).toBe(before+2)
+  for (const phone of ['0966000111','0966000222']) {
+    expect((await lookup({scope:'global',query:phone})).body.customers).toEqual([
+      expect.objectContaining({customerPhone:phone,orderCount:1,isReturningCustomer:false}),
+    ])
+  }
+  for (const orderId of new Set(results.map(row=>row.body.order.id))) {
+    const removed = await request('/api/command', token, {type:'order.delete',
+      expectedVersion:db.prepare("SELECT version FROM app_state WHERE scope_key='global'").get().version,
+      payload:{orderId,reason:'Remove concurrent synthetic fixture'}}, {'idempotency-key':crypto.randomUUID()})
+    expect(removed.status,JSON.stringify(removed.body.error)).toBe(200)
+  }
+}, 30000)
 
 it('uses global purchase thresholds for tags across list, history, suggestions and exact status without writes', async () => {
   const before = runtime.database.database.prepare("SELECT version FROM app_state WHERE scope_key='global'").get().version

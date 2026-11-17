@@ -30,6 +30,7 @@ const withRuntime = async (initialState, run) => {
     imagesDirectory: resolve(directory, 'images'),
     bootstrapToken: 'bonus-sweep-bootstrap-token',
     automaticRevenueBonusEnabled: false,
+    backgroundSnapshotReads: true,
   })
   await new Promise((done) => server.listen(0, '127.0.0.1', done))
   try {
