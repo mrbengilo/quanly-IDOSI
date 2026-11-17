@@ -12,6 +12,7 @@ it('serves 20 distinct employee sessions without full snapshots or cross-account
     databasePath: resolve(directory, 'state.sqlite'),
     imagesDirectory: resolve(directory, 'images'),
     bootstrapToken: 'concurrent-fixture-bootstrap',
+    backgroundSnapshotReads: true,
   })
   await new Promise((done) => server.listen(0, '127.0.0.1', done))
   const base = `http://127.0.0.1:${server.address().port}`

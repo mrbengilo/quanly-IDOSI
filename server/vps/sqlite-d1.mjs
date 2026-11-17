@@ -1370,7 +1370,7 @@ export class SqliteD1 {
     this.database.exec('PRAGMA foreign_keys = ON; PRAGMA journal_mode = WAL; PRAGMA busy_timeout = 5000;')
     applyMigrations(this.database, migrationsDirectory)
     this.snapshotReader = backgroundSnapshotReads ? new SnapshotReader(databasePath) : null
-    this.pendingSystemSnapshots = new Map()
+    this.pendingSnapshots = new Map()
     this.dataFixResult = applyVpsDataFixes(this.database)
     if (this.dataFixResult.status === 'applied') {
       console.info(JSON.stringify({ event: 'idosi.data_fix', ...this.dataFixResult.marker }))
@@ -1410,8 +1410,13 @@ export class SqliteD1 {
   // history to the operational window; empty loads the complete history.
   readStoreStateSnapshot(scope, storeId, actorEmployeeId = '', screen = '', period = '', operationalDate = '') {
     const windowed = Boolean(String(operationalDate || '').trim())
-    if (this.snapshotReader && (screen === 'tasks' || !screen)) {
-      return measuredSnapshotRead(this.snapshotReader, storeStateSnapshotSql(screen, windowed),
+    // Session/initial projections are bounded and must not wait for history.
+    // Operational reads (including a command's pre-write snapshot) may be
+    // expensive; their existing version/CAS guards still protect later writes.
+    const normalizedScreen = String(screen || '').trim()
+    const authenticationScreen = normalizedScreen === 'session' || normalizedScreen === 'initial' || normalizedScreen.startsWith('initial-')
+    if (this.snapshotReader && !authenticationScreen) {
+      return this.readBackgroundSnapshot(storeStateSnapshotSql(screen, windowed),
         [scope, storeId, actorEmployeeId, period, String(operationalDate || '')],
         `readStoreStateSnapshot:${screen || 'default'}:background`)
     }
@@ -1443,17 +1448,8 @@ export class SqliteD1 {
     // Small identity/bootstrap reads stay independent of history's worker
     // queue. Heavy screens use the exact same SQL on a read-only connection.
     if (this.snapshotReader && collectionKeys.some((key) => BACKGROUND_SYSTEM_COLLECTIONS.has(key))) {
-      const head = measuredStatement('reads', () => (
-        this.database.prepare(STATE_SNAPSHOT_HEAD_SQL).get(scope)
-      ), 'readSystemStateSnapshot:head')
-      const key = JSON.stringify([scope, collectionKeys, screen, identifiers, head?.version, head?.last_request_id])
-      if (this.pendingSystemSnapshots.has(key)) return this.pendingSystemSnapshots.get(key)
-      const pending = measuredSnapshotRead(this.snapshotReader, sql, bindings,
+      return this.readBackgroundSnapshot(sql, bindings,
         `readSystemStateSnapshot:${screen || 'default'}:background`)
-      this.pendingSystemSnapshots.set(key, pending)
-      const remove = () => { this.pendingSystemSnapshots.delete(key) }
-      void pending.then(remove, remove)
-      return pending
     }
     const records = measuredStatement('reads', () => (
       this.database.prepare(sql).all(...bindings)
@@ -1462,10 +1458,29 @@ export class SqliteD1 {
   }
 
   readRevenueBonusStateSnapshot(scope, storeId, dateKey) {
+    if (this.snapshotReader) return this.readBackgroundSnapshot(REVENUE_BONUS_SNAPSHOT_SQL,
+      [scope, storeId, dateKey], 'readRevenueBonusStateSnapshot:background')
     const records = measuredStatement('reads', () => (
       this.database.prepare(REVENUE_BONUS_SNAPSHOT_SQL).all(scope, storeId, dateKey)
     ), 'readRevenueBonusStateSnapshot')
     return decodeStateSnapshotRecords(records)
+  }
+
+  readBackgroundSnapshot(sql, bindings, label) {
+    const head = measuredStatement('reads', () => (
+      this.database.prepare(STATE_SNAPSHOT_HEAD_SQL).get(bindings[0])
+    ), 'readSnapshot:head')
+    const key = JSON.stringify([sql, bindings, head?.version, head?.last_request_id])
+    let pending = this.pendingSnapshots.get(key)
+    if (!pending) {
+      // Share immutable SQL rows only. Hydration attaches mutable state and
+      // persistence metadata to the decoded row, so every caller needs its own.
+      pending = measuredRowsRead(this.snapshotReader, sql, bindings, label)
+      this.pendingSnapshots.set(key, pending)
+      const remove = () => { this.pendingSnapshots.delete(key) }
+      void pending.then(remove, remove)
+    }
+    return pending.then(decodeStateSnapshotRecords)
   }
 
   async readCustomerDirectory() {

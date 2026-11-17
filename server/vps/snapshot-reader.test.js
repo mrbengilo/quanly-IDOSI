@@ -5,6 +5,7 @@ import { resolve } from 'node:path'
 import { expect, it } from 'vitest'
 import { createIdosiServer } from './server.mjs'
 import { runWithSqliteMetrics } from './sqlite-d1.mjs'
+import { hydrateStateSnapshot } from '../worker.js'
 
 it('keeps health and real login responsive during a long read-only SQLite query', async () => {
   const directory = await mkdtemp(resolve(tmpdir(), 'idosi-background-snapshot-'))
@@ -58,13 +59,21 @@ it('keeps health and real login responsive during a long read-only SQLite query'
     const collections = ['stores', 'employees', 'supportTransfers', 'attendance', 'schedule']
     const screenRead = db.readSystemStateSnapshot('global', collections, 'support-transfers', ['E1'])
     // Duplicate polling of the same version must share one worker read.
-    expect(db.readSystemStateSnapshot('global', collections, 'support-transfers', ['E1'])).toBe(screenRead)
+    const queueLength = db.snapshotReader.queue.length
+    const duplicateScreenRead = db.readSystemStateSnapshot('global', collections, 'support-transfers', ['E1'])
+    expect(db.snapshotReader.queue).toHaveLength(queueLength)
     const screen = screenRead.then((result) => { screenFinished = true; return result })
     let overviewFinished = false
     const overview = Promise.all([
       db.readFinanceOverview('2026-11'),
       db.readOrderSummaryRows({ storeId: 'S1', period: '2026-11' }),
     ]).then((rows) => { overviewFinished = true; return rows })
+    const storeScreens = ['employee-home', 'employee-orders', 'command-order', 'command-attendance']
+    let storesFinished = false
+    const stores = Promise.all(storeScreens.map(screen => db.readStoreStateSnapshot(
+      'global', 'S1', 'E1', screen, '', screen === 'command-attendance' ? '2026-11-17' : '',
+    ))).then(rows => { storesFinished = true; return rows })
+    const bonus = db.readRevenueBonusStateSnapshot('global', 'S1', '2026-11-17')
     const health = await fetch(`${base}/api/health`)
     expect(health.status).toBe(200)
     await health.arrayBuffer()
@@ -74,15 +83,29 @@ it('keeps health and real login responsive during a long read-only SQLite query'
     expect(finished, 'authentication must finish while the SQL worker is still busy').toBe(false)
     expect(screenFinished, 'the heavy screen must wait off the HTTP thread, without delaying authentication').toBe(false)
     expect(overviewFinished, 'overview reads must not block authentication either').toBe(false)
+    expect(storesFinished, 'employee and pre-write store reads must not block authentication').toBe(false)
     expect((await slow)[0].total).toBe(32000004000000)
     const backgroundScreen = await screen
     const [finance, orders] = await overview
+    const storeSnapshots = await stores
+    const bonusSnapshot = await bonus
+    const duplicateScreen = await duplicateScreenRead
     const systemReader = db.snapshotReader
     db.snapshotReader = null
     expect(backgroundScreen).toEqual(db.readSystemStateSnapshot('global', collections, 'support-transfers', ['E1']))
     expect(finance).toEqual(db.readFinanceOverview('2026-11'))
     expect(orders).toEqual(db.readOrderSummaryRows({ storeId: 'S1', period: '2026-11' }))
     expect(orders.map(row => JSON.parse(row.value_json).id)).toEqual(['O1'])
+    for (const [index, screen] of storeScreens.entries()) {
+      expect(storeSnapshots[index]).toEqual(db.readStoreStateSnapshot('global', 'S1', 'E1', screen, '',
+        screen === 'command-attendance' ? '2026-11-17' : ''))
+    }
+    expect(bonusSnapshot).toEqual(db.readRevenueBonusStateSnapshot('global', 'S1', '2026-11-17'))
+    expect(duplicateScreen.row).not.toBe(backgroundScreen.row)
+    const hydrated = hydrateStateSnapshot(backgroundScreen.row, backgroundScreen.manifests, backgroundScreen.entities)
+    const duplicateHydrated = hydrateStateSnapshot(duplicateScreen.row, duplicateScreen.manifests, duplicateScreen.entities)
+    expect(duplicateHydrated.value_json).toBe(hydrated.value_json)
+    expect(duplicateHydrated._hydratedState).not.toBe(hydrated._hydratedState)
     db.snapshotReader = systemReader
 
     // Exactly the same SQL projection, including isolation, manifests and order.
