@@ -53,6 +53,34 @@ printf 'vcpus=%s\n' "$(getconf _NPROCESSORS_ONLN)"
 printf 'cpu_model=%s\n' "$(awk -F: '/model name/ { sub(/^[[:space:]]+/, "", $2); print $2; exit }' /proc/cpuinfo)"
 printf 'loadavg=%s\n' "$(tr ' ' ',' </proc/loadavg)"
 
+section 'hardware_capacity'
+# Distinguish provider-assigned hardware from filesystem/container limits.
+# Read only: never online memory, rescan disks, or resize partitions here.
+printf 'hostname=%s\n' "$(hostname)"
+printf 'host_addresses=%s\n' "$(hostname -I 2>/dev/null || true)"
+awk '/^(MemTotal|MemAvailable|SwapTotal):/ { print "kernel_" $0 }' /proc/meminfo
+printf 'boot_memory_limits='
+tr ' ' '\n' </proc/cmdline | grep -E '^(mem|memmap|crashkernel)=' | paste -sd, - || true
+printf 'memory_block_size_bytes_hex=%s\n' "$(cat /sys/devices/system/memory/block_size_bytes 2>/dev/null || true)"
+for memory_state in online offline; do
+  printf 'memory_blocks_%s=' "$memory_state"
+  grep -l -x "$memory_state" /sys/devices/system/memory/memory[0-9]*/state 2>/dev/null | wc -l || true
+done
+if command -v systemd-detect-virt >/dev/null 2>&1; then
+  printf 'virtualization=%s\n' "$(systemd-detect-virt || true)"
+fi
+if command -v dmidecode >/dev/null 2>&1; then
+  dmidecode --type 16,17 2>/dev/null \
+    | grep -E '^[[:space:]]*(Maximum Capacity|Number Of Devices|Size):' || true
+fi
+if command -v lsblk >/dev/null 2>&1; then
+  lsblk --bytes --output NAME,SIZE,TYPE,FSTYPE,MOUNTPOINT || true
+fi
+if command -v findmnt >/dev/null 2>&1; then
+  findmnt --target / --output SOURCE,FSTYPE,SIZE,USED,AVAIL,OPTIONS || true
+  findmnt --target "$IDOSI_ROOT" --output SOURCE,FSTYPE,SIZE,USED,AVAIL || true
+fi
+
 section 'memory_and_disk'
 free -h
 df -hT / "$IDOSI_ROOT" | awk 'NR == 1 || !seen[$1]++'
