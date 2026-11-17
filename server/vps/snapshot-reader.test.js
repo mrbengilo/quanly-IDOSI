@@ -34,6 +34,8 @@ it('keeps health and real login responsive during a long read-only SQLite query'
           { id: 'H1', storeId: 'BUSINESS_SUPPORT', unit: 'business_support', role: 'business_support', status: 'Đang làm việc' },
         ],
         tasks: [{ id: 'T1', storeId: 'S1', employeeId: 'E1' }, { id: 'T2', storeId: 'S2', employeeId: 'E2' }],
+        orders: [{ id: 'O1', storeId: 'S1', employeeId: 'E1', amount: 100, createdAt: '2026-11-17T01:00:00Z' },
+          { id: 'O2', storeId: 'S2', employeeId: 'E2', amount: 200, createdAt: '2026-11-17T01:00:00Z' }],
       },
     }, { 'x-idosi-bootstrap-token': 'background-test' })
     const db = runtime.database
@@ -58,6 +60,11 @@ it('keeps health and real login responsive during a long read-only SQLite query'
     // Duplicate polling of the same version must share one worker read.
     expect(db.readSystemStateSnapshot('global', collections, 'support-transfers', ['E1'])).toBe(screenRead)
     const screen = screenRead.then((result) => { screenFinished = true; return result })
+    let overviewFinished = false
+    const overview = Promise.all([
+      db.readFinanceOverview('2026-11'),
+      db.readOrderSummaryRows({ storeId: 'S1', period: '2026-11' }),
+    ]).then((rows) => { overviewFinished = true; return rows })
     const health = await fetch(`${base}/api/health`)
     expect(health.status).toBe(200)
     await health.arrayBuffer()
@@ -66,11 +73,16 @@ it('keeps health and real login responsive during a long read-only SQLite query'
     expect(logins.every((login) => Boolean(login.token))).toBe(true)
     expect(finished, 'authentication must finish while the SQL worker is still busy').toBe(false)
     expect(screenFinished, 'the heavy screen must wait off the HTTP thread, without delaying authentication').toBe(false)
+    expect(overviewFinished, 'overview reads must not block authentication either').toBe(false)
     expect((await slow)[0].total).toBe(32000004000000)
     const backgroundScreen = await screen
+    const [finance, orders] = await overview
     const systemReader = db.snapshotReader
     db.snapshotReader = null
     expect(backgroundScreen).toEqual(db.readSystemStateSnapshot('global', collections, 'support-transfers', ['E1']))
+    expect(finance).toEqual(db.readFinanceOverview('2026-11'))
+    expect(orders).toEqual(db.readOrderSummaryRows({ storeId: 'S1', period: '2026-11' }))
+    expect(orders.map(row => JSON.parse(row.value_json).id)).toEqual(['O1'])
     db.snapshotReader = systemReader
 
     // Exactly the same SQL projection, including isolation, manifests and order.

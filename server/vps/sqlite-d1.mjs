@@ -1494,6 +1494,8 @@ export class SqliteD1 {
   }
 
   readFinanceOverview(period) {
+    if (this.snapshotReader) return measuredRowsRead(this.snapshotReader, FINANCE_OVERVIEW_SQL,
+      [period, period, period], 'readFinanceOverview:background')
     return measuredStatement('reads', () => (
       this.database.prepare(FINANCE_OVERVIEW_SQL).all(period, period, period)
     ), 'readFinanceOverview')
@@ -1591,7 +1593,7 @@ export class SqliteD1 {
       const date = new Date(Date.UTC(year, month - 1 + offset, 1))
       return `${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(2, '0')}`
     })
-    return measuredStatement('reads', () => this.database.prepare(`
+    const sql = `
       SELECT value_json, value_bytes
       FROM state_entities
       WHERE scope_key = ?
@@ -1610,7 +1612,11 @@ export class SqliteD1 {
           ), 1, 7) IN (?, ?, ?)
         )
       ORDER BY entity_order DESC, entity_key DESC
-    `).all(scope, storeId, employeeId, employeeId, ...periods, ...periods), 'readOrderSummaryRows')
+    `
+    const bindings = [scope, storeId, employeeId, employeeId, ...periods, ...periods]
+    return this.snapshotReader
+      ? measuredRowsRead(this.snapshotReader, sql, bindings, 'readOrderSummaryRows:background')
+      : measuredStatement('reads', () => this.database.prepare(sql).all(...bindings), 'readOrderSummaryRows')
   }
 
   async batch(statements) {
