@@ -2785,6 +2785,30 @@ describe('IDOSI Worker security primitives', () => {
     database.close()
   })
 
+  it('sanitizes mixed and long credential keys after large imported field-name sets', () => {
+    const secret = {
+      'PaSS-word_HASH': 'hidden-password',
+      'REFRESH.TOKEN': 'hidden-token',
+      ['x'.repeat(129) + 'SeCrEt']: 'hidden-long-key',
+      wrapped: { 'H-a-s-h': 'hidden-hash', SALT: 'hidden-salt', ITERATIONS: 210000, ALGORITHM: 'PBKDF2-SHA256' },
+      list: [{ HASH: 'hidden-hash', Salt: 'hidden-salt', iterations: 210000, algorithm: 'PBKDF2-SHA256' }, { label: 'visible' }],
+    }
+    for (let pass = 0; pass < 2; pass += 1) {
+      const state = {
+        before: secret,
+        imported: Object.fromEntries(Array.from({ length: 1100 }, (_, i) => [`Field-${pass}-${i}`, { value: i }])),
+        after: secret,
+      }
+      const projected = projectSharedState(state, { role: 'admin' })
+      expect(JSON.stringify(projected)).not.toContain('hidden-')
+      expect(projected.before).toEqual({ list: [{ label: 'visible' }] })
+      expect(projected.after).toEqual(projected.before)
+      expect(projected.imported[`Field-${pass}-1099`]).toEqual({ value: 1099 })
+      expect(state.before).toBe(secret)
+      expect(state.before['PaSS-word_HASH']).toBe('hidden-password')
+    }
+  })
+
   it('projects only an employee own records and strips privileged legacy fields', () => {
     const state = {
       schemaVersion: 2,

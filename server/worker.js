@@ -1780,7 +1780,20 @@ const SECRET_STATE_FIELDS = new Set([
   'token_hash',
 ])
 
-const normalizedStateKey = (key) => String(key || '').toLocaleLowerCase('en-US').replace(/[^a-z0-9]/gu, '')
+// Entity schemas repeat the same field names across large histories. Cache
+// normalization of names only, never values or authorization decisions. Bound
+// both entry count and key length because imported JSON may use arbitrary keys.
+const normalizedStateKeys = new Map()
+const normalizedStateKey = (key) => {
+  const source = String(key || '')
+  if (normalizedStateKeys.has(source)) return normalizedStateKeys.get(source)
+  const normalized = source.toLocaleLowerCase('en-US').replace(/[^a-z0-9]/gu, '')
+  if (source.length <= 128) {
+    if (normalizedStateKeys.size >= 1024) normalizedStateKeys.delete(normalizedStateKeys.keys().next().value)
+    normalizedStateKeys.set(source, normalized)
+  }
+  return normalized
+}
 
 const isSecretStateField = (key) => {
   if (SECRET_STATE_FIELDS.has(key)) return true
