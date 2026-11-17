@@ -474,7 +474,57 @@ const systemStateSnapshotSql = (collectionKeys = [], screen = '') => {
   const actorGlobalSql = actorGlobalCollections.length
     ? `entity.collection_key IN (${sqlStringList(actorGlobalCollections)}) OR`
     : ''
-  const entityFilter = normalizedScreen === 'support-overview'
+  const transferScreen = normalizedScreen === 'support-transfers'
+  // Transfer management never renders task checklists. Strip their potentially
+  // large snapshots in SQLite, before Node hydrates/normalizes the screen.
+  const transferAttendanceSql = "json_remove(entity.value_json, '$.checklistSnapshot')"
+  const transferReferencesSql = `
+    transfer_references AS MATERIALIZED (
+      SELECT lower(trim(CAST(json_extract(value_json, '$.employeeId') AS TEXT))) AS employee_key
+      FROM state_entities, params
+      WHERE state_entities.scope_key = params.scope_key AND collection_key = 'supportTransfers'
+    ),
+    transfer_employee_ids AS MATERIALIZED (
+      SELECT employee_key FROM transfer_references WHERE employee_key <> ''
+      UNION
+      SELECT employee_key FROM selected_employee_ids
+      UNION
+      SELECT lower(trim(CAST(alias.value AS TEXT)))
+      FROM state_entities AS profile, params,
+        json_each(json_array(
+          json_extract(profile.value_json, '$.id'), json_extract(profile.value_json, '$.code'),
+          json_extract(profile.value_json, '$.employeeId'), json_extract(profile.value_json, '$.employee_id'),
+          json_extract(profile.value_json, '$.employeeCode'), json_extract(profile.value_json, '$.employee_code')
+        )) AS alias
+      WHERE profile.scope_key = params.scope_key AND profile.collection_key = 'employees'
+        AND EXISTS (
+          SELECT 1 FROM json_each(json_array(
+            json_extract(profile.value_json, '$.id'), json_extract(profile.value_json, '$.code'),
+            json_extract(profile.value_json, '$.employeeId'), json_extract(profile.value_json, '$.employee_id'),
+            json_extract(profile.value_json, '$.employeeCode'), json_extract(profile.value_json, '$.employee_code')
+          )) AS reference
+          WHERE lower(trim(CAST(reference.value AS TEXT))) IN (SELECT employee_key FROM transfer_references)
+        )
+        AND trim(CAST(alias.value AS TEXT)) <> ''
+    ),`
+  const entityFilter = transferScreen
+    ? `AND (
+        entity.collection_key NOT IN ('attendance', 'schedule')
+        OR entity.employee_id IN (SELECT employee_key COLLATE NOCASE FROM transfer_employee_ids)
+        OR EXISTS (
+          SELECT 1 FROM json_each(json_array(
+            json_extract(entity.value_json, '$.employeeId'), json_extract(entity.value_json, '$.employee_id'),
+            json_extract(entity.value_json, '$.employeeCode'), json_extract(entity.value_json, '$.employee_code')
+          )) AS reference
+          WHERE lower(trim(CAST(reference.value AS TEXT))) IN (SELECT employee_key FROM transfer_employee_ids)
+        )
+        OR (entity.collection_key = 'attendance'
+          AND COALESCE(
+            NULLIF(trim(CAST(json_extract(entity.value_json, '$.supportTransferId') AS TEXT)), ''),
+            NULLIF(trim(CAST(json_extract(entity.value_json, '$.supportCompensation.transferId') AS TEXT)), '')
+          ) IS NOT NULL)
+      )`
+    : normalizedScreen === 'support-overview'
     ? `AND (
         entity.collection_key = 'employees'
         OR entity.employee_id IN (SELECT employee_key COLLATE NOCASE FROM selected_employee_ids)
@@ -536,6 +586,7 @@ const systemStateSnapshotSql = (collectionKeys = [], screen = '') => {
         ? AS scope_key,
         ? AS employee_ids_json
     ),
+    ${transferScreen ? transferReferencesSql : ''}
     selected_employee_ids AS MATERIALIZED (
       SELECT DISTINCT lower(trim(CAST(identifier.value AS TEXT))) AS employee_key
       FROM params, json_each(params.employee_ids_json) AS identifier
@@ -599,8 +650,8 @@ const systemStateSnapshotSql = (collectionKeys = [], screen = '') => {
       entity.collection_key,
       entity.entity_key,
       entity.entity_order,
-      entity.value_json,
-      entity.value_bytes,
+      ${transferScreen ? `CASE WHEN entity.collection_key = 'attendance' THEN ${transferAttendanceSql} ELSE entity.value_json END` : 'entity.value_json'},
+      ${transferScreen ? `CASE WHEN entity.collection_key = 'attendance' THEN length(CAST(${transferAttendanceSql} AS BLOB)) ELSE entity.value_bytes END` : 'entity.value_bytes'},
       entity.created_at,
       entity.updated_at,
       NULL,

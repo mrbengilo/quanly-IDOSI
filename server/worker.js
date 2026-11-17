@@ -5763,7 +5763,7 @@ const getSystemScreen = async (request, env, context, screen) => {
     ? localDateTimeParts(context.now).date
     : ''
   const useOptimizedSystemProjection = typeof db?.readSystemStateSnapshot === 'function'
-    && ['tasks', 'office', 'support-tasks', 'support-assigned-work', 'support-overview'].includes(screen)
+    && ['tasks', 'office', 'support-tasks', 'support-assigned-work', 'support-overview', 'support-transfers'].includes(screen)
   const readScreen = () => useEmployeeStoreProjection
     ? loadStoreState(db, 'global', user.store_id, user.employee_id, screen, '', taskWindowDate)
     : useOptimizedSystemProjection
@@ -5776,7 +5776,9 @@ const getSystemScreen = async (request, env, context, screen) => {
         )
       : loadStateCollections(db, 'global', collections.length ? collections : ['stores'])
   let row = await readScreen()
-  if (collections.includes('attendance') && screen !== 'support-overview') {
+  // Transfer management uses attendance only to lock edits and preview started
+  // shifts; opening it must not reconcile unrelated task checklists globally.
+  if (collections.includes('attendance') && !['support-overview', 'support-transfers'].includes(screen)) {
     if (useEmployeeStoreProjection) {
       row = await repairEmployeeScreenStateIfNeeded(db, user, context, row, screen, taskWindowDate)
     } else if (await hasPendingOpenStoreAttendanceChecklistRepair(db)) {
