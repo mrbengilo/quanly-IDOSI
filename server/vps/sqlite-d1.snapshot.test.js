@@ -422,6 +422,7 @@ describe('SQLite state snapshots', () => {
         insert('attendance', 'attendance-closed', 40, {
           id: 'ATT-CLOSED', storeId: 'S01', employeeId: 'E01', date: '2026-09-01',
           checkOutAt: '2026-09-01T10:00:00.000Z',
+          checklistSnapshot: { tasks: [{ id: 'SEALED', title: 'Lịch sử' }] },
         }, '2026-09'),
         insert('compensationEntries', 'compensation-september', 30, {
           id: 'COMP-SEP', storeId: 'S01', employeeId: 'E01', effectiveDate: '2026-09-02',
@@ -450,6 +451,13 @@ describe('SQLite state snapshots', () => {
       expect(session.entities
         .filter(({ collection_key: collectionKey }) => collectionKey === 'attendance')
         .map(({ value_json: valueJson }) => JSON.parse(valueJson).id)).toEqual(['ATT-OPEN', 'ATT-CLOSED'])
+      const identity = database.readStoreStateSnapshot('global', 'S01', 'E01', 'session-identity')
+      const { checklistSnapshot, ...closedShift } = JSON.parse(session.entities.find(({ entity_key }) => entity_key === 'attendance-closed').value_json)
+      expect(checklistSnapshot.tasks[0].id).toBe('SEALED')
+      expect(identity.entities.filter(({ collection_key }) => collection_key === 'attendance')
+        .map(({ value_json }) => JSON.parse(value_json))).toEqual([
+        expect.objectContaining({ id: 'ATT-OPEN', checkOutAt: null }), closedShift,
+      ])
 
       const payroll = database.readStoreStateSnapshot('global', 'S01', 'E01', 'payroll', '2026-09')
       expect(payroll.entities

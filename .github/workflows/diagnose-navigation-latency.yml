@@ -163,6 +163,27 @@ jobs:
                   f"{pct([num(r.get('responseBytes'))/1024 for r in items],.95):.1f}",
                   f"{pct([r.get('database',{}).get('statements') for r in items],.95):.1f}",
               ]))
+          commands = defaultdict(list)
+          known_types = {
+              'order.create', 'order.update', 'order.delete', 'attendance.check_in', 'attendance.check_out',
+              'attendance.update', 'attendance.emergency_close', 'task.progress.save', 'task.shift.select',
+              'task.done', 'task.set_done', 'tasks.assign', 'tasks.replace_scope', 'shift_expense.create',
+              'notification.mark_read', 'notification.mark_all_read', 'schedule.assign', 'schedule.swap',
+              'expense.create', 'expense.update', 'expense.delete', 'payroll.close',
+          }
+          for row in groups.get(('POST', '/api/command'), []):
+              command = row.get('commandType')
+              commands[command if isinstance(command, str) and command in known_types else 'other'].append(row)
+          print('command_type\trequests\t2xx\tconflicts\t5xx\t2xx_p50_ms\t2xx_p95_ms\t2xx_max_ms\t2xx_db_p95_ms')
+          for command, items in sorted(commands.items()):
+              success = [r for r in items if 200 <= num(r.get('status')) < 300 and not r.get('aborted')]
+              durations = [num(r.get('durationMs')) for r in success]
+              print('\t'.join([
+                  command, str(len(items)), str(len(success)), str(sum(num(r.get('status')) == 409 for r in items)),
+                  str(sum(num(r.get('status')) >= 500 for r in items)),
+                  f'{pct(durations,.5):.1f}', f'{pct(durations,.95):.1f}', f'{max(durations,default=0):.1f}',
+                  f"{pct([r.get('database',{}).get('totalMs') for r in success],.95):.1f}",
+              ]))
           print('\nslowest_requests_aggregate_safe')
           print('timestamp\tmethod\tpath\tstatus\tduration_ms\thandler_ms\tdb_ms\tserialize_ms\tresponse_kib\tstatements')
           for row in sorted(rows, key=lambda item: num(item.get('durationMs')), reverse=True)[:30]:
@@ -178,7 +199,7 @@ jobs:
           compose exec -T app node <<'NODE'
           import { statSync } from 'node:fs'
           import { DatabaseSync } from 'node:sqlite'
-          import { SqliteD1 } from './server/vps/sqlite-d1.mjs'
+          import { SqliteD1, STORE_SCREEN_COLLECTIONS } from './server/vps/sqlite-d1.mjs'
           import {
             effectiveStoreSalaryConfig,
             STORE_SALARY_CONFIG_IDENTIFIER_COLLISION,
@@ -241,7 +262,9 @@ jobs:
           if (actor) {
             const adapter = { database: db }
             const prepare = db.prepare.bind(db)
-            for (const screen of ['session', 'employee-home', 'employee-orders', 'employee-reward-tasks']) {
+            const orderWriteScreen = STORE_SCREEN_COLLECTIONS['command-order-create'] ? 'command-order-create' : 'command-order'
+            const identityScreen = STORE_SCREEN_COLLECTIONS['session-identity'] ? 'session-identity' : 'session'
+            for (const screen of [identityScreen, 'employee-home', 'employee-orders', 'employee-reward-tasks', orderWriteScreen]) {
               let snapshotSql = ''
               db.prepare = (sql) => { snapshotSql = sql; return prepare(sql) }
               const started = performance.now()
@@ -252,10 +275,12 @@ jobs:
               for (const manifest of snapshot.manifests) state[manifest.collection_key] = []
               for (const entity of snapshot.entities) state[entity.collection_key].push(JSON.parse(entity.value_json))
               const hydrateMs = performance.now() - started - readMs
-              const projected = projectSharedState(state, actor)
+              const projected = screen === orderWriteScreen ? state : projectSharedState(state, actor)
               const projectMs = performance.now() - started - readMs - hydrateMs
               console.log('screen_profile=' + JSON.stringify({ screen, readMs, hydrateMs, projectMs,
-                rows: snapshot.entities.length, projectedBytes: Buffer.byteLength(JSON.stringify(projected)) }))
+                rows: snapshot.entities.length, projectedBytes: Buffer.byteLength(JSON.stringify(projected)),
+                orderRows: snapshot.entities.filter(({ collection_key }) => collection_key === 'orders').length,
+                attendanceRows: snapshot.entities.filter(({ collection_key }) => collection_key === 'attendance').length }))
               const plan = prepare(`EXPLAIN QUERY PLAN ${snapshotSql}`).all('global', actor.store_id, actor.employee_id, '')
               console.log('screen_query_plan=' + JSON.stringify({ screen, steps: plan.map(({ detail }) => detail) }))
             }
