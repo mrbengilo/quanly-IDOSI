@@ -33,6 +33,10 @@ it.each([false, true])('preflights employee checklist repairs without repeated g
           id: 'A1', storeId: 'S1', employeeId: 'E1', date: '2026-09-05', workDate: '2026-09-05',
           shiftId: 'ca1', checkIn: '08:05', checkInAt: '2026-09-05T01:05:00Z',
           checklistSnapshot: { source: 'work-catalog', storeChecklistRepairVersion: 1, tasks: [] },
+        }, {
+          id: 'A2', code: 'HISTORICAL-SHIFT', storeId: 'S1', employeeId: 'E1', date: '2026-09-04',
+          shiftId: 'ca1', checkInAt: '2026-09-04T01:00:00Z', checkOutAt: '2026-09-04T09:00:00Z',
+          checklistSnapshot: { tasks: [{ description: 'HISTORICAL-CHECKLIST'.repeat(4000) }] },
         }],
         tasks: [], taskAssignmentHistory: [], orders: [],
       },
@@ -64,6 +68,15 @@ it.each([false, true])('preflights employee checklist repairs without repeated g
       expect(payload.state.employees.map(({ id }) => id)).toEqual(['E1'])
       return payload
     }
+    const orderScreen = await read('employee-orders')
+    expect(orderScreen.version).toBe(initialVersion)
+    expect(orderScreen.state.activeAttendanceId).toBe('A1')
+    expect(orderScreen.state.attendance).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: 'A2', code: 'HISTORICAL-SHIFT', shiftId: 'ca1', checkOutAt: '2026-09-04T09:00:00Z' }),
+    ]))
+    expect(orderScreen.state.attendance.every((record) => !Object.hasOwn(record, 'checklistSnapshot'))).toBe(true)
+    expect(JSON.stringify(orderScreen)).not.toContain('HISTORICAL-CHECKLIST')
+    expect(globalReads).toBe(0)
     // Overlapping reads may attempt the same repair; canonical persistence must
     // commit once, keep its audit, and never duplicate tasks or assignment rows.
     const first = await Promise.all([read('employee-home'), read('employee-orders'), read('employee-tasks', admin.token)])
@@ -84,6 +97,7 @@ it.each([false, true])('preflights employee checklist repairs without repeated g
     const readsAfterRepair = globalReads
     const again = await read('employee-home')
     expect(globalReads).toBe(readsAfterRepair)
+    expect(again.state.attendance.find(({ id }) => id === 'A2').checklistSnapshot.tasks[0].description).toContain('HISTORICAL-CHECKLIST')
     expect(again.state.tasks || []).toEqual([])
     const tasks = await read('employee-tasks')
     expect(globalReads).toBe(readsAfterRepair)

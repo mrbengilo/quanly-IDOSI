@@ -28,7 +28,8 @@ beforeAll(async () => {
   await new Promise((done) => server.listen(0, '127.0.0.1', done))
   origin = `http://127.0.0.1:${server.address().port}`
   expect((await request('/api/bootstrap', '', { username: 'customer.admin', password, initialState: {
-    stores: [{ id: 'S1', name: 'Store 1' }, { id: 'S2', name: 'Store 2' }, { id: 'S3', name: 'Closed store', status: 'Ngừng hoạt động' }],
+    stores: [{ id: 'S1', name: 'Store 1' }, { id: 'S2', name: 'Store 2' }, { id: 'S3', name: 'Closed store', status: 'Ngừng hoạt động' },
+      { id: 'S4', name: 'Store without orders' }],
     employees: [{ id: 'E1', name: 'Employee', storeId: 'S1', unit: 'store', salary: 9999999 },
       { id: 'M1', name: 'Manager', storeId: 'S1', unit: 'store_manager' },
       { id: 'H1', name: 'Support', unit: 'business_support', storeId: 'BUSINESS_SUPPORT' }],
@@ -66,20 +67,27 @@ afterAll(async () => {
 it('commits concurrent order intents once each without shared-snapshot mutation or lost customer updates', async () => {
   const db = runtime.database.database
   const version = db.prepare("SELECT version FROM app_state WHERE scope_key='global'").get().version
-  const before = db.prepare("SELECT count(*) AS n FROM state_entities WHERE collection_key='orders'").get().n
-  const payload = (phone) => ({ storeId:'S1', customerName:'Concurrent synthetic contact', customerPhone:phone,
+  const readOrders = () => db.prepare("SELECT * FROM state_entities WHERE collection_key='orders' ORDER BY entity_order").all()
+  const before = readOrders()
+  const snapshot = await runtime.database.readStoreStateSnapshot('global', 'S4', '', 'command-order-create')
+  expect(snapshot.entities.filter(({ collection_key }) => collection_key === 'orders').map(({ entity_key }) => entity_key))
+    .toEqual([before[0].entity_key])
+  const payload = (phone, storeId) => ({ storeId, customerName:'Concurrent synthetic contact', customerPhone:phone,
     gender:'Nam', occupation:'Kỹ sư', acquisitionChannel:'Facebook', paymentMethod:'Tiền mặt', amount:100000,
     items:[{productId:'order-product-001',quantity:1}] })
   const keyA = crypto.randomUUID()
-  const create = (phone, key) => request('/api/command', token,
-    {type:'order.create',payload:payload(phone),expectedVersion:version}, {'idempotency-key':key})
+  const create = (phone, key, storeId = 'S1') => request('/api/command', token,
+    {type:'order.create',payload:payload(phone, storeId),expectedVersion:version}, {'idempotency-key':key})
   const results = await Promise.all([
-    create('0966000111',keyA), create('0966000111',keyA), create('0966000222',crypto.randomUUID()),
+    create('0966000111',keyA), create('0966000111',keyA), create('0966000222',crypto.randomUUID(), 'S4'),
   ])
   expect(results.map(row=>row.status), JSON.stringify(results.map(row=>row.body.error))).toEqual([201,201,201])
   expect(results[0].body.order.id).toBe(results[1].body.order.id)
   expect(results[0].body.order.id).not.toBe(results[2].body.order.id)
-  expect(db.prepare("SELECT count(*) AS n FROM state_entities WHERE collection_key='orders'").get().n).toBe(before+2)
+  const after = readOrders()
+  expect(after.slice(0, 2).map(({ record_id }) => record_id).sort())
+    .toEqual([results[0].body.order.id, results[2].body.order.id].sort())
+  expect(after.slice(2)).toEqual(before)
   for (const phone of ['0966000111','0966000222']) {
     expect((await lookup({scope:'global',query:phone})).body.customers).toEqual([
       expect.objectContaining({customerPhone:phone,orderCount:1,isReturningCustomer:false}),

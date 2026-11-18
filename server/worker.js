@@ -5800,9 +5800,9 @@ const getSystemScreen = async (request, env, context, screen) => {
         )
       : loadStateCollections(db, 'global', collections.length ? collections : ['stores'])
   let row = await readScreen()
-  // Transfer management uses attendance only to lock edits and preview started
-  // shifts; opening it must not reconcile unrelated task checklists globally.
-  if (collections.includes('attendance') && !['support-overview', 'support-transfers'].includes(screen)) {
+  // The order and transfer workspaces use attendance for shift identity and
+  // lifecycle only. Repair belongs to screens and commands that use checklists.
+  if (collections.includes('attendance') && !['support-overview', 'support-transfers', 'employee-orders'].includes(screen)) {
     if (useEmployeeStoreProjection) {
       row = await repairEmployeeScreenStateIfNeeded(db, user, context, row, screen, taskWindowDate)
     } else if (await hasPendingOpenStoreAttendanceChecklistRepair(db)) {
@@ -8245,6 +8245,11 @@ export const commandStateProjection = (body) => {
     // full history.
     operationalWindow: SHIFT_OPERATIONAL_WINDOW_COMMANDS.has(type),
   })
+  if (type === 'order.create') {
+    return projection('command-order-create', [
+      'attendance', 'orders', 'payrollPeriods', 'orderInformationOptions', 'shiftDefinitions',
+    ], '', '', payload.employeeId)
+  }
   if (type.startsWith('order.')) {
     return projection(
       'command-order',
@@ -26418,7 +26423,10 @@ const executeCommand = async (request, env, context) => {
     hash,
     userAgent: String(request.headers.get('user-agent') || '').slice(0, 512),
   }
-  const checklistRepairPending = await hasPendingOpenStoreAttendanceChecklistRepair(db)
+  // Orders use the active attendance identity, not checklist tasks. A pending
+  // checklist must not force a full-system read for every order save.
+  const checklistRepairPending = !['order.create', 'order.update', 'order.delete'].includes(body.type)
+    && await hasPendingOpenStoreAttendanceChecklistRepair(db)
   const persistedGlobalStateRow = checklistRepairPending
     ? await persistOpenStoreAttendanceChecklistRepairs(
         db,
