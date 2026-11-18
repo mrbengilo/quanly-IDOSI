@@ -50,7 +50,12 @@ it('persists support schedules, notifications and checkout precedence through th
         ...['S1', 'S2', 'S3'].map((storeId) => ({ id: `M-${storeId}`, storeId, unit: 'store_manager', name: `Quản lý ${storeId}` }))],
       supportTransfers: [transfer, futureTransfer], shiftDefinitions: [home, host, { ...host, id: 'OVERLAP', start: '10:00', end: '14:00' }],
       schedule: [{ id: 'HOME-ASSIGNED', employeeId: 'E1', storeId: 'S1', date: '2026-09-07', shiftIds: [home.id], shiftSnapshots: [home] }],
-      attendance: [], notifications: [], orders: [], workCatalogItems: [],
+      attendance: [{ id: 'ATT-STARTED-HOME', employeeId: 'E1', storeId: 's1', shiftId: home.id,
+        // Checkout history uses the original scheduled day even when the
+        // attendance work date and query dimensions are on the next day.
+        scheduledWorkDate: '2026-09-07', workDate: '2026-09-08', date: '2026-09-08',
+        checkInAt: '2026-09-07T01:00:00Z', checkOutAt: '2026-09-07T05:00:00Z' }],
+      notifications: [], orders: [], workCatalogItems: [],
       expenseEntries: [{ id: 'UNCHANGED', storeId: 'S1', amount: 765432, sourceType: 'manual' }],
     } }, { 'x-idosi-bootstrap-token': 'transfer-fixture' })
     expect(bootstrap.status).toBe(201)
@@ -70,10 +75,15 @@ it('persists support schedules, notifications and checkout precedence through th
     const futureEmployeeBefore = await login('fixture.future.employee')
     expect(futureEmployeeBefore.user).toMatchObject({ storeId: 'S1' })
     const beforeMoney = db.prepare("SELECT value_json FROM state_entities WHERE collection_key='expenseEntries'").all()
+    const originalAttendance = db.prepare("SELECT * FROM state_entities WHERE collection_key='attendance' AND record_id='ATT-STARTED-HOME'").get()
+    const blockedReplace = await command(homeManager.token, 'schedule.replace_day', { storeId: 'S1', date: '2026-09-07', assignments: [] })
+    expect(blockedReplace.status, JSON.stringify(blockedReplace.body)).toBe(409)
+    expect(blockedReplace.body.error.code).toBe('SCHEDULE_STARTED_IMMUTABLE')
     const futureSaved = await command(hostManager.token, 'schedule.assign', {
       storeId: 'S2', date: '2026-09-10', employeeIds: ['E2'], shiftIds: [host.id],
     })
     expect(futureSaved.status, JSON.stringify(futureSaved.body)).toBe(200)
+    expect(db.prepare("SELECT * FROM state_entities WHERE collection_key='attendance' AND record_id='ATT-STARTED-HOME'").get()).toEqual(originalAttendance)
     const futureAssignmentId = futureSaved.body.assignments[0].id
     const futureEmployee = await login('fixture.future.employee')
     expect(futureEmployee.user).toMatchObject({ storeId: 'S1' })

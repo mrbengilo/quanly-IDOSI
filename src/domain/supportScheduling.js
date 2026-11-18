@@ -63,8 +63,9 @@ export const shiftWindow = (date, shift = {}) => {
   return { startMs, endMs, start, end, startAt: new Date(startMs).toISOString(), endAt: new Date(endMs).toISOString() }
 }
 
-export const scheduleWindows = (state = {}, { employeeId = '', storeId = '' } = {}) => list(state.schedule).flatMap((assignment) => {
+export const scheduleWindows = (state = {}, { employeeId = '', storeId = '', date: requestedDate = '' } = {}) => list(state.schedule).flatMap((assignment) => {
   if (!scheduleAssignmentIsUsable(assignment)
+    || (requestedDate && (assignment.date || assignment.workDate) !== requestedDate)
     || (employeeId && !sameEmployee(state, assignment, employeeId))
     || (storeId && key(assignment.storeId) !== key(storeId))) return []
   const identity = employeeIdentity(state, assignment)
@@ -135,8 +136,8 @@ export const scheduleConflict = (state, assignments = []) => {
   const windows = scheduleWindows(state)
   for (const window of windows.filter((item) => selected.has(String(item.assignmentId)))) {
     if (window.invalid) return { code: 'SCHEDULE_TIME_INVALID', window }
-    const conflict = windows.find((other) => other !== window && sameEmployee(state, other, window)
-      && (other.invalid || windowsOverlap(window, other)))
+    const conflict = windows.find((other) => other !== window
+      && (other.invalid || windowsOverlap(window, other)) && sameEmployee(state, other, window))
     if (conflict) return { code: 'SCHEDULE_TIME_OVERLAP', window, conflict }
     const employee = employeeIdentity(state, window).employee
     if (!employee || (key(window.storeId) !== key(employee.storeId) && !supportForScheduledWindow(state, window))) {

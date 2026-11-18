@@ -536,6 +536,15 @@ const systemStateSnapshotSql = (collectionKeys = [], screen = '') => {
           SELECT collection_key, entity_key FROM transfer_selected_entities
         )
       )`
+    : normalizedScreen === 'command-schedule-day'
+      ? `AND (entity.collection_key <> 'attendance' OR
+          json_extract(params.employee_ids_json, '$[0]') IN (
+            json_extract(entity.value_json, '$.scheduledWorkDate'),
+            json_extract(entity.value_json, '$.workDate'),
+            json_extract(entity.value_json, '$.date'),
+            json_extract(entity.value_json, '$.attendanceDate')
+          )
+        )`
     : normalizedScreen === 'support-overview'
     ? `AND (
         entity.collection_key = 'employees'

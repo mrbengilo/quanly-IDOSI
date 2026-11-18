@@ -171,8 +171,11 @@ jobs:
               'notification.mark_read', 'notification.mark_all_read', 'schedule.assign', 'schedule.swap',
               'expense.create', 'expense.update', 'expense.delete', 'payroll.close',
           }
+          command_aliases = {'order': 'order.create', 'attendance-in': 'attendance.check_in', 'attendance-out': 'attendance.check_out'}
           for row in groups.get(('POST', '/api/command'), []):
               command = row.get('commandType')
+              if isinstance(command, str):
+                  command = command_aliases.get(command, command)
               commands[command if isinstance(command, str) and command in known_types else 'other'].append(row)
           print('command_type\trequests\t2xx\tconflicts\t5xx\t2xx_p50_ms\t2xx_p95_ms\t2xx_max_ms\t2xx_db_p95_ms')
           for command, items in sorted(commands.items()):
@@ -284,6 +287,16 @@ jobs:
               const plan = prepare(`EXPLAIN QUERY PLAN ${snapshotSql}`).all('global', actor.store_id, actor.employee_id, '')
               console.log('screen_query_plan=' + JSON.stringify({ screen, steps: plan.map(({ detail }) => detail) }))
             }
+            const businessDate = new Date(Date.now() + 7 * 3600000).toISOString().slice(0, 10)
+            const schedule = worker.commandStateProjection({ type: 'schedule.assign', payload: { storeId: actor.store_id, date: businessDate } })
+            const started = performance.now()
+            const input = SqliteD1.prototype.readSystemStateSnapshot.call(adapter, 'global', schedule.collections,
+              schedule.screen === 'command-schedule-day' ? schedule.screen : '', [businessDate])
+            const readMs = performance.now() - started
+            worker.hydrateStateSnapshot(input.row, input.manifests, input.entities)
+            console.log('schedule_write_profile=' + JSON.stringify({ readMs, hydrateMs: performance.now() - started - readMs,
+              rows: input.entities.length, bytes: input.entities.reduce((sum, row) => sum + Number(row.value_bytes), 0),
+              attendanceRows: input.entities.filter(({ collection_key }) => collection_key === 'attendance').length }))
           }
 
           // Reproduce the payroll preview's integrity checks for the reported
