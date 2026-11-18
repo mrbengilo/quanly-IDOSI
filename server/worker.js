@@ -4332,13 +4332,15 @@ const retainStateCollections = (row, collectionKeys) => {
   return row
 }
 
-const loadStateCollections = async (db, scope, collectionKeys) => {
+const loadStateCollections = async (db, scope, collectionKeys, { screen = '', parameters = [] } = {}) => {
   const collectionFilter = stateCollectionFilter(collectionKeys)
   if (!collectionFilter.keys.length) throw new ApiError(500, 'STATE_COLLECTIONS_INVALID', 'Thiếu danh mục trạng thái cần tải.')
   if (typeof db?.readSystemStateSnapshot === 'function') {
     // VPS SQLite can read the shell, manifests and selected entities in one
     // atomic statement. Keep the paged, version-checked D1 fallback below.
-    const snapshot = await db.readSystemStateSnapshot(scope, collectionFilter.keys)
+    const snapshot = screen
+      ? await db.readSystemStateSnapshot(scope, collectionFilter.keys, screen, parameters)
+      : await db.readSystemStateSnapshot(scope, collectionFilter.keys)
     if (snapshot?.unchanged !== false
       || !Array.isArray(snapshot.manifests)
       || !Array.isArray(snapshot.entities)) {
@@ -8354,7 +8356,7 @@ export const commandStateProjection = (body) => {
   ], '', '', '', false)
   if (type.startsWith('schedule.')) {
     return projection(
-      'command-schedule',
+      ['schedule.assign', 'schedule.replace_day'].includes(type) ? 'command-schedule-day' : 'command-schedule',
       ['schedule', 'shiftDefinitions', 'attendance', 'notifications'],
       'schedule',
       payload.scheduleId || payload.id,
@@ -8557,6 +8559,9 @@ const loadGlobalCommandState = async (db, body, actor = null, commandContext = n
   const projectionStoreId = projection
     ? await commandProjectionStoreId(db, projection, actor)
     : ''
+  const scheduleDay = projection?.screen === 'command-schedule-day'
+    ? { screen: projection.screen, parameters: [String(body.payload?.date || '').trim()] }
+    : undefined
   // Business date of the server clock; without it the full history is loaded.
   const operationalDate = projection?.operationalWindow && commandContext?.now
     ? localDateTimeParts(commandContext.now).date
@@ -8573,7 +8578,7 @@ const loadGlobalCommandState = async (db, body, actor = null, commandContext = n
           operationalDate,
         )
       : projection
-        ? await loadStateCollections(db, 'global', projection.collections)
+        ? await loadStateCollections(db, 'global', projection.collections, scheduleDay)
         : await loadState(db, 'global'))
   const currentVersion = Number(current?.version || 0)
   const staleButRebasable = rebaseAllowed && expectedVersion <= currentVersion
@@ -11639,9 +11644,8 @@ const scheduleCommand = async (db, actor, body, commandContext) => {
       ...(other ? { storeId: other.storeId, date: other.date, start: other.start, end: other.end } : {}),
     })
   }
-  const previousWindows = scheduleWindows(state, { storeId })
-    .filter((window) => window.date === date)
-  const nextWindows = scheduleWindows(proposedState, { storeId })
+  const previousWindows = scheduleWindows(state, { storeId, date })
+  const nextWindows = scheduleWindows(proposedState, { storeId, date })
   for (const window of previousWindows) {
     if (!(state.attendance || []).some((record) => attendanceMatchesWindow(record, window))) continue
     const retained = nextWindows.find((candidate) => sameIdentifier(candidate.employeeId, window.employeeId)
@@ -11658,7 +11662,7 @@ const scheduleCommand = async (db, actor, body, commandContext) => {
     .map((transfer) => supportNotification(state, transfer, 'schedule', actor, commandContext, `Lịch ngày ${date} tại ${store.name} đã cập nhật. Vui lòng xem lịch mới nhất.`))
   const nextState = {
     ...state,
-    notifications: [...scheduleNotifications, ...(state.notifications || [])],
+    notifications: scheduleNotifications.length ? [...scheduleNotifications, ...(state.notifications || [])] : state.notifications || [],
     schedule: proposedSchedule,
     stateVersion: Math.max(1, Number(state.stateVersion) || 1) + 1,
   }
