@@ -263,7 +263,8 @@ jobs:
             const adapter = { database: db }
             const prepare = db.prepare.bind(db)
             const orderWriteScreen = STORE_SCREEN_COLLECTIONS['command-order-create'] ? 'command-order-create' : 'command-order'
-            for (const screen of ['session', 'employee-home', 'employee-orders', 'employee-reward-tasks', orderWriteScreen]) {
+            const identityScreen = STORE_SCREEN_COLLECTIONS['session-identity'] ? 'session-identity' : 'session'
+            for (const screen of [identityScreen, 'employee-home', 'employee-orders', 'employee-reward-tasks', orderWriteScreen]) {
               let snapshotSql = ''
               db.prepare = (sql) => { snapshotSql = sql; return prepare(sql) }
               const started = performance.now()

@@ -148,6 +148,7 @@ export const STORE_SCREEN_COLLECTIONS = Object.freeze({
   // Only an open attendance row is needed to preserve an employee's effective
   // support-transfer store after the scheduled transfer window has ended.
   session: ['attendance', 'schedule', 'shiftDefinitions'],
+  'session-identity': ['attendance', 'schedule', 'shiftDefinitions'],
   'checklist-repair': ['attendance', 'tasks', 'taskAssignmentHistory', 'workCatalogItems', 'shiftDefinitions'],
   initial: ['attendance', 'supportWorkSchedules', 'schedule'],
   'initial-support': [
@@ -682,6 +683,7 @@ const systemStateSnapshotSql = (collectionKeys = [], screen = '') => {
 const storeStateSnapshotSql = (screen = '', operationalWindow = false) => {
   const normalizedScreen = String(screen || '').trim()
   const creatingOrder = normalizedScreen === 'command-order-create'
+  const sessionScreen = normalizedScreen === 'session' || normalizedScreen === 'session-identity'
   const screenCollections = STORE_SCREEN_COLLECTIONS[normalizedScreen]
   const selectedCollections = screenCollections
     ? [...new Set([...STORE_SCREEN_BASE_COLLECTIONS, ...screenCollections])]
@@ -819,7 +821,7 @@ const storeStateSnapshotSql = (screen = '', operationalWindow = false) => {
       )
       AND (params.period_key = '' OR attendance.period_key = params.period_key)`
     : ''
-  const sessionOwnHistorySql = normalizedScreen === 'session'
+  const sessionOwnHistorySql = sessionScreen
     ? `OR entity.employee_id = params.actor_employee_key COLLATE NOCASE`
     : ''
   // Historical support-store violations still affect an employee's home-store
@@ -837,7 +839,7 @@ const storeStateSnapshotSql = (screen = '', operationalWindow = false) => {
     : ''
   // The operational overview only renders open shifts (including overdue ones).
   // Historical checklist snapshots belong to attendance/payroll, not this read.
-  const sessionFilterSql = normalizedScreen === 'overview' || normalizedScreen === 'session' || normalizedScreen === 'initial' || normalizedScreen.startsWith('initial-')
+  const sessionFilterSql = normalizedScreen === 'overview' || sessionScreen || normalizedScreen === 'initial' || normalizedScreen.startsWith('initial-')
     ? `AND (entity.collection_key <> 'attendance' OR (
         entity.open_flag = 1
         ${sessionOwnHistorySql}
@@ -862,16 +864,17 @@ const storeStateSnapshotSql = (screen = '', operationalWindow = false) => {
   // The order workspace needs the attendance identity/date/shift and whether
   // it is open, not historical checklist tasks. Keep identities and aliases
   // even on closed shifts so legacy order references still resolve accurately.
-  const compactAttendance = normalizedScreen === 'employee-orders'
+  const compactChecklists = ['employee-orders', 'session-identity'].includes(normalizedScreen)
+  const compactAttendance = compactChecklists
     ? `entity.collection_key = 'attendance' AND json_valid(entity.value_json)
         AND entity.value_bytes = length(CAST(entity.value_json AS BLOB))
         AND entity.value_bytes <= 1500000
         AND json_type(entity.value_json, '$.checklistSnapshot') IS NOT NULL`
     : '0'
-  const projectedEntityJson = normalizedScreen === 'employee-orders'
+  const projectedEntityJson = compactChecklists
     ? `CASE WHEN ${compactAttendance} THEN json_remove(entity.value_json, '$.checklistSnapshot') ELSE entity.value_json END`
     : 'entity.value_json'
-  const projectedEntityBytes = normalizedScreen === 'employee-orders'
+  const projectedEntityBytes = compactChecklists
     ? `CASE WHEN ${compactAttendance} THEN length(CAST(json_remove(entity.value_json, '$.checklistSnapshot') AS BLOB)) ELSE entity.value_bytes END`
     : 'entity.value_bytes'
   // A new order is prepended. Anchor below the earliest global order so the
@@ -1022,7 +1025,7 @@ const storeStateSnapshotSql = (screen = '', operationalWindow = false) => {
       entity.collection_key = 'stores'
       ${creatingOrder ? "OR entity.collection_key = 'orders'" : ''}
       ${normalizedScreen === 'command-violation' ? "OR entity.collection_key = 'payrollPeriods'" : ''}
-      ${['session', 'schedule', 'employee-home', 'employee-attendance', 'employee-schedule'].includes(normalizedScreen) ? "OR entity.collection_key = 'shiftDefinitions'" : ''}
+      ${sessionScreen || ['schedule', 'employee-home', 'employee-attendance', 'employee-schedule'].includes(normalizedScreen) ? "OR entity.collection_key = 'shiftDefinitions'" : ''}
       OR entity.store_id = params.store_key COLLATE NOCASE
       OR entity.employee_id IN (
         SELECT employee_key COLLATE NOCASE FROM selected_employee_ids
@@ -1460,7 +1463,7 @@ export class SqliteD1 {
     // Operational reads (including a command's pre-write snapshot) may be
     // expensive; their existing version/CAS guards still protect later writes.
     const normalizedScreen = String(screen || '').trim()
-    const authenticationScreen = normalizedScreen === 'session' || normalizedScreen === 'initial' || normalizedScreen.startsWith('initial-')
+    const authenticationScreen = ['session', 'session-identity', 'initial'].includes(normalizedScreen) || normalizedScreen.startsWith('initial-')
     if (this.snapshotReader && !authenticationScreen) {
       return this.readBackgroundSnapshot(storeStateSnapshotSql(screen, windowed),
         [scope, storeId, actorEmployeeId, period, String(operationalDate || '')],

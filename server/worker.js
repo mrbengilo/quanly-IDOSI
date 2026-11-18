@@ -3669,6 +3669,7 @@ const bearerToken = (request) => {
 const requireSession = async (request, db, context, {
   resolveOperationalContext = true,
   stateCollections = null,
+  compactSession = false,
 } = {}) => {
   const token = bearerToken(request)
   if (!token || token.length < 32 || token.length > 512) {
@@ -3726,7 +3727,7 @@ const requireSession = async (request, db, context, {
       && Boolean(candidateStoreId)
     globalStateRow = canUseScopedSession
       ? retainStateCollections(
-          await loadStoreState(db, 'global', candidateStoreId, candidateEmployeeId, 'session'),
+          await loadStoreState(db, 'global', candidateStoreId, candidateEmployeeId, compactSession ? 'session-identity' : 'session'),
           requestedCollections,
         )
       : requestedCollections
@@ -4143,6 +4144,7 @@ export const hydrateStateSnapshot = (row, manifests = [], entities = []) => {
       entityKey: String(entity.entity_key),
       entityOrder: Number(entity.entity_order),
       valueJson: serialized,
+      valueBytes: Number(entity.value_bytes),
       identity: stateEntityIdentity(value, serialized),
       createdAt: entity.created_at,
       updatedAt: entity.updated_at,
@@ -4409,14 +4411,14 @@ const loadInitialStateCollections = async (db, user, collectionKeys) => {
   return row
 }
 
-const requireStateReadSession = async (request, db, context) => {
+const requireStateReadSession = async (request, db, context, { compactSession = false } = {}) => {
   const session = await requireSession(request, db, context, { resolveOperationalContext: false })
   if (session.role === 'admin') return session
   const candidateRole = String(session.active_role || session.role || '')
   const candidateStoreId = String(session.active_store_id || session.store_id || '').trim()
   const candidateEmployeeId = String(session.active_employee_id || session.employee_id || '').trim()
   const operationalRow = ['store_manager', 'employee'].includes(candidateRole) && candidateStoreId
-    ? await loadStoreState(db, 'global', candidateStoreId, candidateEmployeeId, 'session')
+    ? await loadStoreState(db, 'global', candidateStoreId, candidateEmployeeId, compactSession ? 'session-identity' : 'session')
     : await loadStateCollections(db, 'global', SESSION_CONTEXT_STATE_COLLECTIONS)
   const operationalState = parseStoredJson(operationalRow?.value_json, {})
   const assumed = await resolveSessionRole(db, session, operationalState)
@@ -4749,14 +4751,18 @@ const prepareStatePersistencePlan = (current, nextState, now) => {
     const usedKeys = new Set()
     const descriptors = values.map((value) => {
       const valueJson = JSON.stringify(value) ?? 'null'
-      const valueBytes = jsonByteLength(valueJson)
+      const identity = stateEntityIdentity(value, valueJson)
+      const match = queues.get(identity)?.shift() || null
+      // Hydration validated the byte count. Compare the serialized content
+      // even for reused objects, so in-place edits still get persisted.
+      const valueBytes = match?.valueJson === valueJson && Number.isSafeInteger(match.valueBytes)
+        ? match.valueBytes
+        : jsonByteLength(valueJson)
       if (valueBytes > MAX_STATE_ENTITY_BYTES) {
         throw new ApiError(413, 'STATE_ENTITY_TOO_LARGE', `Bản ghi trong ${collectionKey} vượt giới hạn an toàn của D1.`)
       }
-      const identity = stateEntityIdentity(value, valueJson)
-      const match = queues.get(identity)?.shift() || null
       if (match) usedKeys.add(match.entityKey)
-      return { valueJson, valueBytes, match, ...stateEntityQueryDimensions(collectionKey, value) }
+      return { value, valueJson, valueBytes, match }
     })
     assignStateEntityOrders(descriptors)
     if (existingRows.length && usedKeys.size === 0 && !current?._storeEntityProjection) {
@@ -4772,6 +4778,7 @@ const prepareStatePersistencePlan = (current, nextState, now) => {
         || descriptor.match.valueJson !== descriptor.valueJson
         || descriptor.match.entityOrder !== descriptor.entityOrder) {
         if (descriptor.match) replacedEntities.push({ collectionKey, entityKey })
+        const dimensions = stateEntityQueryDimensions(collectionKey, descriptor.value)
         entityUpserts.push({
           collectionKey,
           entityKey,
@@ -4779,12 +4786,7 @@ const prepareStatePersistencePlan = (current, nextState, now) => {
           recordJson: descriptor.valueJson,
           valueBytes: descriptor.valueBytes,
           createdAt: descriptor.match?.createdAt || now,
-          storeId: descriptor.storeId,
-          employeeId: descriptor.employeeId,
-          occurredOn: descriptor.occurredOn,
-          periodKey: descriptor.periodKey,
-          recordId: descriptor.recordId,
-          openFlag: descriptor.openFlag,
+          ...dimensions,
         })
       }
     }
@@ -5765,7 +5767,7 @@ const getSystemScreen = async (request, env, context, screen) => {
     throw new ApiError(400, 'SYSTEM_SCREEN_INVALID', 'Màn hình hệ thống không hợp lệ.')
   }
   const db = getDatabase(env)
-  const user = await requireStateReadSession(request, db, context)
+  const user = await requireStateReadSession(request, db, context, { compactSession: screen === 'employee-orders' })
   const isEmployeeScreen = screen.startsWith('employee-')
   const isAccountScreen = screen === 'account-settings'
   const systemOperator = ['admin', 'business_support'].includes(user.role)
@@ -7922,9 +7924,9 @@ const commitGlobalStateDomainCommand = async (db, actor, current, nextState, opt
     })
   }
   if (changes(results?.[0]) !== 1) {
-    const latest = await loadState(db, 'global')
+    const latestVersion = await globalStateHeadVersion(db)
     throw new ApiError(409, 'VERSION_CONFLICT', 'Dữ liệu đã thay đổi trên máy chủ.', {
-      currentVersion: Number(latest?.version || 0),
+      currentVersion: latestVersion,
     })
   }
   return jsonResponse(responseBody, options.status || 200)
@@ -26354,6 +26356,9 @@ const executeCommand = async (request, env, context) => {
   const db = getDatabase(env)
   const user = await requireSession(request, db, context, {
     stateCollections: SESSION_CONTEXT_STATE_COLLECTIONS,
+    // The command always loads its own inputs after auth. This snapshot supplies
+    // identities, the live shift and scheduling context, not checklist tasks.
+    compactSession: true,
   })
   const body = await readJson(request)
   const updatesAccountAvatar = body.type === 'account_settings.update' && accountSettingsUpdatesAvatar(body)
