@@ -36,6 +36,7 @@ WHERE policy_key IN (
 
 -- Payroll periods can live as external state entities. Remove the retired
 -- snapshot and per-row bonus field while preserving every other field/row.
+-- Scalar subqueries return SQL text. Mark the aggregate as JSON before insertion.
 UPDATE state_entities
 SET
   value_json = CASE
@@ -43,13 +44,10 @@ SET
       json_set(
         json_remove(value_json, '$.kpiSnapshot'),
         '$.rows',
-        COALESCE(
-          (
-            SELECT json_group_array(json(json_remove(row.value, '$.kpiBonus')))
-            FROM json_each(state_entities.value_json, '$.rows') AS row
-          ),
-          json('[]')
-        )
+        json(COALESCE((
+          SELECT json_group_array(json(json_remove(row.value, '$.kpiBonus')))
+          FROM json_each(state_entities.value_json, '$.rows') AS row
+        ), '[]'))
       )
     ELSE json_remove(value_json, '$.kpiSnapshot')
   END,
@@ -59,13 +57,10 @@ SET
         json_set(
           json_remove(value_json, '$.kpiSnapshot'),
           '$.rows',
-          COALESCE(
-            (
-              SELECT json_group_array(json(json_remove(row.value, '$.kpiBonus')))
-              FROM json_each(state_entities.value_json, '$.rows') AS row
-            ),
-            json('[]')
-          )
+          json(COALESCE((
+            SELECT json_group_array(json(json_remove(row.value, '$.kpiBonus')))
+            FROM json_each(state_entities.value_json, '$.rows') AS row
+          ), '[]'))
         )
       ELSE json_remove(value_json, '$.kpiSnapshot')
     END AS BLOB
@@ -93,29 +88,23 @@ SET
       json_set(
         json_remove(value_json, '$.policies.employeeKpiRates'),
         '$.payrollPeriods',
-        COALESCE(
-          (
-            SELECT json_group_array(json(
-              CASE
-                WHEN json_type(period.value, '$.rows') = 'array' THEN
-                  json_set(
-                    json_remove(period.value, '$.kpiSnapshot'),
-                    '$.rows',
-                    COALESCE(
-                      (
-                        SELECT json_group_array(json(json_remove(row.value, '$.kpiBonus')))
-                        FROM json_each(period.value, '$.rows') AS row
-                      ),
-                      json('[]')
-                    )
-                  )
-                ELSE json_remove(period.value, '$.kpiSnapshot')
-              END
-            ))
-            FROM json_each(app_state.value_json, '$.payrollPeriods') AS period
-          ),
-          json('[]')
-        )
+        json(COALESCE((
+          SELECT json_group_array(json(
+            CASE
+              WHEN json_type(period.value, '$.rows') = 'array' THEN
+                json_set(
+                  json_remove(period.value, '$.kpiSnapshot'),
+                  '$.rows',
+                  json(COALESCE((
+                    SELECT json_group_array(json(json_remove(row.value, '$.kpiBonus')))
+                    FROM json_each(period.value, '$.rows') AS row
+                  ), '[]'))
+                )
+              ELSE json_remove(period.value, '$.kpiSnapshot')
+            END
+          ))
+          FROM json_each(app_state.value_json, '$.payrollPeriods') AS period
+        ), '[]'))
       )
     ELSE json_remove(value_json, '$.policies.employeeKpiRates')
   END,
