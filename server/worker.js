@@ -908,6 +908,7 @@ const BUSINESS_SUPPORT_DOMAIN_COMMANDS = new Set([
   'store.update',
   'employee.create',
   'employee.update',
+  'employee.set_work_status',
   'employee.delete',
   'order_information.create',
   'order_information.update',
@@ -9296,7 +9297,7 @@ const employeeStatusValues = (value) => {
   if (['locked', 'tam ngung', 'tam nghi'].includes(normalized)) {
     return { profile: 'Tạm ngưng', account: 'locked' }
   }
-  if (['inactive', 'da nghi viec', 'da nghi lam'].includes(normalized)) {
+  if (['inactive', 'da nghi viec', 'da nghi lam', 'da nghi'].includes(normalized)) {
     return { profile: 'Đã nghỉ việc', account: 'inactive' }
   }
   throw new ApiError(400, 'STATUS_INVALID', 'Trạng thái nhân viên không hợp lệ.')
@@ -10490,7 +10491,11 @@ const normalizeEmployeeProfilePayload = (payload, previous, store, state, unit =
 
 const employeeProfileCommand = async (db, actor, body, commandContext, env) => {
   assertOperationsRole(actor, 'Tài khoản không có quyền quản lý hồ sơ nhân viên.')
-  const operation = body.type.split('.').at(-1)
+  const setWorkStatus = body.type === 'employee.set_work_status'
+  if (setWorkStatus && !['admin', 'business_support'].includes(actor.role)) {
+    throw new ApiError(403, 'ROLE_FORBIDDEN', 'Chỉ Admin hoặc Hỗ trợ KD được đổi trạng thái làm việc.')
+  }
+  const operation = setWorkStatus ? 'update' : body.type.split('.').at(-1)
   if (!['create', 'update', 'delete'].includes(operation)) {
     throw new ApiError(400, 'COMMAND_UNKNOWN', 'Lệnh hồ sơ nhân viên không được hỗ trợ.')
   }
@@ -10509,6 +10514,13 @@ const employeeProfileCommand = async (db, actor, body, commandContext, env) => {
     : employees.find((employee) => sameIdentifier(employee.id || employee.code, employeeId) && !employee.deletedAt)
   if (operation !== 'create' && !previous) throw new ApiError(404, 'EMPLOYEE_NOT_FOUND', 'Không tìm thấy hồ sơ nhân viên.')
   const unit = normalizeEmployeeUnitRequest(profilePayload, previous)
+  if (setWorkStatus && !['office', 'business_support'].includes(unit)) {
+    throw new ApiError(403, 'ROLE_FORBIDDEN', 'Lệnh này áp dụng cho Khối văn phòng và Nhân viên hỗ trợ KD.')
+  }
+  if (setWorkStatus && (payload.status === undefined
+    || Object.keys(payload).some((field) => !['employeeId', 'status'].includes(field)))) {
+    throw new ApiError(400, 'EMPLOYEE_WORK_STATUS_PAYLOAD_INVALID', 'Chỉ gửi mã nhân viên và trạng thái làm việc.')
+  }
   const linkedEmployeeId = operation === 'create' && ['store_manager', 'store'].includes(unit)
     ? String(profilePayload.linkedEmployeeId || '').trim()
     : ''
@@ -10564,7 +10576,7 @@ const employeeProfileCommand = async (db, actor, body, commandContext, env) => {
   ) || (
     ['store', 'store_manager'].includes(unit) && operation === 'delete'
   )
-  if (actor.role === 'business_support' && !supportOperationAllowed) {
+  if (actor.role === 'business_support' && !supportOperationAllowed && !setWorkStatus) {
     throw new ApiError(403, 'BUSINESS_SUPPORT_READ_ONLY', 'Hỗ trợ KD được thêm/sửa nhân viên cửa hàng, Khối văn phòng và Quản lý cửa hàng; chỉ được xóa nhân viên cửa hàng và Quản lý cửa hàng.')
   }
   const requestedIdentityImages = identityImageInputs(profilePayload)
@@ -10581,7 +10593,7 @@ const employeeProfileCommand = async (db, actor, body, commandContext, env) => {
       throw new ApiError(400, 'EMPLOYEE_UNIT_IMMUTABLE', 'Không thể đổi nhóm vai trò của hồ sơ nhân viên.')
     }
   }
-  if (unit === 'business_support' && actor.role !== 'admin') {
+  if (unit === 'business_support' && actor.role !== 'admin' && !setWorkStatus) {
     throw new ApiError(403, 'ROLE_FORBIDDEN', 'Chỉ Admin được quản lý hồ sơ Nhân viên hỗ trợ KD.')
   }
   if (['store_manager', 'office'].includes(unit)
@@ -10589,12 +10601,12 @@ const employeeProfileCommand = async (db, actor, body, commandContext, env) => {
     throw new ApiError(403, 'ROLE_FORBIDDEN', 'Chỉ Admin hoặc Nhân viên hỗ trợ KD được quản lý hồ sơ này.')
   }
   if (previous && unit === 'store') assertOperationalStoreAccess(actor, String(previous.storeId || ''))
-  if (actor.role !== 'admin' && previous && ['da nghi viec', 'inactive'].includes(normalizeTextKey(previous.status))) {
+  if (!setWorkStatus && actor.role !== 'admin' && previous && ['da nghi viec', 'inactive'].includes(normalizeTextKey(previous.status))) {
     throw new ApiError(403, 'EMPLOYEE_REACTIVATE_FORBIDDEN', 'Chỉ Admin được khôi phục nhân viên đã nghỉ việc.')
   }
   // Authorize a departure before any profile validation so a denied actor gets
   // the permission error, not a data-validation error about another field.
-  if (operation === 'update' && profilePayload.status !== undefined) {
+  if (!setWorkStatus && operation === 'update' && profilePayload.status !== undefined) {
     assertEmployeeStatusChangeAllowed(actor, unit, employeeStatusValues(profilePayload.status))
   }
   if (previous && profilePayload.storeId !== undefined
@@ -10746,7 +10758,7 @@ const employeeProfileCommand = async (db, actor, body, commandContext, env) => {
   if (creatingStoreEmployee) {
     for (const field of ['employeeId', 'id', 'code', 'employeeCode']) delete profileInput[field]
   }
-  const profile = normalizeEmployeeProfilePayload(profileInput, previous, store, state, unit)
+  const profile = setWorkStatus ? { ...previous } : normalizeEmployeeProfilePayload(profileInput, previous, store, state, unit)
   const linkedIdentityImages = isPlainRecord(linkedStoreEmployee?.identityImages)
     ? linkedStoreEmployee.identityImages
     : {}
@@ -10757,7 +10769,7 @@ const employeeProfileCommand = async (db, actor, body, commandContext, env) => {
     if (requested.provided) return Boolean(String(requested.value || '').trim())
     return Boolean(previousIdentityImages[side]?.key)
   })
-  if (!hasEffectiveIdentityImages) {
+  if (!setWorkStatus && !hasEffectiveIdentityImages) {
     throw new ApiError(400, 'IDENTITY_IMAGES_REQUIRED', 'Cần tải đủ ảnh mặt trước và mặt sau CCCD của nhân viên.')
   }
   if (supportCreatingStoreEmployee) {
@@ -10779,7 +10791,12 @@ const employeeProfileCommand = async (db, actor, body, commandContext, env) => {
   let requestedStatus = null
   if (operation === 'update' && profilePayload.status !== undefined) {
     requestedStatus = employeeStatusValues(profilePayload.status)
-    assertEmployeeStatusChangeAllowed(actor, unit, requestedStatus)
+    if (!setWorkStatus) assertEmployeeStatusChangeAllowed(actor, unit, requestedStatus)
+    if (setWorkStatus && requestedStatus.account !== 'active' && (
+      sameIdentifier(actor.employee_id, employeeId) || previous.authUserId === actor.user_id
+    )) {
+      throw new ApiError(403, 'EMPLOYEE_SELF_STATUS_FORBIDDEN', 'Bạn không thể tự ngưng quyền đăng nhập của mình.')
+    }
     profile.status = requestedStatus.profile
   }
   const departingNow = operation === 'update' && requestedStatus?.account === 'inactive'
@@ -11015,10 +11032,16 @@ const employeeProfileCommand = async (db, actor, body, commandContext, env) => {
       if (!supportedRoleProfile) {
         throw new ApiError(409, 'EMPLOYEE_ROLE_MISMATCH', 'Vai trò tài khoản không khớp nhóm hồ sơ nhân viên.')
       }
-      if (actor.role !== 'admin' && authTarget.status === 'inactive') {
+      if (setWorkStatus && requestedStatus.account !== 'active' && authTarget.id === actor.user_id) {
+        throw new ApiError(403, 'EMPLOYEE_SELF_STATUS_FORBIDDEN', 'Bạn không thể tự ngưng quyền đăng nhập của mình.')
+      }
+      if (setWorkStatus && actor.role !== 'admin' && legacyPrimaryManagerSource) {
+        throw new ApiError(409, 'EMPLOYEE_SHARED_ACCOUNT_ADMIN_REQUIRED', 'Tài khoản đăng nhập này dùng chung với vai trò Quản lý cửa hàng. Cần Admin đổi trạng thái.')
+      }
+      if (!setWorkStatus && actor.role !== 'admin' && authTarget.status === 'inactive') {
         throw new ApiError(403, 'EMPLOYEE_REACTIVATE_FORBIDDEN', 'Chỉ Admin được khôi phục tài khoản nhân viên đã nghỉ việc.')
       }
-      if (actor.role !== 'admin' && departingNow && authTarget.role !== 'employee') {
+      if (!setWorkStatus && actor.role !== 'admin' && departingNow && authTarget.role !== 'employee') {
         // A legacy promotion moved this login to another role (for example
         // Quản lý CH). Disabling it would also lock a role HTKD cannot manage.
         throw new ApiError(409, 'EMPLOYEE_SHARED_ACCOUNT_ADMIN_REQUIRED', 'Tài khoản đăng nhập của nhân viên này đang dùng cho vai trò khác; cần Admin xử lý việc nghỉ làm.')
@@ -11035,7 +11058,7 @@ const employeeProfileCommand = async (db, actor, body, commandContext, env) => {
       const password = requestedPassword ? await hashPassword(requestedPassword) : null
       const currentAuthVersion = Number(authTarget.version || 1)
       const nextAuthVersion = currentAuthVersion + 1
-      const authStoreId = legacyPrimaryManagerSource ? String(authTarget.store_id || '') : storeId
+      const authStoreId = setWorkStatus ? authTarget.store_id : legacyPrimaryManagerSource ? String(authTarget.store_id || '') : storeId
       responseUser = {
         ...publicUser(authTarget),
         username,
@@ -11080,7 +11103,7 @@ const employeeProfileCommand = async (db, actor, body, commandContext, env) => {
         commandContext.requestId,
       ))
       if (requestedPassword
-        || String(authTarget.store_id || '') !== authStoreId
+        || String(authTarget.store_id || '') !== String(authStoreId || '')
         || (requestedStatus && requestedStatus.account !== 'active')) {
         additionalStatements.push(db.prepare(`
           UPDATE sessions
@@ -11250,13 +11273,15 @@ const employeeProfileCommand = async (db, actor, body, commandContext, env) => {
       }
     }
   }
-  const identityImageUpdate = linkedStoreEmployee
-    ? { identityImages: linkedIdentityImages, uploadedKeys: [], retiredKeys: [] }
-    : ['business_support', 'store_manager', 'office', 'store'].includes(unit)
-      ? await prepareIdentityImageUpdate(env, profilePayload, previous, saved.id, commandContext.now)
-    : { identityImages: {}, uploadedKeys: [], retiredKeys: [] }
-  if (Object.keys(identityImageUpdate.identityImages).length) saved.identityImages = identityImageUpdate.identityImages
-  else delete saved.identityImages
+  const identityImageUpdate = setWorkStatus
+    ? { identityImages: {}, uploadedKeys: [], retiredKeys: [] }
+    : linkedStoreEmployee
+      ? { identityImages: linkedIdentityImages, uploadedKeys: [], retiredKeys: [] }
+      : await prepareIdentityImageUpdate(env, profilePayload, previous, saved.id, commandContext.now)
+  if (!setWorkStatus) {
+    if (Object.keys(identityImageUpdate.identityImages).length) saved.identityImages = identityImageUpdate.identityImages
+    else delete saved.identityImages
+  }
   const nextState = {
     ...state,
     employees: nextEmployees,
@@ -15703,7 +15728,7 @@ const loadOperationalRestoreAudit = async (db, auditLogId, dataType) => {
   const expected = {
     orders: { entityType: 'order', actions: new Set(['order.update', 'order.delete']) },
     attendance: { entityType: 'attendance', actions: new Set(['attendance.update']) },
-    employees: { entityType: 'employee', actions: new Set(['employee.update', 'employee.delete']) },
+    employees: { entityType: 'employee', actions: new Set(['employee.update', 'employee.set_work_status', 'employee.delete']) },
   }[dataType]
   if (!expected
     || String(row.entity_type || '') !== expected.entityType

@@ -65,7 +65,7 @@ it('lets HTKD mark a scoped store employee as departed, locks every login path s
     for (const [username, role, storeId, employeeId] of [
       ['status.e1', 'employee', 'S1', 'E1'], ['status.e2', 'employee', 'S1', 'E2'], ['status.e3', 'employee', 'S1', 'E3'],
       ['status.h1', 'business_support', 'BUSINESS_SUPPORT', 'H1'], ['status.h2', 'business_support', 'BUSINESS_SUPPORT', 'H2'],
-      ['status.ql1', 'store_manager', 'S1', 'QL1'],
+      ['status.ql1', 'store_manager', 'S1', 'QL1'], ['status.vp1', 'employee', 'OFFICE', 'VP1'],
     ]) await command(admin, 'user.create', { username, password: PASSWORD, displayName: username, role, storeId, employeeId }, 201)
     await command(admin, 'employee.update', { employeeId: 'E2', status: 'Tạm ngưng' })
     const htkd = (await login('status.h1')).token
@@ -122,6 +122,38 @@ it('lets HTKD mark a scoped store employee as departed, locks every login path s
     expect((await raw('/api/state', null, e3Racing)).status).toBe(401)
 
     // Linked store role of an HTKD login: only that role is removed.
+    const workStatus = (token, employeeId, status, httpStatus = 200, extra = {}) => command(
+      token, 'employee.set_work_status', { employeeId, status, ...extra }, httpStatus,
+    )
+    const beforeWorkStatus = version()
+    await workStatus(manager, 'VP1', 'Tạm nghỉ', 403)
+    await workStatus(e1Laptop, 'VP1', 'Tạm nghỉ', 401)
+    await workStatus(admin, 'E2', 'Đã nghỉ', 403)
+    await workStatus(htkd, 'H2', 'Tạm nghỉ', 400, { salary: 10_000_000 })
+    await workStatus(htkd, 'H2', 'bad-status', 400)
+    await workStatus(htkd, 'H1', 'Tạm nghỉ', 403)
+    expect(version()).toBe(beforeWorkStatus)
+
+    const officeSession = (await login('status.vp1')).token
+    expect((await workStatus(admin, 'VP1', 'Tạm nghỉ')).employee).toMatchObject({
+      status: 'Tạm ngưng', cccd: '079123456700', phone: '0904444444', identityImages: images,
+    })
+    expect(userRow('VP1').status).toBe('locked')
+    expect((await raw('/api/state', null, officeSession)).status).toBe(401)
+    expect((await workStatus(htkd, 'VP1', 'Đã nghỉ')).employee.status).toBe('Đã nghỉ việc')
+    expect(userRow('VP1').status).toBe('inactive')
+    await workStatus(htkd, 'VP1', 'Đang làm việc')
+    expect((await login('status.vp1')).token).toBeTruthy()
+
+    const supportSession = (await login('status.h2')).token
+    expect((await workStatus(htkd, 'H2', 'Đã nghỉ')).employee).toMatchObject({ status: 'Đã nghỉ việc', phone: '0902222222' })
+    expect((await raw('/api/state', null, supportSession)).status).toBe(401)
+    expect((await login('status.h2', 403)).error.code).toBe('ACCOUNT_DISABLED')
+    await workStatus(htkd, 'H2', 'Đang làm việc')
+    const workStatusAudit = sql("SELECT actor_role, metadata_json FROM audit_log WHERE action = 'employee.set_work_status' AND entity_id = 'H2' ORDER BY id DESC LIMIT 1").get()
+    expect(workStatusAudit.actor_role).toBe('business_support')
+    expect(JSON.parse(workStatusAudit.metadata_json).statusChange).toMatchObject({ from: 'Đã nghỉ việc', to: 'Đang làm việc', unit: 'business_support' })
+
     const h2Base = (await login('status.h2')).token
     const h2Store = (await login('status.h2')).token
     const roles = (await request('/api/session/role', { role: 'employee', storeId: 'S1', employeeId: 'S1-H2' }, h2Store)).user

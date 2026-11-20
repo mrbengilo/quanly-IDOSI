@@ -3129,6 +3129,37 @@ export function AppProvider({ children }) {
     return { ok: true, employee }
   }
 
+  const setEmployeeWorkStatus = async (id, status) => {
+    const actorRole = normalizeAuthRole(state.session?.role)
+    const previous = state.employees.find((employee) => accountKey(employee) === String(id))
+    if (!['admin', 'business_support'].includes(actorRole)
+      || !previous || !['office', 'business_support'].includes(previous.unit)) {
+      return { ok: false, message: 'Tài khoản không có quyền đổi trạng thái làm việc của nhân viên này.' }
+    }
+    const { canonicalEmployeeStatus, EMPLOYEE_STATUS } = await import('../domain/employeeStatus')
+    const next = canonicalEmployeeStatus(status)
+    if (!Object.values(EMPLOYEE_STATUS).includes(next)) return { ok: false, message: 'Trạng thái làm việc không hợp lệ.' }
+    if (next !== EMPLOYEE_STATUS.ACTIVE && sameIdentifier(previous.id, state.session?.employeeId)) {
+      return { ok: false, message: 'Bạn không thể tự ngưng quyền đăng nhập của mình.' }
+    }
+    try {
+      if (apiRef.current.enabled) {
+        await runRemoteDomainCommand('employee.set_work_status', { employeeId: previous.id, status: next })
+      } else {
+        setState((current) => ({
+          ...current,
+          employees: current.employees.map((employee) => accountKey(employee) === String(id)
+            ? { ...employee, status: next }
+            : employee),
+        }))
+      }
+      notify('Đã cập nhật trạng thái làm việc.')
+      return { ok: true }
+    } catch (error) {
+      return { ok: false, message: error.message || 'Không thể cập nhật trạng thái làm việc.' }
+    }
+  }
+
   const deleteEmployee = async (id) => {
     const { deleteEmployeeProfile } = await import('./employeeDeletion')
     return deleteEmployeeProfile({
@@ -6764,6 +6795,7 @@ export function AppProvider({ children }) {
     deleteEmployee,
     addBusinessSupport,
     updateBusinessSupport,
+    setEmployeeWorkStatus,
     deleteBusinessSupport,
     addStoreManager,
     updateStoreManager,

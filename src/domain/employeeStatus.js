@@ -17,7 +17,7 @@ const statusKey = (value) => String(value ?? '')
 
 const ACTIVE_KEYS = new Set(['', 'active', 'dang lam viec', 'dang hoat dong'])
 const PAUSED_KEYS = new Set(['locked', 'tam ngung', 'tam nghi'])
-const DEPARTED_KEYS = new Set(['inactive', 'da nghi viec', 'da nghi lam'])
+const DEPARTED_KEYS = new Set(['inactive', 'da nghi viec', 'da nghi lam', 'da nghi'])
 
 // Unknown values are returned unchanged so they are never silently coerced to
 // "Đang làm việc" when a form is opened and saved.
@@ -27,6 +27,13 @@ export const canonicalEmployeeStatus = (value) => {
   if (PAUSED_KEYS.has(key)) return EMPLOYEE_STATUS.PAUSED
   if (DEPARTED_KEYS.has(key)) return EMPLOYEE_STATUS.DEPARTED
   return String(value)
+}
+
+export const staffWorkStatusLabel = (value) => {
+  const status = canonicalEmployeeStatus(value)
+  if (status === EMPLOYEE_STATUS.PAUSED) return 'Tạm nghỉ'
+  if (status === EMPLOYEE_STATUS.DEPARTED) return 'Đã nghỉ'
+  return status
 }
 
 export const isDepartedEmployeeStatus = (value) => canonicalEmployeeStatus(value) === EMPLOYEE_STATUS.DEPARTED
