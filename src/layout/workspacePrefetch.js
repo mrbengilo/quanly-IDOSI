@@ -8,7 +8,7 @@ import { hasPendingApiRequests } from '../services/idosiApi'
 // aborting a browser fetch cannot interrupt synchronous server snapshot work.
 const DATA_PREFETCH_SYSTEM_SCREENS = new Set([
   'stores', 'employees', 'settings', 'account-settings', 'policies',
-  'order-information-settings', 'work-catalog',
+  'order-information-settings', 'work-catalog', 'business-support-directory', 'office-directory', 'store-managers',
 ])
 const DATA_PREFETCH_STORE_SCREENS = new Set(['orders', 'statistics', 'employees', 'salary-settings', 'settings'])
 const canPrefetchData = (pathname) => {

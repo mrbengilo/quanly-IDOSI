@@ -26,7 +26,10 @@ vi.mock('./pages/admin/RoleManagement', () => {
   mocked.unrelatedModuleStarted()
   return {}
 })
-afterEach(cleanup)
+afterEach(() => {
+  cleanup()
+  mocked.ensureSystemWorkspaceData.mockClear()
+})
 
 it('starts only the selected page module and projection while the shell module is still pending', async () => {
   render(<MemoryRouter initialEntries={['/admin/stores']}><AppRoutes /></MemoryRouter>)
@@ -35,4 +38,16 @@ it('starts only the selected page module and projection while the shell module i
   expect(mocked.unrelatedModuleStarted).not.toHaveBeenCalled()
   expect(screen.queryByText('Selected screen mounted')).toBeNull()
   expect(screen.getByRole('status').textContent).toContain('Đang tải màn hình')
+})
+
+it.each([
+  ['/office', 'office-directory'],
+  ['/office?tab=attendance', 'office-attendance'],
+  ['/office?tab=compensation', 'office'],
+  ['/admin/business-support', 'business-support-directory'],
+  ['/admin/business-support?tab=evaluation', 'business-support-attendance'],
+  ['/admin/business-support?tab=work', 'business-support-work'],
+])('requests only the selected data for %s', async (path, projection) => {
+  render(<MemoryRouter initialEntries={[path]}><AppRoutes /></MemoryRouter>)
+  await waitFor(() => expect(mocked.ensureSystemWorkspaceData).toHaveBeenCalledExactlyOnceWith({ screen: projection }))
 })

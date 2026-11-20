@@ -109,7 +109,7 @@ describe('workspace prefetch scheduling', () => {
   })
 
   it.each([
-    '/office', '/admin/business-support', '/admin/store-managers', '/admin/cashflow',
+    '/admin/cashflow',
     '/admin/reports', '/admin/tasks', '/admin/order-audit', '/admin/data-restore',
     '/admin/business-support-schedule', '/admin/customer-survey',
     '/store/tasks', '/store/schedule', '/store/imports', '/store/expenses',
@@ -126,6 +126,7 @@ describe('workspace prefetch scheduling', () => {
 
   it.each([
     '/admin/stores', '/admin/employees', '/admin/settings', '/account/settings',
+    '/office', '/admin/business-support', '/admin/store-managers',
     '/admin/policies', '/admin/order-information-settings', '/admin/work-catalog',
     '/store/orders', '/store/employees', '/store/salary-settings', '/store/settings',
   ])('warms the lightweight %s data profile in idle time', async (path) => {
@@ -138,10 +139,10 @@ describe('workspace prefetch scheduling', () => {
   it('warms only two adjacent modules when both have heavy data profiles, without scanning ahead', async () => {
     const { preloadModule, prefetchData } = setup({
       pathname: '/admin/store-managers',
-      paths: ['/admin/store-managers', '/office', '/admin/customer-survey', '/admin/stores'],
+      paths: ['/admin/store-managers', '/admin/reports', '/admin/customer-survey', '/admin/stores'],
     })
     await vi.advanceTimersByTimeAsync(10000)
-    expect(preloadModule.mock.calls.map(([path]) => path)).toEqual(['/office', '/admin/customer-survey'])
+    expect(preloadModule.mock.calls.map(([path]) => path)).toEqual(['/admin/reports', '/admin/customer-survey'])
     expect(prefetchData).not.toHaveBeenCalled()
   })
 

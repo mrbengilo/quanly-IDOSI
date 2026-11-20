@@ -94,12 +94,27 @@ it('loads persisted office rewards and legacy completions into history and stati
       entities: database.prepare('SELECT * FROM state_entities ORDER BY collection_key, entity_key').all(),
     })
     const before = persisted()
-    const read = (token) => request('/api/system-screens/office', { token })
+    const read = (token, screen = 'office') => request(`/api/system-screens/${screen}`, { token })
     const projectRewards = (state) => workRewardRows({ ...state, targetUnit: 'office' })
     for (const role of ['admin', 'business_support']) {
       const response = await read(tokens[role])
       expect(response.status, JSON.stringify(response.payload)).toBe(200)
       const state = response.payload.state
+      for (const screen of ['office-directory', 'business-support-directory', 'store-managers']) {
+        const directory = await read(tokens[role], screen)
+        expect(directory.status).toBe(200)
+        expect(directory.payload.state.employees).toHaveLength(source.employees.length)
+        expect(directory.payload.users).toHaveLength(3)
+        for (const key of ['attendance', 'compensationEntries', 'payrollPeriods', 'workCatalogProgress', 'tasks']) {
+          expect(directory.payload.state[key] || [], `${screen} ${key}`).toEqual([])
+        }
+      }
+      const attendanceScreen = await read(tokens[role], 'office-attendance')
+      expect(attendanceScreen.payload.state.attendance).toEqual(expect.arrayContaining([
+        expect.objectContaining({ id: 'A2', shiftName: 'Ca sáng' }),
+      ]))
+      expect(attendanceScreen.payload.state.workCatalogProgress || []).toEqual([])
+      expect(attendanceScreen.payload.users).toBeUndefined()
       expect(state.workCatalogProgress.map(({ id }) => id)).toEqual(['P1', 'PP', 'PV', 'P3'])
       expect(state.tasks.map(({ id }) => id)).toEqual(['LEGACY-TASK', 'VOID-TASK'])
       const rows = projectRewards(state)

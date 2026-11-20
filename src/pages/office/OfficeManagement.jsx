@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import {
   Award,
   CalendarDays,
@@ -164,17 +164,18 @@ const imagePreview = (value) => typeof value === 'string' && value.startsWith('d
 
 const readIdentityImage = async (file) => file ? (await optimizeIdentityImage(file)).dataUrl : ''
 
-export function OfficeManagement() {
-  const app = useApp()
-  const allEmployees = Array.isArray(app.employees) ? app.employees : []
-  const deletedEmployees = Array.isArray(app.deletedEmployees) ? app.deletedEmployees : []
-  const allAttendance = Array.isArray(app.attendance) ? app.attendance : []
-  const { addEmployee, updateEmployee, deleteEmployee, setEmployeeWorkStatus, notify } = app
-  const officeEmployees = allEmployees.filter(isOfficeEmployee)
-  const officeEmployeeIds = new Set(officeEmployees.flatMap((employee) => [String(employee.id || ''), String(employeeCode(employee))]).filter(Boolean))
-  const officeAttendance = allAttendance.filter((record) => officeEmployeeIds.has(String(recordEmployeeId(record))) || isOfficeValue(record.department || record.unitType))
+const EMPTY_ROWS = []
 
-  const [tab, setTab] = useState('employees')
+export function OfficeManagement({ tab: routeTab, onTabChange }) {
+  const app = useApp()
+  const allEmployees = Array.isArray(app.employees) ? app.employees : EMPTY_ROWS
+  const deletedEmployees = Array.isArray(app.deletedEmployees) ? app.deletedEmployees : EMPTY_ROWS
+  const allAttendance = Array.isArray(app.attendance) ? app.attendance : EMPTY_ROWS
+  const { addEmployee, updateEmployee, deleteEmployee, setEmployeeWorkStatus, notify } = app
+  const officeEmployees = useMemo(() => allEmployees.filter(isOfficeEmployee), [allEmployees])
+  const [localTab, setLocalTab] = useState('employees')
+  const tab = routeTab || localTab
+  const setTab = onTabChange || setLocalTab
   const [query, setQuery] = useState('')
   const [statusFilter, setStatusFilter] = useState('all')
   const [employeeDrawer, setEmployeeDrawer] = useState(false)
@@ -208,21 +209,26 @@ export function OfficeManagement() {
     const haystack = [employeeCode(employee), employee.name, employee.cccd, employee.phone, employee.position, employee.workPosition, employee.role, addressLabel(employee)].join(' ').toLowerCase()
     return (!normalizedQuery || haystack.includes(normalizedQuery)) && (statusFilter === 'all' || canonicalEmployeeStatus(employee.status) === statusFilter)
   })
-  const attendanceRows = officeAttendanceViewRows({
-    records: officeAttendance,
-    employees: officeEmployees,
-    fromDate: attendanceFrom,
-    toDate: attendanceTo,
-    employeeId: attendanceEmployeeId,
-  })
-  const attendanceEvaluation = app.policies?.attendanceEvaluation || {}
-  const attendanceSummary = officeAttendanceSummary(attendanceRows, attendanceEvaluation)
-  const attendanceStats = officeAttendanceStatsByEmployee({
-    rows: attendanceRows,
-    employees: officeEmployees,
-    evaluation: attendanceEvaluation,
-    employeeId: attendanceEmployeeId,
-  })
+  const attendanceEvaluation = app.policies?.attendanceEvaluation
+  const attendance = useMemo(() => {
+    if (tab !== 'attendance') return null
+    const ids = new Set(officeEmployees.flatMap((employee) => [String(employee.id || ''), String(employeeCode(employee))]).filter(Boolean))
+    const records = allAttendance.filter((record) => ids.has(String(recordEmployeeId(record))) || isOfficeValue(record.department || record.unitType))
+    const rows = officeAttendanceViewRows({
+      records,
+      employees: officeEmployees,
+      fromDate: attendanceFrom,
+      toDate: attendanceTo,
+      employeeId: attendanceEmployeeId,
+    })
+    return {
+      rows,
+      summary: officeAttendanceSummary(rows, attendanceEvaluation),
+      stats: officeAttendanceStatsByEmployee({
+        rows, employees: officeEmployees, evaluation: attendanceEvaluation, employeeId: attendanceEmployeeId,
+      }),
+    }
+  }, [tab, officeEmployees, allAttendance, attendanceFrom, attendanceTo, attendanceEmployeeId, attendanceEvaluation])
 
   const openEmployeeCreate = () => {
     if (!canCreateOffice) return
@@ -439,7 +445,7 @@ export function OfficeManagement() {
         </Card>
       </>}
 
-      {tab === 'attendance' && <>
+      {attendance && <>
         <Card title="Bộ lọc chấm công" className="filter-card">
           <div className="filter-grid filter-grid--four">
             <Field label="Từ ngày"><Input type="date" value={attendanceFrom} onChange={(event) => setAttendanceFrom(event.target.value)} aria-label="Từ ngày chấm công" /></Field>
@@ -450,34 +456,34 @@ export function OfficeManagement() {
           <InfoNote>Thống kê và đánh giá bên dưới luôn áp dụng đồng thời khoảng thời gian và nhân viên đã chọn.</InfoNote>
         </Card>
         <div className="metric-grid metric-grid--six">
-          <MetricCard label="Lượt điểm danh" value={attendanceSummary.total} suffix="lượt" icon={History} tone="blue" compact />
-          <MetricCard label="Đi sớm" value={attendanceSummary.early} suffix="lượt" icon={Clock3} tone="blue" compact />
-          <MetricCard label="Đúng giờ" value={attendanceSummary.onTime} suffix="lượt" icon={UserCheck} tone="green" compact />
-          <MetricCard label="Đi trễ" value={attendanceSummary.late} suffix="lượt" icon={Clock3} tone="orange" compact />
-          <MetricCard label="Tổng phút đi sớm" value={attendanceSummary.earlyMinutes} suffix="phút" icon={Clock3} tone="blue" compact />
-          <MetricCard label="Tổng phút đi trễ" value={attendanceSummary.lateMinutes} suffix="phút" icon={Clock3} tone="red" compact />
+          <MetricCard label="Lượt điểm danh" value={attendance.summary.total} suffix="lượt" icon={History} tone="blue" compact />
+          <MetricCard label="Đi sớm" value={attendance.summary.early} suffix="lượt" icon={Clock3} tone="blue" compact />
+          <MetricCard label="Đúng giờ" value={attendance.summary.onTime} suffix="lượt" icon={UserCheck} tone="green" compact />
+          <MetricCard label="Đi trễ" value={attendance.summary.late} suffix="lượt" icon={Clock3} tone="orange" compact />
+          <MetricCard label="Tổng phút đi sớm" value={attendance.summary.earlyMinutes} suffix="phút" icon={Clock3} tone="blue" compact />
+          <MetricCard label="Tổng phút đi trễ" value={attendance.summary.lateMinutes} suffix="phút" icon={Clock3} tone="red" compact />
         </div>
         <Card title="Lịch sử chấm công">
           <TableWrap>
             <thead><tr><th>Ngày</th><th>Nhân viên</th><th>Ca làm việc</th><th>Điểm danh vào</th><th>Ra về</th><th>Số giờ</th><th>Tags / Chênh lệch</th><th>Vị trí</th></tr></thead>
             <tbody>
-              {attendanceRows.map((row) => {
+              {attendance.rows.map((row) => {
                 const employeeName = row.employee?.name || row.record.employeeName || row.employeeId
                 const checkInMapUrl = officeLocationMapUrl(row.checkInLocation)
                 const checkOutMapUrl = officeLocationMapUrl(row.checkOutLocation)
                 return <tr key={row.id}><td><strong>{shortDate(row.date)}</strong></td><td><div className="person-cell"><Avatar name={employeeName || 'NV'} src={row.employee?.avatar} employeeId={employeeCode(row.employee) || row.employeeId} color={row.employee?.color} /><span><strong>{employeeName}</strong><small>{employeeCode(row.employee) || row.employeeId} · {row.employee?.position || row.employee?.workPosition || row.employee?.role || 'Nhân viên văn phòng'}</small></span></div></td><td><strong>{row.shiftName}</strong><span className="table-sub">{row.shiftStart || '--:--'}–{row.shiftEnd || '--:--'}</span></td><td><strong>{row.checkIn || '—'}</strong></td><td><strong>{row.checkOut || 'Chưa ra về'}</strong></td><td>{row.workedHours.toFixed(2)} giờ</td><td><Badge tone={attendanceTone(row.arrivalStatus)}>{row.arrivalStatus}</Badge> <Badge tone={attendanceTone(row.departureStatus, true)}>{row.departureStatus}</Badge><span className="table-sub">Sớm {row.earlyMinutes} phút · Trễ {row.lateMinutes} phút</span></td><td><div className="attendance-location-actions">{checkInMapUrl && <a className="attendance-location-link" href={checkInMapUrl} target="_blank" rel="noreferrer" aria-label={`Vị trí vào của ${employeeName} trên Google Maps`}><MapPin size={16} aria-hidden="true" /><span>Xem vị trí vào</span></a>}{checkOutMapUrl && <a className="attendance-location-link" href={checkOutMapUrl} target="_blank" rel="noreferrer" aria-label={`Vị trí ra của ${employeeName} trên Google Maps`}><MapPin size={16} aria-hidden="true" /><span>Xem vị trí ra</span></a>}{!checkInMapUrl && !checkOutMapUrl && <span className="table-note">—</span>}</div></td></tr>
               })}
-              {!attendanceRows.length && <tr><td colSpan="8">Chưa có lịch sử chấm công phù hợp bộ lọc.</td></tr>}
+              {!attendance.rows.length && <tr><td colSpan="8">Chưa có lịch sử chấm công phù hợp bộ lọc.</td></tr>}
             </tbody>
           </TableWrap>
-          <TableFooter shown={attendanceRows.length} total={attendanceRows.length} />
+          <TableFooter shown={attendance.rows.length} total={attendance.rows.length} />
         </Card>
         <Card title="Thống kê và đánh giá chuyên cần theo nhân viên">
           <TableWrap>
             <thead><tr><th>Nhân viên</th><th>Tổng lượt</th><th>Đi sớm</th><th>Đúng giờ</th><th>Đi trễ</th><th>Tổng phút sớm</th><th>Tổng phút trễ</th><th>Tỷ lệ không trễ</th><th>Đánh giá</th></tr></thead>
             <tbody>
-              {attendanceStats.map((item) => <tr key={item.employee.id || employeeCode(item.employee)}><td><div className="person-cell"><Avatar name={item.employee.name} src={item.employee.avatar} employeeId={employeeCode(item.employee)} color={item.employee.color} /><span><strong>{item.employee.name}</strong><small>{employeeCode(item.employee)} · {item.employee.position || item.employee.workPosition || item.employee.role || 'Nhân viên văn phòng'}</small></span></div></td><td>{item.total}</td><td className="blue-text">{item.early}</td><td className="green-text">{item.onTime}</td><td className="orange-text">{item.late}</td><td>{item.earlyMinutes} phút</td><td>{item.lateMinutes} phút</td><td><strong>{item.onTimeRate.toFixed(1)}%</strong></td><td><Badge tone={attendanceEvaluationTone(item.rating)}>{item.rating}</Badge></td></tr>)}
-              {!attendanceStats.length && <tr><td colSpan="9">Chưa có nhân viên phù hợp bộ lọc để đánh giá.</td></tr>}
+              {attendance.stats.map((item) => <tr key={item.employee.id || employeeCode(item.employee)}><td><div className="person-cell"><Avatar name={item.employee.name} src={item.employee.avatar} employeeId={employeeCode(item.employee)} color={item.employee.color} /><span><strong>{item.employee.name}</strong><small>{employeeCode(item.employee)} · {item.employee.position || item.employee.workPosition || item.employee.role || 'Nhân viên văn phòng'}</small></span></div></td><td>{item.total}</td><td className="blue-text">{item.early}</td><td className="green-text">{item.onTime}</td><td className="orange-text">{item.late}</td><td>{item.earlyMinutes} phút</td><td>{item.lateMinutes} phút</td><td><strong>{item.onTimeRate.toFixed(1)}%</strong></td><td><Badge tone={attendanceEvaluationTone(item.rating)}>{item.rating}</Badge></td></tr>)}
+              {!attendance.stats.length && <tr><td colSpan="9">Chưa có nhân viên phù hợp bộ lọc để đánh giá.</td></tr>}
             </tbody>
           </TableWrap>
         </Card>

@@ -1,7 +1,7 @@
 import { cloneElement, Suspense, useLayoutEffect, useState } from 'react'
-import { Navigate, Route, Routes, useLocation } from 'react-router-dom'
+import { Navigate, Route, Routes, useLocation, useSearchParams } from 'react-router-dom'
 import { isOfficeProfile } from './domain/officeProfile'
-import { employeeScreen, storeScreenForPath, systemScreenForPath } from './domain/workspaceScreens'
+import { employeeScreen, personnelTabForPath, storeScreenForPath, systemScreenForPath } from './domain/workspaceScreens'
 import Login from './pages/Login'
 import { useApp } from './state/AppContext'
 
@@ -122,7 +122,7 @@ function RoleGuard({ roles, children, preserveShell = false }) {
     ? assignedStoreId || activeStoreId || ''
     : routeSearch.get('store') || activeStoreId || ''
   const routeStoreScreen = storeScreenForPath(location.pathname)
-  const routeSystemScreen = systemScreenForPath(location.pathname)
+  const routeSystemScreen = systemScreenForPath(location.pathname, location.search)
   const routeStorePeriod = ['overview', 'payroll'].includes(routeStoreScreen)
     ? routeSearch.get('period') || currentVietnamMonth()
     : ''
@@ -279,6 +279,14 @@ function StoreEmployeeRoute({ children }) {
     : children
 }
 
+function PersonnelRoute({ Page }) {
+  const { pathname, search } = useLocation()
+  const [, setSearchParams] = useSearchParams()
+  return <Page tab={personnelTabForPath(pathname, search)} onTabChange={(tab) => {
+    setSearchParams(tab === personnelTabForPath(pathname) ? {} : { tab })
+  }} />
+}
+
 function StoreOverviewRoute() {
   return <StoreOverviewV2 />
 }
@@ -313,10 +321,10 @@ export default function AppRoutes() {
         <Route path="/admin/cashflow" element={<AdminCashflowV2 />} />
         <Route path="/admin/reports" element={<AdminReportsV2 />} />
         <Route path="/admin/employees" element={<SystemEmployees />} />
-        <Route path="/admin/business-support" element={<BusinessSupportManagement />} />
+        <Route path="/admin/business-support" element={<PersonnelRoute Page={BusinessSupportManagement} />} />
         <Route path="/admin/business-support-schedule" element={<BusinessSupportSchedulePage />} />
         <Route path="/admin/store-managers" element={<StoreManagerManagement />} />
-        <Route path="/office" element={<OfficeManagement />} />
+        <Route path="/office" element={<PersonnelRoute Page={OfficeManagement} />} />
         <Route path="/admin/office" element={<Navigate to="/office" replace />} />
         <Route path="/admin/settings" element={<AdminSettings />} />
         <Route path="/admin/policies" element={<PolicySettings />} />

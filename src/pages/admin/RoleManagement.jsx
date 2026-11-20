@@ -372,7 +372,7 @@ function BusinessSupportEvaluation({ attendance, policies, profiles }) {
   </>
 }
 
-function RoleManagement({ roleKey }) {
+function RoleManagement({ roleKey, tab: routeTab, onTabChange }) {
   const app = useApp()
   const config = ROLE_CONFIG[roleKey]
   const profiles = roleProfilesFromApp(app, roleKey)
@@ -401,7 +401,9 @@ function RoleManagement({ roleKey }) {
     ['store', 'business_support'].includes(String(profile.unit || 'store').toLowerCase()) && !profile.deletedAt
     && !managerLinkedEmployeeIds.has(String(profile.id || profile.code || ''))
   ))
-  const [tab, setTab] = useState('profiles')
+  const [localTab, setLocalTab] = useState('profiles')
+  const tab = routeTab || localTab
+  const setTab = onTabChange || setLocalTab
   const [drawerOpen, setDrawerOpen] = useState(false)
   const [editingProfile, setEditingProfile] = useState(null)
   const [pendingDelete, setPendingDelete] = useState(null)
@@ -613,8 +615,8 @@ function RoleManagement({ roleKey }) {
   </div>
 }
 
-export function BusinessSupportManagement() {
-  return <RoleManagement roleKey={ROLE_KEYS.businessSupport} />
+export function BusinessSupportManagement({ tab, onTabChange }) {
+  return <RoleManagement roleKey={ROLE_KEYS.businessSupport} tab={tab} onTabChange={onTabChange} />
 }
 
 export function StoreManagerManagement() {

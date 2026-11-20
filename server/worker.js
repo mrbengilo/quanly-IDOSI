@@ -203,10 +203,15 @@ const SYSTEM_SCREEN_COLLECTIONS = Object.freeze({
   reports: ['stores', 'employees', 'orders', 'expenseEntries', 'violationRefunds'],
   employees: ['stores', 'employees', 'deletedEmployees'],
   'business-support': ['stores', 'employees', 'deletedEmployees', 'attendance'],
+  'business-support-directory': ['stores', 'employees', 'deletedEmployees'],
+  'business-support-attendance': ['employees', 'attendance'],
+  'business-support-work': ['employees', 'supportWorkAssignments'],
   'business-support-schedule': [
     'employees', 'supportWorkSchedules', 'supportWorkScheduleHistory', 'supportSchedulePresets', 'supportSchedulePresetHistory', 'schedule',
   ],
-  'store-managers': ['stores', 'employees', 'deletedEmployees', 'attendance'],
+  'store-managers': ['stores', 'employees', 'deletedEmployees'],
+  'office-directory': ['employees', 'deletedEmployees'],
+  'office-attendance': ['employees', 'attendance'],
   office: [
     'employees', 'deletedEmployees', 'attendance', 'supportWorkAssignments', 'supportWorkSchedules',
     'salaryAdjustments', 'compensationEntries', 'violations', 'payrollPeriods', 'workCatalogProgress', 'tasks',
@@ -319,7 +324,7 @@ const SYSTEM_SCREEN_NAMES = new Set(Object.keys(SYSTEM_SCREEN_COLLECTIONS))
 // Account rows are only needed where personnel logins can be viewed or edited.
 // Other screens already receive the signed-in user in the response envelope.
 const SYSTEM_ACCOUNT_DIRECTORY_SCREENS = new Set([
-  'employees', 'business-support', 'store-managers', 'office',
+  'employees', 'business-support', 'business-support-directory', 'store-managers', 'office', 'office-directory',
 ])
 const HISTORY_COLLECTIONS = Object.freeze({
   orders: 'orders',
@@ -5805,9 +5810,11 @@ const getSystemScreen = async (request, env, context, screen) => {
         )
       : loadStateCollections(db, 'global', collections.length ? collections : ['stores'])
   let row = await readScreen()
-  // The order and transfer workspaces use attendance for shift identity and
-  // lifecycle only. Repair belongs to screens and commands that use checklists.
-  if (collections.includes('attendance') && !['support-overview', 'support-transfers', 'employee-orders'].includes(screen)) {
+  // These read-only attendance views use shift times and lifecycle, not task checklists.
+  const attendanceWithoutChecklists = [
+    'support-overview', 'support-transfers', 'employee-orders', 'business-support-attendance', 'office-attendance',
+  ]
+  if (collections.includes('attendance') && !attendanceWithoutChecklists.includes(screen)) {
     if (useEmployeeStoreProjection) {
       row = await repairEmployeeScreenStateIfNeeded(db, user, context, row, screen, taskWindowDate)
     } else if (await hasPendingOpenStoreAttendanceChecklistRepair(db)) {
