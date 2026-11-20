@@ -65,15 +65,15 @@ const PERSONNEL_TABS = {
   },
 }
 
-export const personnelTabForPath = (pathname, search = '') => {
+export const personnelTabForPath = (pathname, search = '', role = 'admin') => {
   const tabs = PERSONNEL_TABS[pathname]
   if (!tabs) return ''
   const tab = new URLSearchParams(search).get('tab')
-  return Object.hasOwn(tabs, tab) ? tab : Object.keys(tabs)[0]
+  return Object.hasOwn(tabs, tab) && (tab !== 'work' || role === 'admin') ? tab : Object.keys(tabs)[0]
 }
 
-export const systemScreenForPath = (pathname, search = '') => {
-  const tab = personnelTabForPath(pathname, search)
+export const systemScreenForPath = (pathname, search = '', role) => {
+  const tab = personnelTabForPath(pathname, search, role)
   return tab ? PERSONNEL_TABS[pathname][tab] : SYSTEM_SCREEN_BY_PATH[String(pathname || '')] || ''
 }
 

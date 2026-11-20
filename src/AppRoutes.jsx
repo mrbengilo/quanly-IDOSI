@@ -122,7 +122,7 @@ function RoleGuard({ roles, children, preserveShell = false }) {
     ? assignedStoreId || activeStoreId || ''
     : routeSearch.get('store') || activeStoreId || ''
   const routeStoreScreen = storeScreenForPath(location.pathname)
-  const routeSystemScreen = systemScreenForPath(location.pathname, location.search)
+  const routeSystemScreen = systemScreenForPath(location.pathname, location.search, role)
   const routeStorePeriod = ['overview', 'payroll'].includes(routeStoreScreen)
     ? routeSearch.get('period') || currentVietnamMonth()
     : ''
@@ -281,8 +281,9 @@ function StoreEmployeeRoute({ children }) {
 
 function PersonnelRoute({ Page }) {
   const { pathname, search } = useLocation()
+  const { session } = useApp()
   const [, setSearchParams] = useSearchParams()
-  return <Page tab={personnelTabForPath(pathname, search)} onTabChange={(tab) => {
+  return <Page tab={personnelTabForPath(pathname, search, canonicalRole(session?.role))} onTabChange={(tab) => {
     setSearchParams(tab === personnelTabForPath(pathname) ? {} : { tab })
   }} />
 }

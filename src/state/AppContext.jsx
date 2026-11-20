@@ -1185,10 +1185,10 @@ const browserStoreWorkspaceScreen = () => {
   return screen === 'shifts' ? 'schedule' : screen
 }
 
-const browserSystemWorkspaceScreen = () => {
+const browserSystemWorkspaceScreen = (role) => {
   if (typeof window === 'undefined') return ''
   const [route, search] = String(window.location?.hash || '').replace(/^#/u, '').split('?')
-  return systemScreenForPath(route, search)
+  return systemScreenForPath(route, search, role)
 }
 
 const accountKey = (account = {}) => String(account.id || account.code || account.employeeCode || '')
@@ -1993,7 +1993,7 @@ export function AppProvider({ children }) {
       || activeStoreIdRef.current
       || readRememberedActiveStore(expectedUser)
     const role = normalizeAuthRole(expectedUser?.role)
-    const systemScreen = browserSystemWorkspaceScreen() || (role === 'employee' ? 'employee-home' : '')
+    const systemScreen = browserSystemWorkspaceScreen(role) || (role === 'employee' ? 'employee-home' : '')
     const useStoreProjection = Boolean(preferredStoreId) && (
       role === 'store_manager'
       || (isSystemRole(role) && browserUsesStoreWorkspace())

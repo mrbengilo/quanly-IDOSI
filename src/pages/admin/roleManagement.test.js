@@ -263,9 +263,10 @@ describe('admin role management helpers', () => {
 })
 
 describe('role management permissions and form', () => {
-  it('lets Business Support inspect the list but hides every account mutation control', async () => {
+  it('lets Business Support change a coworker’s work status with account editing reserved for Admin', async () => {
     mocked.app = {
       ...baseApp('business_support'),
+      setEmployeeWorkStatus: vi.fn(),
       businessSupportEmployees: [{
         id: 'HTKD-001',
         name: 'Nguyễn An',
@@ -288,7 +289,7 @@ describe('role management permissions and form', () => {
 
     expect(screen.getByText('Nguyễn An')).toBeTruthy()
     await waitFor(() => expect(screen.getByAltText('Ảnh đại diện Nguyễn An').getAttribute('src')).toBe('blob:thumbnail-HTKD-001'))
-    expect(screen.getByText('Chỉ Admin được quản lý tài khoản; Hỗ trợ KD được xem danh sách và lịch sử liên quan.')).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Đổi trạng thái làm việc của Nguyễn An' })).toBeTruthy()
     expect(screen.queryByRole('button', { name: /Thêm tài khoản/i })).toBeNull()
     expect(screen.queryByRole('button', { name: /Sửa Nguyễn An/i })).toBeNull()
     expect(screen.queryByRole('button', { name: /Xóa Nguyễn An/i })).toBeNull()
