@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import {
   Award,
   CalendarDays,
@@ -32,6 +32,8 @@ import {
 } from '../../components/UI'
 import { AddressAutocomplete } from '../../components/StructuredAddressAutocomplete'
 import { IdentityDocumentViewer } from '../../components/IdentityDocumentViewer'
+import { StaffWorkStatus } from '../../components/StaffWorkStatus'
+import { canonicalEmployeeStatus, EMPLOYEE_STATUS, staffWorkStatusLabel } from '../../domain/employeeStatus'
 import { optimizeIdentityImage } from '../../domain/identityImage'
 import { apiGetIdentityImage } from '../../services/idosiApi'
 import { useApp } from '../../state/AppContext'
@@ -56,8 +58,6 @@ import {
   withEmploymentWorkingTime,
   workingTimePayload,
 } from './workingTime'
-
-const EMPLOYEE_STATUSES = ['Đang làm việc', 'Tạm ngưng', 'Đã nghỉ việc']
 
 const emptyEmployee = {
   code: '',
@@ -137,12 +137,6 @@ const employeeToForm = (employee = {}) => {
   }
 }
 
-const employeeStatusTone = (status) => {
-  if (status === 'Đang làm việc') return 'green'
-  if (status === 'Đã nghỉ việc') return 'red'
-  return 'orange'
-}
-
 const recordEmployeeId = (record = {}) => record.employeeId || record.employeeCode || record.staffId || record.userId || ''
 const attendanceTone = (label, departure = false) => {
   const source = normalizeText(label)
@@ -170,17 +164,18 @@ const imagePreview = (value) => typeof value === 'string' && value.startsWith('d
 
 const readIdentityImage = async (file) => file ? (await optimizeIdentityImage(file)).dataUrl : ''
 
-export function OfficeManagement() {
-  const app = useApp()
-  const allEmployees = Array.isArray(app.employees) ? app.employees : []
-  const deletedEmployees = Array.isArray(app.deletedEmployees) ? app.deletedEmployees : []
-  const allAttendance = Array.isArray(app.attendance) ? app.attendance : []
-  const { addEmployee, updateEmployee, deleteEmployee, notify } = app
-  const officeEmployees = allEmployees.filter(isOfficeEmployee)
-  const officeEmployeeIds = new Set(officeEmployees.flatMap((employee) => [String(employee.id || ''), String(employeeCode(employee))]).filter(Boolean))
-  const officeAttendance = allAttendance.filter((record) => officeEmployeeIds.has(String(recordEmployeeId(record))) || isOfficeValue(record.department || record.unitType))
+const EMPTY_ROWS = []
 
-  const [tab, setTab] = useState('employees')
+export function OfficeManagement({ tab: routeTab, onTabChange }) {
+  const app = useApp()
+  const allEmployees = Array.isArray(app.employees) ? app.employees : EMPTY_ROWS
+  const deletedEmployees = Array.isArray(app.deletedEmployees) ? app.deletedEmployees : EMPTY_ROWS
+  const allAttendance = Array.isArray(app.attendance) ? app.attendance : EMPTY_ROWS
+  const { addEmployee, updateEmployee, deleteEmployee, setEmployeeWorkStatus, notify } = app
+  const officeEmployees = useMemo(() => allEmployees.filter(isOfficeEmployee), [allEmployees])
+  const [localTab, setLocalTab] = useState('employees')
+  const tab = routeTab || localTab
+  const setTab = onTabChange || setLocalTab
   const [query, setQuery] = useState('')
   const [statusFilter, setStatusFilter] = useState('all')
   const [employeeDrawer, setEmployeeDrawer] = useState(false)
@@ -212,23 +207,28 @@ export function OfficeManagement() {
   const normalizedQuery = normalizeText(query)
   const filteredEmployees = officeEmployees.filter((employee) => {
     const haystack = [employeeCode(employee), employee.name, employee.cccd, employee.phone, employee.position, employee.workPosition, employee.role, addressLabel(employee)].join(' ').toLowerCase()
-    return (!normalizedQuery || haystack.includes(normalizedQuery)) && (statusFilter === 'all' || employee.status === statusFilter)
+    return (!normalizedQuery || haystack.includes(normalizedQuery)) && (statusFilter === 'all' || canonicalEmployeeStatus(employee.status) === statusFilter)
   })
-  const attendanceRows = officeAttendanceViewRows({
-    records: officeAttendance,
-    employees: officeEmployees,
-    fromDate: attendanceFrom,
-    toDate: attendanceTo,
-    employeeId: attendanceEmployeeId,
-  })
-  const attendanceEvaluation = app.policies?.attendanceEvaluation || {}
-  const attendanceSummary = officeAttendanceSummary(attendanceRows, attendanceEvaluation)
-  const attendanceStats = officeAttendanceStatsByEmployee({
-    rows: attendanceRows,
-    employees: officeEmployees,
-    evaluation: attendanceEvaluation,
-    employeeId: attendanceEmployeeId,
-  })
+  const attendanceEvaluation = app.policies?.attendanceEvaluation
+  const attendance = useMemo(() => {
+    if (tab !== 'attendance') return null
+    const ids = new Set(officeEmployees.flatMap((employee) => [String(employee.id || ''), String(employeeCode(employee))]).filter(Boolean))
+    const records = allAttendance.filter((record) => ids.has(String(recordEmployeeId(record))) || isOfficeValue(record.department || record.unitType))
+    const rows = officeAttendanceViewRows({
+      records,
+      employees: officeEmployees,
+      fromDate: attendanceFrom,
+      toDate: attendanceTo,
+      employeeId: attendanceEmployeeId,
+    })
+    return {
+      rows,
+      summary: officeAttendanceSummary(rows, attendanceEvaluation),
+      stats: officeAttendanceStatsByEmployee({
+        rows, employees: officeEmployees, evaluation: attendanceEvaluation, employeeId: attendanceEmployeeId,
+      }),
+    }
+  }, [tab, officeEmployees, allAttendance, attendanceFrom, attendanceTo, attendanceEmployeeId, attendanceEvaluation])
 
   const openEmployeeCreate = () => {
     if (!canCreateOffice) return
@@ -392,9 +392,8 @@ export function OfficeManagement() {
     setPendingDelete(null)
   }
 
-  const activeCount = officeEmployees.filter((employee) => employee.status === 'Đang làm việc').length
-  const pausedCount = officeEmployees.filter((employee) => employee.status === 'Tạm ngưng' || employee.status === 'Tạm nghỉ').length
-  const resignedCount = officeEmployees.filter((employee) => employee.status === 'Đã nghỉ việc').length
+  const countByStatus = (status) => officeEmployees.filter((employee) => canonicalEmployeeStatus(employee.status) === status).length
+  const canSetWorkStatus = ['admin', 'business_support', 'manager'].includes(app.session?.role)
 
   if (app.session?.role === 'store_manager') {
     return <div className="page"><PageHeader title="KHÔNG CÓ QUYỀN TRUY CẬP" subtitle="Tài khoản Quản lý không được truy cập Khối văn phòng." icon={Users} /></div>
@@ -418,17 +417,17 @@ export function OfficeManagement() {
       {tab === 'employees' && <>
         <div className="metric-grid metric-grid--four">
           <MetricCard label="Tổng nhân viên" value={officeEmployees.length} suffix="nhân viên" icon={Users} tone="blue" compact />
-          <MetricCard label="Đang làm việc" value={activeCount} suffix="nhân viên" icon={UserCheck} tone="green" compact />
-          <MetricCard label="Tạm ngưng" value={pausedCount} suffix="nhân viên" icon={Clock3} tone="orange" compact />
-          <MetricCard label="Đã nghỉ việc" value={resignedCount} suffix="nhân viên" icon={Users} tone="red" compact />
+          <MetricCard label="Đang làm việc" value={countByStatus(EMPLOYEE_STATUS.ACTIVE)} suffix="nhân viên" icon={UserCheck} tone="green" compact />
+          <MetricCard label="Tạm nghỉ" value={countByStatus(EMPLOYEE_STATUS.PAUSED)} suffix="nhân viên" icon={Clock3} tone="orange" compact />
+          <MetricCard label="Đã nghỉ" value={countByStatus(EMPLOYEE_STATUS.DEPARTED)} suffix="nhân viên" icon={Users} tone="red" compact />
         </div>
         <Card>
           <div className="card__subheader">
-            <div className="filter-pills"><button className={statusFilter === 'all' ? 'active' : ''} onClick={() => setStatusFilter('all')}>Tất cả ({officeEmployees.length})</button>{EMPLOYEE_STATUSES.map((status) => <button key={status} className={statusFilter === status ? 'active' : ''} onClick={() => setStatusFilter(status)}>{status}</button>)}</div>
+            <div className="filter-pills"><button className={statusFilter === 'all' ? 'active' : ''} onClick={() => setStatusFilter('all')}>Tất cả ({officeEmployees.length})</button>{Object.values(EMPLOYEE_STATUS).map((status) => <button key={status} className={statusFilter === status ? 'active' : ''} onClick={() => setStatusFilter(status)}>{staffWorkStatusLabel(status)}</button>)}</div>
             <div><SearchInput value={query} onChange={setQuery} placeholder="Tìm nhân viên..." />{canCreateOffice && <Button icon={Plus} onClick={openEmployeeCreate}>Thêm nhân viên</Button>}</div>
           </div>
           <TableWrap>
-            <thead><tr><th>Mã nhân viên</th><th>Nhân viên</th><th>Loại nhân viên</th><th>Ngày bắt đầu</th><th>CCCD</th><th>Số điện thoại</th><th>Địa chỉ</th><th>Vị trí</th><th>Ảnh CCCD</th><th>Trạng thái</th>{canManageOffice && <th>Thao tác</th>}</tr></thead>
+            <thead><tr><th>Mã nhân viên</th><th>Nhân viên</th><th>Loại nhân viên</th><th>Ngày bắt đầu</th><th>CCCD</th><th>Số điện thoại</th><th>Địa chỉ</th><th>Vị trí</th><th>Ảnh CCCD</th><th>Trạng thái làm việc</th>{canManageOffice && <th>Thao tác</th>}</tr></thead>
             <tbody>
               {filteredEmployees.map((employee) => {
                 const type = officeEmployeeType(employee)
@@ -437,7 +436,7 @@ export function OfficeManagement() {
                   back: employee.identityImages?.back || employee.cccdBackImage,
                 }
                 const imageCount = Object.values(images).filter(Boolean).length
-                return <tr key={employee.id || employeeCode(employee)}><td><strong>{employeeCode(employee)}</strong></td><td><div className="person-cell"><Avatar name={employee.name} src={employee.avatar} employeeId={employeeCode(employee)} color={employee.color} /><span><strong>{employee.name}</strong><small>{employee.username || 'Chưa có tên đăng nhập'}</small></span></div></td><td><Badge tone={type === 'Full-Time' ? 'green' : type === 'Part-Time' ? 'blue' : 'orange'}>{type}</Badge></td><td><strong>{shortYearDate(employee.startDate || employee.joinDate)}</strong></td><td>{employee.cccd || employee.citizenId || '—'}</td><td>{employee.phone || '—'}</td><td className="address-cell">{addressLabel(employee)}</td><td>{employee.position || employee.workPosition || employee.role || '—'}</td><td><div className="identity-image-actions identity-image-actions--stable"><Badge tone={imageCount === 2 ? 'green' : 'orange'}>{imageCount}/2 ảnh</Badge>{Object.entries(images).map(([side, image]) => image ? <button key={side} type="button" onClick={() => viewSavedIdentityImage(side, employee)} disabled={Boolean(viewingSide)} aria-label={`Xem ${side === 'front' ? 'mặt trước' : 'mặt sau'} CCCD của ${employee.name}`} title={`Xem ${side === 'front' ? 'mặt trước' : 'mặt sau'} CCCD`}><Eye size={16} /><span>{side === 'front' ? 'Trước' : 'Sau'}</span></button> : null)}</div></td><td><Badge tone={employeeStatusTone(employee.status)}>{employee.status || EMPLOYEE_STATUSES[0]}</Badge></td>{canManageOffice && <td><div className="row-actions"><button onClick={() => openEmployeeEdit(employee)} aria-label={`Sửa ${employee.name}`}><Edit3 /></button>{canDeleteOffice && <button className="danger" onClick={() => setPendingDelete(employee)} aria-label={`Xóa ${employee.name}`}><Trash2 /></button>}</div></td>}</tr>
+                return <tr key={employee.id || employeeCode(employee)}><td><strong>{employeeCode(employee)}</strong></td><td><div className="person-cell"><Avatar name={employee.name} src={employee.avatar} employeeId={employeeCode(employee)} color={employee.color} /><span><strong>{employee.name}</strong><small>{employee.username || 'Chưa có tên đăng nhập'}</small></span></div></td><td><Badge tone={type === 'Full-Time' ? 'green' : type === 'Part-Time' ? 'blue' : 'orange'}>{type}</Badge></td><td><strong>{shortYearDate(employee.startDate || employee.joinDate)}</strong></td><td>{employee.cccd || employee.citizenId || '—'}</td><td>{employee.phone || '—'}</td><td className="address-cell">{addressLabel(employee)}</td><td>{employee.position || employee.workPosition || employee.role || '—'}</td><td><div className="identity-image-actions identity-image-actions--stable"><Badge tone={imageCount === 2 ? 'green' : 'orange'}>{imageCount}/2 ảnh</Badge>{Object.entries(images).map(([side, image]) => image ? <button key={side} type="button" onClick={() => viewSavedIdentityImage(side, employee)} disabled={Boolean(viewingSide)} aria-label={`Xem ${side === 'front' ? 'mặt trước' : 'mặt sau'} CCCD của ${employee.name}`} title={`Xem ${side === 'front' ? 'mặt trước' : 'mặt sau'} CCCD`}><Eye size={16} /><span>{side === 'front' ? 'Trước' : 'Sau'}</span></button> : null)}</div></td><td><StaffWorkStatus employee={employee} onSave={canSetWorkStatus ? setEmployeeWorkStatus : undefined} /></td>{canManageOffice && <td><div className="row-actions"><button onClick={() => openEmployeeEdit(employee)} aria-label={`Sửa ${employee.name}`}><Edit3 /></button>{canDeleteOffice && <button className="danger" onClick={() => setPendingDelete(employee)} aria-label={`Xóa ${employee.name}`}><Trash2 /></button>}</div></td>}</tr>
               })}
               {!filteredEmployees.length && <tr><td colSpan={canManageOffice ? 11 : 10}>Chưa có nhân viên văn phòng phù hợp.</td></tr>}
             </tbody>
@@ -446,7 +445,7 @@ export function OfficeManagement() {
         </Card>
       </>}
 
-      {tab === 'attendance' && <>
+      {attendance && <>
         <Card title="Bộ lọc chấm công" className="filter-card">
           <div className="filter-grid filter-grid--four">
             <Field label="Từ ngày"><Input type="date" value={attendanceFrom} onChange={(event) => setAttendanceFrom(event.target.value)} aria-label="Từ ngày chấm công" /></Field>
@@ -457,34 +456,34 @@ export function OfficeManagement() {
           <InfoNote>Thống kê và đánh giá bên dưới luôn áp dụng đồng thời khoảng thời gian và nhân viên đã chọn.</InfoNote>
         </Card>
         <div className="metric-grid metric-grid--six">
-          <MetricCard label="Lượt điểm danh" value={attendanceSummary.total} suffix="lượt" icon={History} tone="blue" compact />
-          <MetricCard label="Đi sớm" value={attendanceSummary.early} suffix="lượt" icon={Clock3} tone="blue" compact />
-          <MetricCard label="Đúng giờ" value={attendanceSummary.onTime} suffix="lượt" icon={UserCheck} tone="green" compact />
-          <MetricCard label="Đi trễ" value={attendanceSummary.late} suffix="lượt" icon={Clock3} tone="orange" compact />
-          <MetricCard label="Tổng phút đi sớm" value={attendanceSummary.earlyMinutes} suffix="phút" icon={Clock3} tone="blue" compact />
-          <MetricCard label="Tổng phút đi trễ" value={attendanceSummary.lateMinutes} suffix="phút" icon={Clock3} tone="red" compact />
+          <MetricCard label="Lượt điểm danh" value={attendance.summary.total} suffix="lượt" icon={History} tone="blue" compact />
+          <MetricCard label="Đi sớm" value={attendance.summary.early} suffix="lượt" icon={Clock3} tone="blue" compact />
+          <MetricCard label="Đúng giờ" value={attendance.summary.onTime} suffix="lượt" icon={UserCheck} tone="green" compact />
+          <MetricCard label="Đi trễ" value={attendance.summary.late} suffix="lượt" icon={Clock3} tone="orange" compact />
+          <MetricCard label="Tổng phút đi sớm" value={attendance.summary.earlyMinutes} suffix="phút" icon={Clock3} tone="blue" compact />
+          <MetricCard label="Tổng phút đi trễ" value={attendance.summary.lateMinutes} suffix="phút" icon={Clock3} tone="red" compact />
         </div>
         <Card title="Lịch sử chấm công">
           <TableWrap>
             <thead><tr><th>Ngày</th><th>Nhân viên</th><th>Ca làm việc</th><th>Điểm danh vào</th><th>Ra về</th><th>Số giờ</th><th>Tags / Chênh lệch</th><th>Vị trí</th></tr></thead>
             <tbody>
-              {attendanceRows.map((row) => {
+              {attendance.rows.map((row) => {
                 const employeeName = row.employee?.name || row.record.employeeName || row.employeeId
                 const checkInMapUrl = officeLocationMapUrl(row.checkInLocation)
                 const checkOutMapUrl = officeLocationMapUrl(row.checkOutLocation)
                 return <tr key={row.id}><td><strong>{shortDate(row.date)}</strong></td><td><div className="person-cell"><Avatar name={employeeName || 'NV'} src={row.employee?.avatar} employeeId={employeeCode(row.employee) || row.employeeId} color={row.employee?.color} /><span><strong>{employeeName}</strong><small>{employeeCode(row.employee) || row.employeeId} · {row.employee?.position || row.employee?.workPosition || row.employee?.role || 'Nhân viên văn phòng'}</small></span></div></td><td><strong>{row.shiftName}</strong><span className="table-sub">{row.shiftStart || '--:--'}–{row.shiftEnd || '--:--'}</span></td><td><strong>{row.checkIn || '—'}</strong></td><td><strong>{row.checkOut || 'Chưa ra về'}</strong></td><td>{row.workedHours.toFixed(2)} giờ</td><td><Badge tone={attendanceTone(row.arrivalStatus)}>{row.arrivalStatus}</Badge> <Badge tone={attendanceTone(row.departureStatus, true)}>{row.departureStatus}</Badge><span className="table-sub">Sớm {row.earlyMinutes} phút · Trễ {row.lateMinutes} phút</span></td><td><div className="attendance-location-actions">{checkInMapUrl && <a className="attendance-location-link" href={checkInMapUrl} target="_blank" rel="noreferrer" aria-label={`Vị trí vào của ${employeeName} trên Google Maps`}><MapPin size={16} aria-hidden="true" /><span>Xem vị trí vào</span></a>}{checkOutMapUrl && <a className="attendance-location-link" href={checkOutMapUrl} target="_blank" rel="noreferrer" aria-label={`Vị trí ra của ${employeeName} trên Google Maps`}><MapPin size={16} aria-hidden="true" /><span>Xem vị trí ra</span></a>}{!checkInMapUrl && !checkOutMapUrl && <span className="table-note">—</span>}</div></td></tr>
               })}
-              {!attendanceRows.length && <tr><td colSpan="8">Chưa có lịch sử chấm công phù hợp bộ lọc.</td></tr>}
+              {!attendance.rows.length && <tr><td colSpan="8">Chưa có lịch sử chấm công phù hợp bộ lọc.</td></tr>}
             </tbody>
           </TableWrap>
-          <TableFooter shown={attendanceRows.length} total={attendanceRows.length} />
+          <TableFooter shown={attendance.rows.length} total={attendance.rows.length} />
         </Card>
         <Card title="Thống kê và đánh giá chuyên cần theo nhân viên">
           <TableWrap>
             <thead><tr><th>Nhân viên</th><th>Tổng lượt</th><th>Đi sớm</th><th>Đúng giờ</th><th>Đi trễ</th><th>Tổng phút sớm</th><th>Tổng phút trễ</th><th>Tỷ lệ không trễ</th><th>Đánh giá</th></tr></thead>
             <tbody>
-              {attendanceStats.map((item) => <tr key={item.employee.id || employeeCode(item.employee)}><td><div className="person-cell"><Avatar name={item.employee.name} src={item.employee.avatar} employeeId={employeeCode(item.employee)} color={item.employee.color} /><span><strong>{item.employee.name}</strong><small>{employeeCode(item.employee)} · {item.employee.position || item.employee.workPosition || item.employee.role || 'Nhân viên văn phòng'}</small></span></div></td><td>{item.total}</td><td className="blue-text">{item.early}</td><td className="green-text">{item.onTime}</td><td className="orange-text">{item.late}</td><td>{item.earlyMinutes} phút</td><td>{item.lateMinutes} phút</td><td><strong>{item.onTimeRate.toFixed(1)}%</strong></td><td><Badge tone={attendanceEvaluationTone(item.rating)}>{item.rating}</Badge></td></tr>)}
-              {!attendanceStats.length && <tr><td colSpan="9">Chưa có nhân viên phù hợp bộ lọc để đánh giá.</td></tr>}
+              {attendance.stats.map((item) => <tr key={item.employee.id || employeeCode(item.employee)}><td><div className="person-cell"><Avatar name={item.employee.name} src={item.employee.avatar} employeeId={employeeCode(item.employee)} color={item.employee.color} /><span><strong>{item.employee.name}</strong><small>{employeeCode(item.employee)} · {item.employee.position || item.employee.workPosition || item.employee.role || 'Nhân viên văn phòng'}</small></span></div></td><td>{item.total}</td><td className="blue-text">{item.early}</td><td className="green-text">{item.onTime}</td><td className="orange-text">{item.late}</td><td>{item.earlyMinutes} phút</td><td>{item.lateMinutes} phút</td><td><strong>{item.onTimeRate.toFixed(1)}%</strong></td><td><Badge tone={attendanceEvaluationTone(item.rating)}>{item.rating}</Badge></td></tr>)}
+              {!attendance.stats.length && <tr><td colSpan="9">Chưa có nhân viên phù hợp bộ lọc để đánh giá.</td></tr>}
             </tbody>
           </TableWrap>
         </Card>

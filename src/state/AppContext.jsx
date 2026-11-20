@@ -458,23 +458,34 @@ export const mergeEmployeeAuthUsers = (employees = [], users = []) => {
     employee?.employeeId,
     employee?.employeeCode,
   ].map((value) => String(value || '').trim()).filter(Boolean)
-  const authUserFor = (employee) => {
-    const identifiers = identifiersFor(employee)
-    const exactMatches = userRows.filter((user) => identifiers.includes(String(user?.employeeId || '').trim()))
-    if (exactMatches.length === 1) return exactMatches[0]
-    if (exactMatches.length > 1) return null
-    const foldedMatches = userRows.filter((user) => identifiers.some((identifier) => (
-      sameIdentifier(identifier, user?.employeeId)
-    )))
-    if (foldedMatches.length !== 1) return null
-    const foldedOwners = employeeRows.filter((candidate) => identifiersFor(candidate).some((candidateIdentifier) => (
-      identifiers.some((identifier) => sameIdentifier(candidateIdentifier, identifier))
-    )))
-    return foldedOwners.length === 1 ? foldedMatches[0] : null
+  const exactUsers = new Map()
+  const foldedUsers = new Map()
+  for (const user of userRows) {
+    const id = String(user?.employeeId || '').trim()
+    if (!id) continue
+    const folded = normalizedIdentifier(id)
+    exactUsers.set(id, exactUsers.has(id) ? null : user)
+    foldedUsers.set(folded, foldedUsers.has(folded) ? null : user)
+  }
+  const profiles = employeeRows.map((employee) => {
+    const identifiers = [...new Set(identifiersFor(employee))]
+    return { employee, identifiers, folded: [...new Set(identifiers.map(normalizedIdentifier))] }
+  })
+  const ownerCounts = new Map()
+  for (const { folded } of profiles) {
+    for (const key of folded) ownerCounts.set(key, (ownerCounts.get(key) || 0) + 1)
+  }
+  const uniqueUser = (keys, index) => {
+    const matches = keys.filter((key) => index.has(key))
+    if (matches.length === 0) return undefined
+    return matches.length === 1 ? index.get(matches[0]) : null
   }
   const statuses = { active: 'Đang làm việc', locked: 'Tạm ngưng', inactive: 'Đã nghỉ việc' }
-  return employeeRows.map((employee) => {
-    const user = authUserFor(employee)
+  return profiles.map(({ employee, identifiers, folded }) => {
+    const exact = uniqueUser(identifiers, exactUsers)
+    const user = exact === undefined && folded.every((key) => ownerCounts.get(key) === 1)
+      ? uniqueUser(folded, foldedUsers)
+      : exact
     return user ? {
       ...employee,
       username: user.username || employee.username,
@@ -1174,10 +1185,10 @@ const browserStoreWorkspaceScreen = () => {
   return screen === 'shifts' ? 'schedule' : screen
 }
 
-const browserSystemWorkspaceScreen = () => {
+const browserSystemWorkspaceScreen = (role) => {
   if (typeof window === 'undefined') return ''
-  const route = String(window.location?.hash || '').replace(/^#/u, '').split('?')[0]
-  return systemScreenForPath(route)
+  const [route, search] = String(window.location?.hash || '').replace(/^#/u, '').split('?')
+  return systemScreenForPath(route, search, role)
 }
 
 const accountKey = (account = {}) => String(account.id || account.code || account.employeeCode || '')
@@ -1525,81 +1536,6 @@ const mergeRemoteResultRecords = (records, updates) => {
   return next
 }
 
-const remoteCommandResultPatches = (type, result) => {
-  const patches = new Map()
-  const replacements = new Map()
-  const add = (collection, value) => {
-    const updates = (Array.isArray(value) ? value : [value]).filter(Boolean)
-    if (updates.length) patches.set(collection, [...(patches.get(collection) || []), ...updates])
-  }
-  if (type.startsWith('store.')) add(type === 'store.delete' ? 'deletedStores' : 'stores', result.store)
-  if (type.startsWith('employee.')) add(type === 'employee.delete' ? 'deletedEmployees' : 'employees', result.employee)
-  if (type.startsWith('order.')) add('orders', result.order)
-  if (type.startsWith('fixed_expense.')) {
-    add('fixedExpenses', result.expense)
-    add('expenseEntries', result.expenseEntry)
-  } else if (type.startsWith('expense.')) add('expenseEntries', result.expense || result.expenseEntry)
-  if (type.startsWith('import.') || type.startsWith('import_voucher.')) {
-    add('importVouchers', result.voucher)
-    add('expenseEntries', result.expenseEntry)
-  }
-  if (type.startsWith('compensation_entry.')) add('compensationEntries', result.entry)
-  if (type.startsWith('salary_adjustment.')) add('salaryAdjustments', result.adjustment)
-  if (type.startsWith('salary_advance.')) add('salaryAdvances', result.advance)
-  if (type.startsWith('store_salary_config.')) add('storeEmployeeSalaryConfigs', result.salaryConfig)
-  if (type.startsWith('work_catalog.')) add('workCatalogItems', result.item)
-  if (type === 'work_reward.set' || type === 'work_reward.set_batch') {
-    add('workCatalogProgress', result.reward || result.rewards)
-    add('compensationEntries', result.entry || result.entries)
-    add('teamRewardClaims', result.teamClaim || result.teamClaims)
-  }
-  if (type.startsWith('violation.')) {
-    add('violations', result.violation || result.violations)
-    add('violationPointSummaries', (result.pointAssessments || []).map((assessment) => ({ ...assessment, id: `${assessment.employeeId}:${assessment.period}` })))
-    add('compensationEntries', result.entry || result.entries)
-  }
-  if (type.startsWith('revenue_bonus.')) {
-    add('revenueBonusDaily', result.daily || result.bonus || result.bonuses)
-    add('revenueBonusAllocations', result.allocation || result.allocations)
-    add('revenueBonusOverrides', result.override || result.overrides)
-    add('salaryAdjustments', result.adjustment || result.adjustments)
-    add('teamRewardClaims', result.teamClaim || result.teamClaims)
-    add('teamRewardParticipants', result.teamParticipant || result.teamParticipants)
-  }
-  if (type.startsWith('payroll.')) {
-    add('payrollPeriods', result.period)
-    add('payrollPayments', result.payment || result.payments)
-    add('expenseEntries', result.expenseEntry || result.expenseEntries)
-  }
-  if (type.startsWith('attendance.')) {
-    add('attendance', result.attendance)
-    add('tasks', result.tasks)
-  }
-  if (type.startsWith('shift_definition.')) add('shiftDefinitions', result.shift)
-  if (type.startsWith('support_transfer.')) {
-    add('supportTransfers', result.transfer)
-    add('schedule', result.schedule)
-  }
-  if (Array.isArray(result.notifications)) add('notifications', result.notifications)
-  if (type === 'order_information.reorder' && Array.isArray(result.options)) {
-    replacements.set('orderInformationOptions', result.options)
-  } else if (type.startsWith('order_information.')) {
-    add('orderInformationOptions', result.option || result.options)
-  }
-  if (type.startsWith('schedule.')) add('schedule', result.assignment || result.assignments)
-  if (type.startsWith('support_work.')) add('supportWorkAssignments', result.assignment || result.assignments)
-  if (type === 'support_schedule.presets.update') {
-    if (Array.isArray(result.presets)) replacements.set('supportSchedulePresets', result.presets)
-    add('supportSchedulePresetHistory', result.history)
-  } else if (type.startsWith('support_schedule.')) add('supportWorkSchedules', result.schedule || result.schedules)
-  if (type === 'task.done' || type === 'task.set_done') add('tasks', result.task)
-  if (type === 'task.progress.save' || type === 'task.shift.select') {
-    add('tasks', result.tasks)
-    add('attendance', result.attendance)
-  }
-  return { patches, replacements }
-}
-
 const voucherDate = (value = new Date()) => {
   const date = resolveDate(value)
   return `${String(date.getDate()).padStart(2, '0')}${String(date.getMonth() + 1).padStart(2, '0')}${String(date.getFullYear()).slice(-2)}`
@@ -1639,7 +1575,9 @@ const isRemoteSessionInvalid = (error) => Number(error?.status) === 401
   || ['SESSION_INVALID', 'SESSION_REQUIRED', 'AUTH_REQUIRED'].includes(String(error?.code || ''))
 
 const MAX_VISITED_PROJECTION_CACHE_ENTRIES = 40
-const ACCOUNT_DIRECTORY_SCREENS = new Set(['employees', 'business-support', 'store-managers', 'office'])
+const ACCOUNT_DIRECTORY_SCREENS = new Set([
+  'employees', 'business-support', 'business-support-directory', 'store-managers', 'office', 'office-directory',
+])
 const needsAccountDirectory = (screen) => !screen || ACCOUNT_DIRECTORY_SCREENS.has(screen)
 // A disposable browser cache must never hold the server read hostage (private
 // mode, blocked IndexedDB upgrades, or a busy storage thread).
@@ -2055,7 +1993,7 @@ export function AppProvider({ children }) {
       || activeStoreIdRef.current
       || readRememberedActiveStore(expectedUser)
     const role = normalizeAuthRole(expectedUser?.role)
-    const systemScreen = browserSystemWorkspaceScreen() || (role === 'employee' ? 'employee-home' : '')
+    const systemScreen = browserSystemWorkspaceScreen(role) || (role === 'employee' ? 'employee-home' : '')
     const useStoreProjection = Boolean(preferredStoreId) && (
       role === 'store_manager'
       || (isSystemRole(role) && browserUsesStoreWorkspace())
@@ -2175,6 +2113,7 @@ export function AppProvider({ children }) {
   }, [])
 
   const runRemoteDomainCommand = async (type, payload, idempotencyKey = `${type}:${crypto.randomUUID()}`, guardResult) => {
+    const { remoteCommandResultPatches } = await import('./remoteCommandResultPatches')
     const remote = apiRef.current
     const resultAllowed = guardResult?.(remote)
     const partialTaskResult = type === 'task.shift.select' || type === 'task.progress.save' || Boolean(guardResult)
@@ -3127,6 +3066,37 @@ export function AppProvider({ children }) {
     })
     notify('Đã cập nhật nhân viên.')
     return { ok: true, employee }
+  }
+
+  const setEmployeeWorkStatus = async (id, status) => {
+    const actorRole = normalizeAuthRole(state.session?.role)
+    const previous = state.employees.find((employee) => accountKey(employee) === String(id))
+    if (!['admin', 'business_support'].includes(actorRole)
+      || !previous || !['office', 'business_support'].includes(previous.unit)) {
+      return { ok: false, message: 'Tài khoản không có quyền đổi trạng thái làm việc của nhân viên này.' }
+    }
+    const { canonicalEmployeeStatus, EMPLOYEE_STATUS } = await import('../domain/employeeStatus')
+    const next = canonicalEmployeeStatus(status)
+    if (!Object.values(EMPLOYEE_STATUS).includes(next)) return { ok: false, message: 'Trạng thái làm việc không hợp lệ.' }
+    if (next !== EMPLOYEE_STATUS.ACTIVE && sameIdentifier(previous.id, state.session?.employeeId)) {
+      return { ok: false, message: 'Bạn không thể tự ngưng quyền đăng nhập của mình.' }
+    }
+    try {
+      if (apiRef.current.enabled) {
+        await runRemoteDomainCommand('employee.set_work_status', { employeeId: previous.id, status: next })
+      } else {
+        setState((current) => ({
+          ...current,
+          employees: current.employees.map((employee) => accountKey(employee) === String(id)
+            ? { ...employee, status: next }
+            : employee),
+        }))
+      }
+      notify('Đã cập nhật trạng thái làm việc.')
+      return { ok: true }
+    } catch (error) {
+      return { ok: false, message: error.message || 'Không thể cập nhật trạng thái làm việc.' }
+    }
   }
 
   const deleteEmployee = async (id) => {
@@ -6764,6 +6734,7 @@ export function AppProvider({ children }) {
     deleteEmployee,
     addBusinessSupport,
     updateBusinessSupport,
+    setEmployeeWorkStatus,
     deleteBusinessSupport,
     addStoreManager,
     updateStoreManager,

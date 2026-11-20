@@ -1,6 +1,7 @@
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { OfficeManagement } from './OfficeManagement'
+import { BusinessSupportManagement } from '../admin/RoleManagement'
 
 const mocked = vi.hoisted(() => ({ app: {} }))
 
@@ -26,6 +27,30 @@ afterEach(() => {
 })
 
 describe('Office Management permissions', () => {
+  it.each([
+    ['office', OfficeManagement, 'admin'],
+    ['business_support', BusinessSupportManagement, 'business_support'],
+  ])('saves the three work statuses from the %s directory for %s', async (unit, Page, role) => {
+    const employee = { id: 'TARGET', unit, name: 'Nhân viên A', status: 'locked',
+      storeId: unit === 'office' ? 'OFFICE' : 'BUSINESS_SUPPORT' }
+    const setEmployeeWorkStatus = vi.fn()
+      .mockResolvedValueOnce({ ok: false, message: 'Có người vừa đổi trạng thái.' })
+      .mockResolvedValueOnce({ ok: true })
+    mocked.app = { session: { role, employeeId: 'ACTOR' }, employees: [employee], setEmployeeWorkStatus }
+    render(<Page />)
+    expect(screen.getByRole('columnheader', { name: 'Trạng thái làm việc' })).toBeTruthy()
+    const button = screen.getByRole('button', { name: 'Đổi trạng thái làm việc của Nhân viên A' })
+    expect(button.textContent).toBe('Tạm nghỉ')
+    fireEvent.click(button)
+    expect(screen.getAllByRole('option').map((option) => option.textContent)).toEqual(['Đang làm việc', 'Tạm nghỉ', 'Đã nghỉ'])
+    fireEvent.change(screen.getByRole('combobox', { name: 'Trạng thái làm việc' }), { target: { value: 'Đã nghỉ việc' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Lưu trạng thái' }))
+    expect((await screen.findByRole('alert')).textContent).toBe('Có người vừa đổi trạng thái.')
+    fireEvent.click(screen.getByRole('button', { name: 'Lưu trạng thái' }))
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
+    expect(setEmployeeWorkStatus).toHaveBeenLastCalledWith('TARGET', 'Đã nghỉ việc')
+  })
+
   it.each(['admin', 'business_support', 'manager'])('shows the combined Office reward and violation workspace to %s', (role) => {
     mocked.app = {
       session: { role, employeeId: role === 'admin' ? 'ADMIN' : 'HTKD-001' },

@@ -4,10 +4,8 @@ const SYSTEM_SCREEN_BY_PATH = Object.freeze({
   '/admin/cashflow': 'cashflow',
   '/admin/reports': 'reports',
   '/admin/employees': 'employees',
-  '/admin/business-support': 'business-support',
   '/admin/business-support-schedule': 'business-support-schedule',
   '/admin/store-managers': 'store-managers',
-  '/office': 'office',
   '/admin/settings': 'settings',
   '/admin/policies': 'policies',
   '/admin/order-audit': 'order-audit',
@@ -53,6 +51,30 @@ export const storeScreenForPath = (pathname) => {
   return screen === 'shifts' ? 'schedule' : screen
 }
 
-export const systemScreenForPath = (pathname) => SYSTEM_SCREEN_BY_PATH[String(pathname || '')] || ''
+const PERSONNEL_TABS = {
+  '/admin/business-support': {
+    profiles: 'business-support-directory',
+    attendance: 'business-support-attendance',
+    evaluation: 'business-support-attendance',
+    work: 'business-support-work',
+  },
+  '/office': {
+    employees: 'office-directory',
+    attendance: 'office-attendance',
+    compensation: 'office',
+  },
+}
+
+export const personnelTabForPath = (pathname, search = '', role = 'admin') => {
+  const tabs = PERSONNEL_TABS[pathname]
+  if (!tabs) return ''
+  const tab = new URLSearchParams(search).get('tab')
+  return Object.hasOwn(tabs, tab) && (tab !== 'work' || role === 'admin') ? tab : Object.keys(tabs)[0]
+}
+
+export const systemScreenForPath = (pathname, search = '', role) => {
+  const tab = personnelTabForPath(pathname, search, role)
+  return tab ? PERSONNEL_TABS[pathname][tab] : SYSTEM_SCREEN_BY_PATH[String(pathname || '')] || ''
+}
 
 export const employeeScreen = (screen) => String(screen || '').startsWith('employee-')
