@@ -4301,6 +4301,24 @@ describe('IDOSI Worker security primitives', () => {
     expect(longCodeBody.store.id).toBe(`DOSII-${'A'.repeat(74)}`)
     expect(longCodeBody.store.id).toHaveLength(80)
     expect(longCodeBody.store.id).toBe(longCodeBody.store.id.toUpperCase())
+
+    const invalidBrand = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+      type: 'store.create', expectedVersion: 10, payload: { name: 'Linh Trung', storeBrand: '' },
+    }, { ...authorization, 'idempotency-key': 'store-code-invalid-brand-0001' }), env)
+    expect(invalidBrand.status).toBe(400)
+    expect(await invalidBrand.json()).toMatchObject({ error: { code: 'STORE_BRAND_INVALID' } })
+
+    for (const [name, storeBrand, code, version] of [
+      ['Linh Trung', 'SM', 'SM-LT', 11],
+      ['SM Linh Tây', 'SM', 'SM-LT-02', 12],
+      ['Tân Phú mới', 'DOSII', 'DOSII-TPM', 13],
+    ]) {
+      const result = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+        type: 'store.create', expectedVersion: version - 1, payload: { id: 'CLIENT-ID', name, storeBrand },
+      }, { ...authorization, 'idempotency-key': `auto-store-code-${code}` }), env)
+      expect(result.status).toBe(201)
+      expect(await result.json()).toMatchObject({ version, store: { id: code, code, name, storeBrand } })
+    }
   })
 
   it('invalidates a closed payroll period whose store identifier differs only by case', async () => {

@@ -2809,14 +2809,25 @@ export function AppProvider({ children }) {
         return { ok: false, message: error.message }
       }
     }
+    let generatedCode = ''
+    if (payload.storeBrand) {
+      const { nextBrandedStoreCode } = await import('../domain/storeDirectory')
+      generatedCode = nextBrandedStoreCode(name, payload.storeBrand, [...state.stores, ...(state.deletedStores || [])])
+    }
+    if (payload.storeBrand && !generatedCode) {
+      const message = 'Vui lòng chọn loại cửa hàng hợp lệ và nhập tên chi nhánh.'
+      notify(message, 'info')
+      return { ok: false, message }
+    }
     const store = {
-      id: payload.id || uid('CH'),
       employees: 0,
       revenue: 0,
       expense: 0,
       status: 'Hoạt động',
       accent: '#075fba',
       ...payload,
+      id: generatedCode || payload.id || uid('CH'),
+      ...(generatedCode ? { code: generatedCode } : {}),
       name,
       short: payload.short || name.replace(/^(?:IDOSI|SecondMall)\s*/i, ''),
     }

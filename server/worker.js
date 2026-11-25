@@ -4,6 +4,7 @@ import { taskShiftContext, bindTaskShiftContext, mergeTaskShiftProgress, attenda
 import { normalizeOrderItems as normalizedHistoricalOrderItems, resolveOrderItems as resolveConfiguredOrderItems, totalOrderItemQuantity, totalOrderItemWeightKg } from '../src/domain/orderItems.js'
 import { orderRevenueByType, validateOrderRevenue } from '../src/domain/orderRevenue.js'
 import { salesOverviewFromSummary } from '../src/domain/salesOverview.js'
+import { nextBrandedStoreCode, STORE_BRANDS, STORE_BRAND_LABELS } from '../src/domain/storeDirectory.js'
 import { customerDirectory, filterCustomerDirectory, customerKey, customerPublicInfo, customerSuggestions, customerPurchaseStatus, customerPurchasedAtStore, customerMatchesHistoryQuery, customerOrderDetails } from '../src/domain/customerLookup.js'
 import { applyRevenueSnapshotPointPolicy, normalizeViolationPointInput, restorePointBonusRecord, restorePointRevenueSnapshot, storeViolationPointAssessment, violationPointsOf, isActivePointViolation, violationPointPeriod, formatViolationPoints } from '../src/domain/violationPoints.js'
 import { attendanceMatchesWindow, scheduleAssignmentIsUsable, scheduleConflict, scheduleWindows, scheduledCheckInChoices, shiftWindow, supportAllowsScheduling, supportForScheduledWindow } from '../src/domain/supportScheduling.js'
@@ -2590,7 +2591,7 @@ const withEmployeeAccountAvatar = (state, employee = {}) => {
 const storeDirectoryRecord = (record = {}, selectedStoreId = '') => {
   if (sameIdentifier(record.id, selectedStoreId)) return { ...record }
   return Object.fromEntries([
-    'id', 'name', 'short', 'code', 'status', 'employeePrefix',
+    'id', 'name', 'short', 'code', 'status', 'employeePrefix', 'storeBrand',
   ].flatMap((key) => record[key] == null ? [] : [[key, record[key]]]))
 }
 
@@ -8599,40 +8600,12 @@ const loadGlobalCommandState = async (db, body, actor = null, commandContext = n
   }
 }
 
-const defaultStoreCodeFromName = (name) => {
+const nextLegacyStoreCode = (knownStores, name) => {
   const normalizedName = normalizeTextKey(name)
-  if (normalizedName === 'sm tnv') return 'SM-TNV'
-  if (!normalizedName.startsWith('dosii ')) return ''
-  const branchName = normalizedName.slice('dosii '.length).trim()
-  const words = branchName.match(/[a-z0-9]+/gu) || []
-  if (!words.length) return ''
-  const branchCode = words.length === 1
-    ? words[0]
-    : words.map((word) => word[0]).join('')
-  return branchCode ? `DOSII-${branchCode.toUpperCase().slice(0, 74)}` : ''
-}
-
-const nextStoreCode = (state, name = '') => {
-  const brandedCode = defaultStoreCodeFromName(name)
-  const knownStores = [
-    ...(Array.isArray(state.stores) ? state.stores : []),
-    ...(Array.isArray(state.deletedStores) ? state.deletedStores : []),
-  ]
-  const knownIdentifiers = new Set(knownStores
-    .map((store) => normalizeIdentifierKey(store?.id))
-    .filter(Boolean))
-  if (brandedCode) {
-    if (!knownIdentifiers.has(normalizeIdentifierKey(brandedCode))) return brandedCode
-    let suffix = 2
-    const candidateFor = (value) => {
-      const suffixText = `-${String(value).padStart(2, '0')}`
-      return `${brandedCode.slice(0, 80 - suffixText.length)}${suffixText}`
-    }
-    while (knownIdentifiers.has(normalizeIdentifierKey(candidateFor(suffix)))) {
-      suffix += 1
-    }
-    return candidateFor(suffix)
-  }
+  const brand = normalizedName.startsWith('dosii ') ? STORE_BRANDS.DOSII
+    : normalizedName.startsWith('sm ') ? STORE_BRANDS.SM : ''
+  const brandedCode = nextBrandedStoreCode(name, brand, knownStores)
+  if (brandedCode) return brandedCode
   const next = knownStores.reduce((maximum, store) => {
     const match = String(store?.id || '').match(/^CH(\d+)$/iu)
     return match ? Math.max(maximum, Number(match[1])) : maximum
@@ -8653,9 +8626,27 @@ const storeCommand = async (db, actor, body, commandContext) => {
   const payload = isPlainRecord(body.payload) ? body.payload : {}
   const { current, state } = await loadGlobalCommandState(db, body, actor)
   const stores = Array.isArray(state.stores) ? state.stores : []
+  const deletedStores = Array.isArray(state.deletedStores) ? state.deletedStores : []
   const requestedName = String(payload.name || '').trim().slice(0, 160)
+  let newStoreId = ''
+  let storeBrand = ''
+  if (operation === 'create') {
+    if (!requestedName) throw new ApiError(400, 'STORE_NAME_INVALID', 'Tên cửa hàng không được để trống.')
+    const knownStores = [...stores, ...deletedStores]
+    if (payload.storeBrand === undefined) {
+      // Older clients used a caller-supplied id or inferred the code from the name.
+      newStoreId = payload.id || nextLegacyStoreCode(knownStores, requestedName)
+    } else {
+      storeBrand = String(payload.storeBrand || '')
+      if (!Object.hasOwn(STORE_BRAND_LABELS, storeBrand)) {
+        throw new ApiError(400, 'STORE_BRAND_INVALID', 'Vui lòng chọn loại cửa hàng Dosii hoặc SM.')
+      }
+      newStoreId = nextBrandedStoreCode(requestedName, storeBrand, knownStores)
+      if (!newStoreId) throw new ApiError(400, 'STORE_NAME_INVALID', 'Tên cửa hàng cần có tên chi nhánh để tạo mã.')
+    }
+  }
   const storeId = operation === 'create'
-    ? String(payload.id || nextStoreCode(state, requestedName)).trim().toUpperCase()
+    ? String(newStoreId).trim().toUpperCase()
     : String(payload.storeId || payload.id || '').trim()
   if (operation !== 'create') assertOperationalStoreAccess(actor, storeId)
   if (!/^[A-Za-z0-9_-]{1,80}$/u.test(storeId)) {
@@ -8683,11 +8674,13 @@ const storeCommand = async (db, actor, body, commandContext) => {
 
   if (operation === 'create') {
     if (existing && !existing.deletedAt) throw new ApiError(409, 'STORE_EXISTS', 'Mã cửa hàng đã tồn tại.')
-    if ((Array.isArray(state.deletedStores) ? state.deletedStores : []).some((store) => sameIdentifier(store.id, storeId))) {
+    if (existing?.deletedAt || deletedStores.some((store) => sameIdentifier(store.id, storeId) || sameIdentifier(store.code, storeId))) {
       throw new ApiError(409, 'STORE_ID_RETIRED', 'Mã cửa hàng đã được sử dụng và không thể cấp lại.')
     }
+    if (stores.some((store) => sameIdentifier(store.code, storeId))) {
+      throw new ApiError(409, 'STORE_EXISTS', 'Mã cửa hàng đã tồn tại.')
+    }
     const name = requestedName
-    if (!name) throw new ApiError(400, 'STORE_NAME_INVALID', 'Tên cửa hàng không được để trống.')
     if (stores.some((store) => !store.deletedAt && normalizeTextKey(store.name) === normalizeTextKey(name))) {
       throw new ApiError(409, 'STORE_EXISTS', 'Tên cửa hàng đã tồn tại.')
     }
@@ -8709,6 +8702,7 @@ const storeCommand = async (db, actor, body, commandContext) => {
     const store = {
       id: storeId,
       name,
+      ...(storeBrand ? { storeBrand, code: storeId } : {}),
       short: String(payload.short || name.replace(/^(?:IDOSI|SecondMall)\s*/iu, '')).trim().slice(0, 80),
       location: String(payload.location || '').trim().slice(0, 160),
       address: String(payload.address || '').trim().slice(0, 500),

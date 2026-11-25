@@ -454,6 +454,32 @@ describe('role management permissions and form', () => {
 })
 
 describe('Business Support read-only system views', () => {
+  it('requires a store type on create and displays the public code in Admin', async () => {
+    const addStore = vi.fn(async () => ({ ok: true }))
+    mocked.app = {
+      ...baseApp('admin'),
+      addStore,
+      stores: [{ id: 'DOSII-LTP', code: 'SM-LTP', storeBrand: 'SM', name: 'SM LTP', status: 'Đang hoạt động' }],
+    }
+    render(createElement(MemoryRouter, null, createElement(AdminStores)))
+    expect(screen.getByText('SM-LTP')).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: 'Thêm cửa hàng' }))
+    fireEvent.change(screen.getByPlaceholderText('Ví dụ: SM Linh Trung'), { target: { value: 'Linh Trung' } })
+    fireEvent.change(screen.getByPlaceholderText('Quận/Huyện, Tỉnh/Thành'), { target: { value: 'Thủ Đức' } })
+    fireEvent.change(screen.getByPlaceholderText('Nhập địa chỉ...'), { target: { value: 'Địa chỉ kiểm thử' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Lưu cửa hàng' }))
+    expect(addStore).not.toHaveBeenCalled()
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Lưu cửa hàng' }).disabled).toBe(false))
+    const type = screen.getByRole('combobox', { name: 'Loại cửa hàng' })
+    expect([...type.options].map((option) => option.textContent)).toEqual(['Chọn loại cửa hàng', 'Dosii', 'SM'])
+    fireEvent.change(type, { target: { value: 'SM' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Lưu cửa hàng' }))
+    expect(addStore).toHaveBeenCalledWith({
+      name: 'Linh Trung', storeBrand: 'SM', location: 'Thủ Đức', address: 'Địa chỉ kiểm thử',
+    })
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
+  })
+
   it('renders the Admin store directory while remote finance data is still loading', async () => {
     mocked.financeOverview.mockResolvedValueOnce({
       period: '2026-09',

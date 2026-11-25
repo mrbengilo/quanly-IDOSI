@@ -141,6 +141,13 @@
       "when": 1794873600001,
       "tag": "0019_transfer_reference_indexes",
       "breakpoints": true
+    },
+    {
+      "idx": 20,
+      "version": "6",
+      "when": 1795564800000,
+      "tag": "0020_sm_ltp_store_code",
+      "breakpoints": true
     }
   ]
 }
