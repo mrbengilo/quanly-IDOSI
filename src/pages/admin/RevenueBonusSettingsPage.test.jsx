@@ -37,8 +37,12 @@ const payload = (overrides = {}) => ({
   today: '2026-10-13',
   minimumEffectiveFrom: '2026-10-14',
   groups: [
-    legacyGroup('DOSII', 'revenue-bonus.store-dosii-daily.v1'),
-    legacyGroup('SM_TNV', 'revenue-bonus.store-sm-daily.v1'),
+    { storePolicy: 'DOSII', label: 'Dosii', stores: [
+      { ...legacyGroup('DOSII', 'revenue-bonus.store-dosii-daily.v1'), storeId: 'D1', name: 'Dosii', code: 'D1' },
+    ] },
+    { storePolicy: 'SM_TNV', label: 'SM', stores: [
+      { ...legacyGroup('SM_TNV', 'revenue-bonus.store-sm-daily.v1'), storeId: 'SM-TNV', name: 'SM TNV', code: 'SM-TNV' },
+    ] },
   ],
   ...overrides,
 })
@@ -76,8 +80,8 @@ describe('RevenueBonusSettingsPage', () => {
     expect(within(current).getByText('Trên 4.000.000 đ')).toBeTruthy()
     expect(screen.getByText('Bảng mặc định hệ thống')).toBeTruthy()
 
-    fireEvent.click(screen.getByRole('tab', { name: 'SM TNV' }))
-    expect(screen.getByRole('tab', { name: 'SM TNV' }).getAttribute('aria-selected')).toBe('true')
+    fireEvent.click(screen.getByRole('tab', { name: 'SM' }))
+    expect(screen.getByRole('tab', { name: 'SM' }).getAttribute('aria-selected')).toBe('true')
     const sm = screen.getByRole('table', { name: 'Cấu hình SM TNV đang áp dụng' })
     expect(within(sm).getByText('Từ 2.500.000 đ đến 6.000.000 đ')).toBeTruthy()
     expect(within(sm).getByText('7%')).toBeTruthy()
@@ -90,7 +94,7 @@ describe('RevenueBonusSettingsPage', () => {
     fireEvent.change(row(3).rate, { target: { value: '1,255' } })
     expect(screen.getByText('Chưa lưu')).toBeTruthy()
 
-    fireEvent.click(screen.getByRole('tab', { name: 'SM TNV' }))
+    fireEvent.click(screen.getByRole('tab', { name: 'SM' }))
     fireEvent.click(screen.getByRole('tab', { name: /^Dosii/u }))
     expect(row(2).threshold.value).toBe('1,500,000')
 
@@ -148,6 +152,7 @@ describe('RevenueBonusSettingsPage', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Lưu cấu hình' }))
     await waitFor(() => expect(mocked.save).toHaveBeenCalledWith({
       storePolicy: 'DOSII',
+      storeId: 'D1',
       effectiveFrom: '2026-10-20',
       tiers: [
         { thresholdVnd: 1_500_000, rateBasisPoints: 125 },
@@ -162,7 +167,7 @@ describe('RevenueBonusSettingsPage', () => {
     const saved = { id: 'rbc_1', storePolicy: 'DOSII', version: 1, effectiveFrom: '2026-10-20', status: 'ACTIVE',
       tiers: [{ thresholdVnd: 1_500_000, rateBasisPoints: 125 }], createdAt: '2026-10-13T03:00:00.000Z', createdBy: { name: 'Admin IDOSI' } }
     const next = payload()
-    next.groups[0] = { ...next.groups[0], headVersion: 1, pending: [saved], history: [saved] }
+    next.groups[0].stores[0] = { ...next.groups[0].stores[0], headVersion: 1, pending: [saved], history: [saved] }
     finish({ revenueBonusConfig: saved, ...next })
     expect(await screen.findByText('Đã lưu phiên bản 1 cho Dosii, áp dụng từ 20/10/2026.')).toBeTruthy()
     expect(screen.getByText(/Cấu hình phiên bản 1 sẽ áp dụng từ 20\/10\/2026/u)).toBeTruthy()
@@ -202,6 +207,32 @@ describe('RevenueBonusSettingsPage', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Lưu cấu hình' }))
     expect(window.confirm).toHaveBeenCalled()
     expect(mocked.save).not.toHaveBeenCalled()
+  })
+
+  it('lists SM LTP under SM and retains a separate draft for each selected store', async () => {
+    const data = payload()
+    data.groups[1].stores.push({
+      ...legacyGroup('DOSII', 'revenue-bonus.store-dosii-daily.v1'),
+      storePolicy: 'SM_TNV', storeId: 'DOSII-LTP', code: 'SM-LTP', name: 'SM LTP',
+    })
+    mocked.load.mockResolvedValueOnce(data)
+    mocked.save.mockReturnValueOnce(new Promise(() => {}))
+    render(<RevenueBonusSettingsPage />)
+    await screen.findByText('Đang áp dụng hôm nay (13/10/2026)')
+    expect(screen.queryByRole('option', { name: /SM LTP/u })).toBeNull()
+    fireEvent.keyDown(screen.getByRole('tab', { name: 'Dosii' }), { key: 'ArrowRight' })
+    expect(screen.getByRole('tab', { name: 'SM' }).getAttribute('aria-selected')).toBe('true')
+    const selector = screen.getByRole('combobox', { name: 'Cửa hàng' })
+    expect(screen.queryByRole('button', { name: 'Lưu cấu hình' })).toBeNull()
+    expect(within(selector).getByRole('option', { name: 'SM LTP · SM-LTP' }).value).toBe('DOSII-LTP')
+    fireEvent.change(selector, { target: { value: 'DOSII-LTP' } })
+    fireEvent.change(row(1).rate, { target: { value: '6,25' } })
+    fireEvent.change(selector, { target: { value: 'SM-TNV' } })
+    expect(row(1).rate.value).toBe('4')
+    fireEvent.change(selector, { target: { value: 'DOSII-LTP' } })
+    expect(row(1).rate.value).toBe('6,25')
+    fireEvent.click(screen.getByRole('button', { name: 'Lưu cấu hình' }))
+    expect(mocked.save).toHaveBeenCalledWith(expect.objectContaining({ storePolicy: 'SM_TNV', storeId: 'DOSII-LTP' }))
   })
 
   it('shows error and unauthorized states', async () => {

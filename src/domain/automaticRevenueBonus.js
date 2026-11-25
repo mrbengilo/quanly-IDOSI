@@ -328,7 +328,7 @@ export function calculateAutomaticRevenueBonusDay({
   if (!Number.isFinite(normalizedNowMs)) throw new TypeError('nowMs must be a valid timestamp.')
   const finalizedOnly = businessDate >= AUTOMATIC_REVENUE_BONUS_EFFECTIVE_DATE
   // Resolve by the calculated business date, never by the caller's clock.
-  const revenueProgram = resolveRevenueBonusProgram({ programId, businessDate, configs: revenueBonusConfigs })
+  const revenueProgram = resolveRevenueBonusProgram({ programId, businessDate, configs: revenueBonusConfigs, storeId })
   const revenueBonusConfig = revenueBonusConfigSnapshot(revenueProgram)
 
   const scopedOrders = (Array.isArray(orders) ? orders : []).filter((order) => (

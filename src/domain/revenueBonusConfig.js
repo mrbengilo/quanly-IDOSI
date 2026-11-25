@@ -1,9 +1,12 @@
 import {
   REVENUE_BONUS_PROGRAM_IDS,
   REVENUE_BONUS_PROGRAMS,
+  TEAM_MILESTONE_PROGRAM_IDS,
 } from './compensationPolicies.js'
+import { STORE_BRANDS } from './storeDirectory.js'
+import { classifyStorePayrollPolicy, STORE_PAYROLL_POLICY } from './storeTieredPayroll.js'
 
-// Effective-dated, per-store-group configuration of the daily revenue bonus
+// Effective-dated configuration of a store's daily revenue bonus
 // percentage table. Admin enters ascending thresholds; the boundary rule is the
 // one the legacy table already used, so a configuration equal to the legacy
 // thresholds pays exactly the same amount at every revenue value:
@@ -59,8 +62,19 @@ const POLICY_BY_PROGRAM = Object.freeze(Object.fromEntries(
 
 const POLICY_LABELS = Object.freeze({
   [REVENUE_BONUS_CONFIG_STORE_POLICY.DOSII]: 'Dosii',
-  [REVENUE_BONUS_CONFIG_STORE_POLICY.SM_TNV]: 'SM TNV',
+  [REVENUE_BONUS_CONFIG_STORE_POLICY.SM_TNV]: 'SM',
 })
+
+export function revenueBonusProgramForStore(store) {
+  // Typed stores start with their brand's program. Legacy stores keep the
+  // program selected by their existing identity, including rebranded stores.
+  const isNewBrandedStore = store?.code && store.code === store.id && Object.values(STORE_BRANDS).includes(store.storeBrand)
+  const isSm = isNewBrandedStore ? store.storeBrand === STORE_BRANDS.SM
+    : classifyStorePayrollPolicy(store) === STORE_PAYROLL_POLICY.SM_TNV
+  return isSm
+    ? { programId: REVENUE_BONUS_PROGRAM_IDS.SM_DAILY, milestoneProgramId: TEAM_MILESTONE_PROGRAM_IDS.SM_DAILY_REVENUE }
+    : { programId: REVENUE_BONUS_PROGRAM_IDS.DOSII_DAILY, milestoneProgramId: TEAM_MILESTONE_PROGRAM_IDS.DOSII_DAILY_REVENUE }
+}
 
 export const isRevenueBonusConfigStorePolicy = (value) => Object.hasOwn(PROGRAM_BY_POLICY, String(value ?? ''))
 
@@ -268,6 +282,7 @@ const normalizeStoredConfig = (record, index) => {
   }
   const id = String(record.id ?? '').trim()
   const storePolicy = String(record.storePolicy ?? '')
+  const storeId = String(record.storeId ?? '').trim()
   const effectiveFrom = String(record.effectiveFrom ?? '')
   const version = record.version
   const status = record.status == null ? REVENUE_BONUS_CONFIG_STATUS.ACTIVE : String(record.status)
@@ -275,6 +290,9 @@ const normalizeStoredConfig = (record, index) => {
   if (!id) throw configError('Cấu hình thưởng doanh thu đã lưu thiếu mã định danh.', details)
   if (!isRevenueBonusConfigStorePolicy(storePolicy)) {
     throw configError('Cấu hình thưởng doanh thu đã lưu có nhóm cửa hàng không hợp lệ.', details)
+  }
+  if (record.storeId != null && (!/^[A-Za-z0-9_-]{1,80}$/u.test(storeId) || typeof record.storeId !== 'string')) {
+    throw configError('Cấu hình thưởng doanh thu đã lưu có mã cửa hàng không hợp lệ.', details)
   }
   if (!isValidBusinessDate(effectiveFrom)) {
     throw configError('Cấu hình thưởng doanh thu đã lưu có ngày hiệu lực không hợp lệ.', details)
@@ -289,24 +307,18 @@ const normalizeStoredConfig = (record, index) => {
   if (!validation.valid) {
     throw configError('Cấu hình thưởng doanh thu đã lưu có mốc hoặc tỷ lệ không hợp lệ.', details)
   }
-  return { ...record, id, storePolicy, effectiveFrom, version, status, tiers: validation.tiers }
+  return { ...record, id, storePolicy, ...(storeId ? { storeId } : {}), effectiveFrom, version, status, tiers: validation.tiers }
 }
 
-/**
- * Validates every stored configuration of one store group. A missing collection
- * means "never configured" (legacy table); malformed data is an error so money
- * is never finalized from a silent fallback.
- */
-export function revenueBonusConfigsForStorePolicy(configs, storePolicy) {
-  if (configs == null) return []
-  if (!Array.isArray(configs)) throw configError('Danh sách cấu hình thưởng doanh thu đã lưu bị hỏng.')
-  const normalized = configs.map(normalizeStoredConfig)
-    .filter((record) => record.storePolicy === storePolicy)
-  const ids = new Set()
+const configScope = (storePolicy, storeId) => storeId
+  ? `store:${String(storeId).trim().toLowerCase()}`
+  : `policy:${storePolicy}`
+
+const validateScope = (records, ids) => {
   const versions = new Set()
   const activeDates = new Set()
-  for (const record of normalized) {
-    const details = { configId: record.id, storePolicy, version: record.version }
+  for (const record of records) {
+    const details = { configId: record.id, storePolicy: record.storePolicy, version: record.version }
     if (ids.has(record.id)) throw configError('Cấu hình thưởng doanh thu bị trùng mã định danh.', details)
     if (versions.has(record.version)) throw configError('Cấu hình thưởng doanh thu bị trùng phiên bản.', details)
     ids.add(record.id)
@@ -317,7 +329,28 @@ export function revenueBonusConfigsForStorePolicy(configs, storePolicy) {
     }
     activeDates.add(record.effectiveFrom)
   }
-  return normalized.toSorted((left, right) => left.version - right.version)
+}
+
+export function indexRevenueBonusConfigs(configs) {
+  const scopes = new Map()
+  if (configs == null) return scopes
+  if (!Array.isArray(configs)) throw configError('Danh sách cấu hình thưởng doanh thu đã lưu bị hỏng.')
+  configs.forEach((record, index) => {
+    const config = normalizeStoredConfig(record, index)
+    const key = configScope(config.storePolicy, config.storeId)
+    if (!scopes.has(key)) scopes.set(key, [])
+    scopes.get(key).push(config)
+  })
+  const ids = new Set()
+  for (const records of scopes.values()) validateScope(records, ids)
+  return scopes
+}
+
+const recordsInScope = (index, storePolicy, storeId) => index.get(configScope(storePolicy, storeId)) || []
+
+export function revenueBonusConfigsForStorePolicy(configs, storePolicy, storeId) {
+  return recordsInScope(indexRevenueBonusConfigs(configs), storePolicy, storeId)
+    .toSorted((left, right) => left.version - right.version)
 }
 
 const legacyResolution = (programId, storePolicy) => ({
@@ -337,6 +370,7 @@ const configResolution = (programId, record) => ({
   source: REVENUE_BONUS_CONFIG_SOURCE.ADMIN,
   programId,
   storePolicy: record.storePolicy,
+  ...(record.storeId ? { storeId: record.storeId } : {}),
   configId: record.id,
   version: record.version,
   effectiveFrom: record.effectiveFrom,
@@ -358,12 +392,13 @@ export function selectEffectiveRevenueBonusConfig(records, businessDate) {
  * business date being calculated decides, never the clock of the caller, so a
  * late sweep of an old day still uses that day's configuration.
  */
-export function resolveRevenueBonusProgram({ programId, businessDate, configs } = {}) {
+export function resolveRevenueBonusProgram({ programId, businessDate, configs, storeId } = {}) {
   const normalizedProgramId = String(programId ?? '').trim()
   const storePolicy = revenueBonusStorePolicyForProgramId(normalizedProgramId)
   if (!isValidBusinessDate(businessDate)) throw new TypeError('businessDate must use YYYY-MM-DD.')
-  const records = revenueBonusConfigsForStorePolicy(configs, storePolicy)
-  const effective = selectEffectiveRevenueBonusConfig(records, businessDate)
+  const index = indexRevenueBonusConfigs(configs)
+  const effective = (storeId && selectEffectiveRevenueBonusConfig(recordsInScope(index, storePolicy, storeId), businessDate))
+    || selectEffectiveRevenueBonusConfig(recordsInScope(index, storePolicy), businessDate)
   return effective
     ? configResolution(normalizedProgramId, effective)
     : legacyResolution(normalizedProgramId, storePolicy)
@@ -375,6 +410,7 @@ export const revenueBonusConfigSnapshot = (resolution) => ({
   configId: resolution.configId,
   version: resolution.version,
   storePolicy: resolution.storePolicy,
+  ...(resolution.storeId ? { storeId: resolution.storeId } : {}),
   programId: resolution.programId,
   effectiveFrom: resolution.effectiveFrom,
   tiers: resolution.tiers.map((tier) => ({
@@ -389,10 +425,14 @@ export const revenueBonusConfigSnapshot = (resolution) => ({
 })
 
 /** Admin overview of one group: what applies today, what is scheduled, history. */
-export function revenueBonusConfigOverview({ configs, storePolicy, today }) {
-  const records = revenueBonusConfigsForStorePolicy(configs, storePolicy)
-  const programId = revenueBonusProgramIdForStorePolicy(storePolicy)
+export function revenueBonusConfigOverview({
+  configs, index = indexRevenueBonusConfigs(configs), storePolicy, storeId, today,
+  programId = revenueBonusProgramIdForStorePolicy(storePolicy),
+}) {
+  const records = recordsInScope(index, storePolicy, storeId)
+  const fallbackPolicy = revenueBonusStorePolicyForProgramId(programId)
   const effective = selectEffectiveRevenueBonusConfig(records, today)
+    || (storeId && selectEffectiveRevenueBonusConfig(recordsInScope(index, fallbackPolicy), today))
   const pending = records
     .filter((record) => record.status === REVENUE_BONUS_CONFIG_STATUS.ACTIVE && record.effectiveFrom > today)
     .toSorted((left, right) => left.effectiveFrom.localeCompare(right.effectiveFrom))
@@ -400,8 +440,8 @@ export function revenueBonusConfigOverview({ configs, storePolicy, today }) {
     storePolicy,
     programId,
     headVersion: records.reduce((maximum, record) => Math.max(maximum, record.version), 0),
-    current: effective ? configResolution(programId, effective) : legacyResolution(programId, storePolicy),
-    currentRecord: effective,
+    current: effective ? configResolution(programId, effective) : legacyResolution(programId, fallbackPolicy),
+    currentRecord: effective || null,
     pending,
     history: records.toSorted((left, right) => right.version - left.version),
   }

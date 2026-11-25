@@ -4,7 +4,7 @@ import { taskShiftContext, bindTaskShiftContext, mergeTaskShiftProgress, attenda
 import { normalizeOrderItems as normalizedHistoricalOrderItems, resolveOrderItems as resolveConfiguredOrderItems, totalOrderItemQuantity, totalOrderItemWeightKg } from '../src/domain/orderItems.js'
 import { orderRevenueByType, validateOrderRevenue } from '../src/domain/orderRevenue.js'
 import { salesOverviewFromSummary } from '../src/domain/salesOverview.js'
-import { nextBrandedStoreCode, STORE_BRANDS, STORE_BRAND_LABELS } from '../src/domain/storeDirectory.js'
+import { displayStoreCode, nextBrandedStoreCode, storeDirectoryBrand, STORE_BRANDS, STORE_BRAND_LABELS } from '../src/domain/storeDirectory.js'
 import { customerDirectory, filterCustomerDirectory, customerKey, customerPublicInfo, customerSuggestions, customerPurchaseStatus, customerPurchasedAtStore, customerMatchesHistoryQuery, customerOrderDetails } from '../src/domain/customerLookup.js'
 import { applyRevenueSnapshotPointPolicy, normalizeViolationPointInput, restorePointBonusRecord, restorePointRevenueSnapshot, storeViolationPointAssessment, violationPointsOf, isActivePointViolation, violationPointPeriod, formatViolationPoints } from '../src/domain/violationPoints.js'
 import { attendanceMatchesWindow, scheduleAssignmentIsUsable, scheduleConflict, scheduleWindows, scheduledCheckInChoices, shiftWindow, supportAllowsScheduling, supportForScheduledWindow } from '../src/domain/supportScheduling.js'
@@ -19,7 +19,6 @@ import {
   DEFAULT_WORK_CATALOG_ITEMS,
   STAFF_WORK_CATALOG_SEED_VERSION,
   REVENUE_BONUS_PROGRAM_IDS,
-  TEAM_MILESTONE_PROGRAM_IDS,
   WORKBOOK_COMPENSATION_POLICY,
   calculateRevenueBonus,
   calculateTeamMilestoneReward,
@@ -27,6 +26,7 @@ import {
 import { allocateByLargestRemainder } from '../src/domain/compensationAllocation.js'
 import { REVENUE_BONUS_READ_COLLECTIONS } from './revenue-bonus-read.mjs'
 import {
+  indexRevenueBonusConfigs,
   isRevenueBonusConfigStorePolicy,
   legacyRevenueBonusThresholds,
   resolveRevenueBonusProgram,
@@ -36,6 +36,8 @@ import {
   revenueBonusConfigOverview,
   revenueBonusConfigsForStorePolicy,
   revenueBonusConfigSnapshot,
+  REVENUE_BONUS_CONFIG_STORE_POLICY,
+  revenueBonusProgramForStore,
   revenueBonusProgramIdForStorePolicy,
   revenueBonusStorePolicyForProgramId,
   revenueBonusStorePolicyLabel,
@@ -67,6 +69,7 @@ import {
   effectiveStoreSalaryConfig,
   normalizeStoreEmploymentType,
   normalizeStoreSalaryConfig,
+  storeIsOperational,
 } from '../src/domain/storeTieredPayroll.js'
 import {
   calculateManagerMonthlyRevenueBonus,
@@ -8318,7 +8321,7 @@ export const commandStateProjection = (body) => {
     )
   }
   if (type.startsWith('revenue_bonus_config.')) {
-    return projection('command-revenue-bonus-config', ['revenueBonusConfigs'], '', '', '', false)
+    return projection('command-revenue-bonus-config', ['stores', 'revenueBonusConfigs'], '', '', '', false)
   }
   if (type.startsWith('store_salary_config.')) {
     return projection(
@@ -8556,7 +8559,7 @@ export const STALE_VERSION_REBASE_COMMANDS = new Set([
   'task.shift.select',
   'notification.mark_read',
   'notification.mark_all_read',
-  // Concurrency is enforced by the per-store-group configuration version.
+  // Concurrency is enforced by the selected store's configuration version.
   'revenue_bonus_config.save',
 ])
 const MAX_REBASE_COMMAND_ATTEMPTS = 3
@@ -23601,19 +23604,6 @@ const violationCommand = async (db, actor, body, commandContext) => {
   }, commandContext)
 }
 
-const revenueBonusProgramForStore = (store) => {
-  const isSm = classifyStorePayrollPolicy(store) === STORE_PAYROLL_POLICY.SM_TNV
-  return isSm
-    ? {
-        programId: REVENUE_BONUS_PROGRAM_IDS.SM_DAILY,
-        milestoneProgramId: TEAM_MILESTONE_PROGRAM_IDS.SM_DAILY_REVENUE,
-      }
-    : {
-        programId: REVENUE_BONUS_PROGRAM_IDS.DOSII_DAILY,
-        milestoneProgramId: TEAM_MILESTONE_PROGRAM_IDS.DOSII_DAILY_REVENUE,
-      }
-}
-
 // Days finalized before configuration existed carry no snapshot; they were
 // calculated with the legacy table of their stored program.
 const legacyRevenueBonusConfigSnapshotFor = (programId) => {
@@ -23857,44 +23847,56 @@ const activeRevenueBonusOverrideRecords = (state, storeId, businessDate, employe
 
 const REVENUE_BONUS_CONFIG_COMMAND = 'revenue_bonus_config.save'
 
-const revenueBonusConfigRecords = (state) => {
-  const records = state?.revenueBonusConfigs
-  if (records === undefined || records === null) return []
-  if (!Array.isArray(records)) {
-    throw new ApiError(500, REVENUE_BONUS_CONFIG_INVALID, 'Danh sách cấu hình thưởng doanh thu đã lưu bị hỏng.')
-  }
+const checkedRevenueBonusConfigIndex = (records) => {
   try {
-    // Validate the whole collection before any write so a corrupt row can
-    // never be carried forward or hidden behind a newer version.
-    for (const storePolicy of REVENUE_BONUS_CONFIG_STORE_POLICIES) revenueBonusConfigsForStorePolicy(records, storePolicy)
+    return indexRevenueBonusConfigs(records)
   } catch (error) {
     if (error?.code === REVENUE_BONUS_CONFIG_INVALID) {
       throw new ApiError(500, REVENUE_BONUS_CONFIG_INVALID, error.message, error.details)
     }
     throw error
   }
-  return records
 }
 
-const revenueBonusConfigAdminView = (records, now) => {
+const revenueBonusSettingsStorePolicy = (store) => {
+  if (!storeIsOperational(store) || !store.id || isReservedPhysicalStoreIdentifier(store.id)) return ''
+  const brand = storeDirectoryBrand(store)
+  if (brand === STORE_BRANDS.DOSII) return REVENUE_BONUS_CONFIG_STORE_POLICY.DOSII
+  if (brand === STORE_BRANDS.SM) return REVENUE_BONUS_CONFIG_STORE_POLICY.SM_TNV
+  const payrollPolicy = classifyStorePayrollPolicy(store)
+  return isRevenueBonusConfigStorePolicy(payrollPolicy) ? payrollPolicy : ''
+}
+
+const revenueBonusConfigAdminView = (state, now) => {
   const today = vietnamBusinessDate(Date.parse(now))
+  const index = checkedRevenueBonusConfigIndex(state.revenueBonusConfigs)
+  const stores = Array.isArray(state.stores) ? state.stores : []
+  const storeCounts = new Map()
+  for (const store of stores) {
+    const id = normalizeIdentifierKey(store?.id)
+    storeCounts.set(id, (storeCounts.get(id) || 0) + 1)
+  }
+  const overviewFor = (storePolicy, options = {}) => {
+    const overview = revenueBonusConfigOverview({ index, storePolicy, today, ...options })
+    return { ...overview, current: revenueBonusConfigSnapshot(overview.current) }
+  }
   return {
     today,
     minimumEffectiveFrom: minimumRevenueBonusEffectiveFrom(Date.parse(now)),
-    groups: REVENUE_BONUS_CONFIG_STORE_POLICIES.map((storePolicy) => {
-      const overview = revenueBonusConfigOverview({ configs: records, storePolicy, today })
-      return {
-        storePolicy,
-        label: revenueBonusStorePolicyLabel(storePolicy),
-        programId: overview.programId,
-        headVersion: overview.headVersion,
-        legacyThresholds: legacyRevenueBonusThresholds(storePolicy),
-        current: revenueBonusConfigSnapshot(overview.current),
-        currentRecord: overview.currentRecord,
-        pending: overview.pending,
-        history: overview.history,
-      }
-    }),
+    groups: REVENUE_BONUS_CONFIG_STORE_POLICIES.map((storePolicy) => ({
+      ...overviewFor(storePolicy),
+      label: revenueBonusStorePolicyLabel(storePolicy),
+      legacyThresholds: legacyRevenueBonusThresholds(storePolicy),
+      stores: stores
+        .filter((store) => storeCounts.get(normalizeIdentifierKey(store?.id)) === 1 && revenueBonusSettingsStorePolicy(store) === storePolicy)
+        .map((store) => ({
+          ...overviewFor(storePolicy, { storeId: String(store.id), ...revenueBonusProgramForStore(store) }),
+          storeId: String(store.id),
+          name: store.name,
+          code: displayStoreCode(store),
+        }))
+        .toSorted((left, right) => left.name.localeCompare(right.name, 'vi')),
+    })),
   }
 }
 
@@ -23902,11 +23904,11 @@ const getRevenueBonusConfigs = async (request, env, context) => {
   const db = getDatabase(env)
   const user = await requireSession(request, db, context, { stateCollections: SESSION_CONTEXT_STATE_COLLECTIONS })
   assertAdmin(user, 'Chỉ Admin được xem và cấu hình thưởng doanh thu ngày.')
-  const row = await loadStateCollections(db, 'global', ['revenueBonusConfigs'])
+  const row = await loadStateCollections(db, 'global', ['stores', 'revenueBonusConfigs'])
   const state = row ? parseStoredJson(row.value_json, {}) : {}
   return jsonResponse(apiPayload(context, {
     version: Number(row?.version || 0),
-    ...revenueBonusConfigAdminView(revenueBonusConfigRecords(state), context.now),
+    ...revenueBonusConfigAdminView(state, context.now),
   }))
 }
 
@@ -23925,11 +23927,7 @@ const revenueBonusConfigCommand = async (db, actor, body, commandContext) => {
   const payload = isPlainRecord(body.payload) ? body.payload : {}
   const storePolicy = String(payload.storePolicy ?? '')
   if (!isRevenueBonusConfigStorePolicy(storePolicy)) {
-    throw new ApiError(400, 'REVENUE_BONUS_CONFIG_STORE_POLICY_INVALID', 'Nhóm cửa hàng chỉ được là Dosii hoặc SM TNV.')
-  }
-  const programId = revenueBonusProgramIdForStorePolicy(storePolicy)
-  if (payload.programId !== undefined && payload.programId !== programId) {
-    throw new ApiError(400, 'REVENUE_BONUS_CONFIG_PROGRAM_MISMATCH', 'Chương trình thưởng không khớp với nhóm cửa hàng.')
+    throw new ApiError(400, 'REVENUE_BONUS_CONFIG_STORE_POLICY_INVALID', 'Nhóm cửa hàng chỉ được là Dosii hoặc SM.')
   }
   const baseVersion = payload.baseVersion
   if (!Number.isSafeInteger(baseVersion) || baseVersion < 0) {
@@ -23948,15 +23946,33 @@ const revenueBonusConfigCommand = async (db, actor, body, commandContext) => {
   }
 
   const { current, state } = await loadGlobalCommandState(db, body, actor)
-  const records = revenueBonusConfigRecords(state)
-  const groupRecords = revenueBonusConfigsForStorePolicy(records, storePolicy)
+  let storeId
+  let store
+  if (payload.storeId !== undefined) {
+    if (typeof payload.storeId !== 'string' || !payload.storeId.trim()) {
+      throw new ApiError(400, 'REVENUE_BONUS_CONFIG_STORE_REQUIRED', 'Vui lòng chọn cửa hàng để cấu hình thưởng.')
+    }
+    const matches = (state.stores || []).filter((record) => sameIdentifier(record?.id, payload.storeId.trim()))
+    if (matches.length !== 1 || revenueBonusSettingsStorePolicy(matches[0]) !== storePolicy) {
+      throw new ApiError(400, 'REVENUE_BONUS_CONFIG_STORE_INVALID', 'Cửa hàng đã chọn không hoạt động hoặc không thuộc nhóm này.')
+    }
+    store = matches[0]
+    storeId = String(store.id)
+  }
+  const programId = store ? revenueBonusProgramForStore(store).programId : revenueBonusProgramIdForStorePolicy(storePolicy)
+  if (payload.programId !== undefined && payload.programId !== programId) {
+    throw new ApiError(400, 'REVENUE_BONUS_CONFIG_PROGRAM_MISMATCH', 'Chương trình thưởng không khớp với cửa hàng.')
+  }
+  const records = state.revenueBonusConfigs ?? []
+  checkedRevenueBonusConfigIndex(records)
+  const groupRecords = revenueBonusConfigsForStorePolicy(records, storePolicy, storeId)
   const headVersion = groupRecords.reduce((maximum, record) => Math.max(maximum, record.version), 0)
   if (baseVersion !== headVersion) {
     throw new ApiError(
       409,
       'REVENUE_BONUS_CONFIG_CONFLICT',
-      `Cấu hình ${revenueBonusStorePolicyLabel(storePolicy)} vừa được người khác cập nhật. Vui lòng tải lại để xem bản mới nhất trước khi lưu.`,
-      { storePolicy, currentVersion: headVersion, baseVersion },
+      `Cấu hình ${store?.name || revenueBonusStorePolicyLabel(storePolicy)} vừa được người khác cập nhật. Vui lòng tải lại để xem bản mới nhất trước khi lưu.`,
+      { storePolicy, ...(storeId ? { storeId } : {}), currentVersion: headVersion, baseVersion },
     )
   }
   // Only a configuration that has not started yet can be replaced. Anything
@@ -23969,6 +23985,7 @@ const revenueBonusConfigCommand = async (db, actor, body, commandContext) => {
   const config = {
     id: `rbc_${crypto.randomUUID()}`,
     storePolicy,
+    ...(storeId ? { storeId } : {}),
     programId,
     effectiveFrom: effectiveFrom.value,
     version: headVersion + 1,
@@ -23983,7 +24000,7 @@ const revenueBonusConfigCommand = async (db, actor, body, commandContext) => {
   }
   const supersededConfigs = []
   const nextRecords = records.map((record) => {
-    if (!isPlainRecord(record) || record.storePolicy !== storePolicy || !supersededIds.has(String(record.id))) return record
+    if (!supersededIds.has(String(record.id))) return record
     const superseded = {
       ...record,
       status: REVENUE_BONUS_CONFIG_STATUS.SUPERSEDED,
@@ -24007,13 +24024,15 @@ const revenueBonusConfigCommand = async (db, actor, body, commandContext) => {
     entityId: config.id,
     before: {
       storePolicy,
+      ...(storeId ? { storeId } : {}),
       headVersion,
-      current: revenueBonusConfigSnapshot(resolveRevenueBonusProgram({ programId, businessDate: today, configs: records })),
+      current: revenueBonusConfigSnapshot(resolveRevenueBonusProgram({ programId, businessDate: today, configs: records, storeId })),
       supersededConfigs: groupRecords.filter((record) => supersededIds.has(record.id)),
     },
     after: config,
     metadata: {
       storePolicy,
+      ...(storeId ? { storeId } : {}),
       programId,
       effectiveFrom: config.effectiveFrom,
       version: config.version,
@@ -24024,7 +24043,7 @@ const revenueBonusConfigCommand = async (db, actor, body, commandContext) => {
       command: body.type,
       revenueBonusConfig: config,
       supersededConfigs,
-      ...revenueBonusConfigAdminView(nextState.revenueBonusConfigs, commandContext.now),
+      ...revenueBonusConfigAdminView(nextState, commandContext.now),
     },
     status: 201,
   }, commandContext)
@@ -24606,6 +24625,7 @@ const revenueBonusCommand = async (db, actor, body, commandContext) => {
   const revenueProgram = resolveRevenueBonusProgram({
     programId,
     businessDate,
+    storeId,
     configs: (await stateWithRevenueBonusConfigs(db, state)).revenueBonusConfigs,
   })
   const percentage = calculateRevenueBonus({ programId, revenueVnd, tiers: revenueProgram.tiers })
