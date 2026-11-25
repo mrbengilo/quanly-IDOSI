@@ -34,7 +34,6 @@ import {
 import {
   REVENUE_BONUS_PROGRAM_IDS,
   REVENUE_BONUS_PROGRAMS,
-  TEAM_MILESTONE_PROGRAM_IDS,
   selectRevenueBonusTier,
 } from '../../domain/compensationPolicies'
 import {
@@ -42,11 +41,13 @@ import {
   calculateAutomaticRevenueBonusDay,
   calculateAutomaticRevenueBonusPeriod,
 } from '../../domain/automaticRevenueBonus'
-import { classifyStorePayrollPolicy, STORE_PAYROLL_POLICY } from '../../domain/storeTieredPayroll'
+import { classifyStorePayrollPolicy, storeIsOperational, STORE_PAYROLL_POLICY } from '../../domain/storeTieredPayroll'
+import { storeDirectoryBrand } from '../../domain/storeDirectory'
 import {
   describeRevenueBonusTierRange,
   formatRatePercent,
   REVENUE_BONUS_CONFIG_SOURCE,
+  revenueBonusProgramForStore,
 } from '../../domain/revenueBonusConfig'
 import { apiGetRevenueBonusLive, apiGetRevenueBonusPeriod } from '../../services/idosiApi'
 import { revenueBonusHistoryProjection, revenueBonusStatistics } from './compensationStatistics'
@@ -366,15 +367,10 @@ export function RevenueBonusPage({ storeScoped = false }) {
     selectedStoreId,
     (store) => [entityId(store)],
   ).record
-  const selectedStorePolicy = classifyStorePayrollPolicy(selectedStore)
-  const revenueProgram = selectedStorePolicy === STORE_PAYROLL_POLICY.SM_TNV
-    ? REVENUE_BONUS_PROGRAMS[REVENUE_BONUS_PROGRAM_IDS.SM_DAILY]
-    : selectedStorePolicy === STORE_PAYROLL_POLICY.DOSII
-      ? REVENUE_BONUS_PROGRAMS[REVENUE_BONUS_PROGRAM_IDS.DOSII_DAILY]
-      : null
-  const milestoneProgramId = selectedStorePolicy === STORE_PAYROLL_POLICY.SM_TNV
-    ? TEAM_MILESTONE_PROGRAM_IDS.SM_DAILY_REVENUE
-    : TEAM_MILESTONE_PROGRAM_IDS.DOSII_DAILY_REVENUE
+  const { programId, milestoneProgramId } = revenueBonusProgramForStore(selectedStore)
+  const revenueProgram = storeIsOperational(selectedStore) && (
+    storeDirectoryBrand(selectedStore) || classifyStorePayrollPolicy(selectedStore) !== STORE_PAYROLL_POLICY.UNSUPPORTED
+  ) ? REVENUE_BONUS_PROGRAMS[programId] : null
   const automaticMode = businessDate >= AUTOMATIC_REVENUE_BONUS_EFFECTIVE_DATE
   const shouldTickLocalClock = !serverBacked && automaticMode && businessDate === vietnamToday()
   useEffect(() => {

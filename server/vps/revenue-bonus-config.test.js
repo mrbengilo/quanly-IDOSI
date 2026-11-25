@@ -32,7 +32,7 @@ const order = (id, storeId, employeeId, date, amount) => ({
 
 const setNow = (iso) => vi.setSystemTime(new Date(iso))
 
-const fixture = async () => {
+const fixture = async ({ includeSmLtp = false } = {}) => {
   vi.useFakeTimers({ toFake: ['Date'] })
   setNow('2026-10-13T03:00:00.000Z')
   const directory = await mkdtemp(resolve(tmpdir(), 'idosi-revenue-config-'))
@@ -51,10 +51,14 @@ const fixture = async () => {
   const bootstrap = await call('/api/bootstrap', { headers: { 'x-idosi-bootstrap-token': 'revenue-config-token' }, body: {
     username: 'cfg.admin', password: PASSWORD, initialState: {
       staffWorkCatalogSeedVersion: STAFF_WORK_CATALOG_SEED_VERSION,
-      stores: [{ id: 'S1', name: 'Dosii NTL' }, { id: 'S2', name: 'SM TNV' }],
+      stores: [
+        { id: 'S1', name: 'Dosii NTL' }, { id: 'S2', name: 'SM TNV' },
+        ...(includeSmLtp ? [{ id: 'DOSII-LTP', code: 'SM-LTP', name: 'SM LTP', storeBrand: 'SM' }] : []),
+      ],
       employees: [
         { id: 'E1', code: 'E1', storeId: 'S1', unit: 'store', name: 'Nhân viên Dosii', status: 'Đang làm việc', employmentType: 'Part-Time', hourlyRate: 30000 },
         { id: 'E2', code: 'E2', storeId: 'S2', unit: 'store', name: 'Nhân viên SM', status: 'Đang làm việc', employmentType: 'Part-Time', hourlyRate: 30000 },
+        ...(includeSmLtp ? [{ id: 'ELTP', storeId: 'DOSII-LTP', unit: 'store', status: 'Đang làm việc', employmentType: 'Part-Time' }] : []),
         { id: 'M1', storeId: 'S1', unit: 'store_manager', name: 'Quản lý' },
         { id: 'H', storeId: 'BUSINESS_SUPPORT', unit: 'business_support', name: 'HTKD' },
       ],
@@ -62,11 +66,19 @@ const fixture = async () => {
         closedShift('A-S1-13', 'E1', 'S1', '2026-10-13'),
         closedShift('A-S1-14', 'E1', 'S1', '2026-10-14'),
         closedShift('A-S2-14', 'E2', 'S2', '2026-10-14'),
+        ...(includeSmLtp ? [
+          closedShift('A-LTP-14', 'ELTP', 'DOSII-LTP', '2026-10-14'),
+          closedShift('A-LTP-15', 'ELTP', 'DOSII-LTP', '2026-10-15'),
+        ] : []),
       ],
       orders: [
         order('O-S1-13', 'S1', 'E1', '2026-10-13', 3_000_000),
         order('O-S1-14', 'S1', 'E1', '2026-10-14', 3_000_000),
         order('O-S2-14', 'S2', 'E2', '2026-10-14', 5_000_001),
+        ...(includeSmLtp ? [
+          order('O-LTP-14', 'DOSII-LTP', 'ELTP', '2026-10-14', 3_000_000),
+          order('O-LTP-15', 'DOSII-LTP', 'ELTP', '2026-10-15', 3_000_000),
+        ] : []),
       ],
       schedule: [], tasks: [], shiftDefinitions: [], payrollPeriods: [], violations: [],
     },
@@ -112,6 +124,49 @@ const fixture = async () => {
 }
 
 describe('Admin daily revenue bonus configuration (SQLite runtime)', () => {
+  it('saves separate SM store histories and applies the LTP table only from its effective date', async () => {
+    const f = await fixture({ includeSmLtp: true })
+    const initial = await f.call('/api/revenue-bonus/configs', { token: f.tokens.admin })
+    expect(initial.body.groups.map(({ stores }) => stores.map(({ name }) => name)))
+      .toEqual([['Dosii NTL'], ['SM LTP', 'SM TNV']])
+    expect(initial.body.groups[1].stores[0]).toMatchObject({ storeId: 'DOSII-LTP', code: 'SM-LTP' })
+
+    expect((await f.save('admin', { storeId: 'DOSII-LTP' })).body.error.code).toBe('REVENUE_BONUS_CONFIG_STORE_INVALID')
+    const baseline = await f.save('admin', {})
+    expect(baseline.status).toBe(201)
+    const scoped = await f.save('admin', {
+      storePolicy: 'SM_TNV', storeId: 'dosii-ltp', effectiveFrom: '2026-10-15', tiers: SM_TIERS,
+    })
+    expect(scoped.status, JSON.stringify(scoped.body)).toBe(201)
+    expect(scoped.body.revenueBonusConfig).toMatchObject({ storeId: 'DOSII-LTP', storePolicy: 'SM_TNV', version: 1 })
+    const sibling = await f.save('admin', { storePolicy: 'SM_TNV', storeId: 'S2', tiers: SM_TIERS })
+    expect(sibling.status).toBe(201)
+    expect(sibling.body.supersededConfigs).toEqual([])
+    expect((await f.save('admin', { storePolicy: 'SM_TNV', storeId: 'DOSII-LTP' })).body.error.code)
+      .toBe('REVENUE_BONUS_CONFIG_CONFLICT')
+
+    f.reopen()
+    await f.advance('2026-10-16T03:00:00.000Z')
+    for (const [date, config, percentagePoolVnd] of [
+      ['2026-10-14', baseline.body.revenueBonusConfig, 37_500],
+      ['2026-10-15', scoped.body.revenueBonusConfig, 90_000],
+    ]) {
+      const response = await f.call(`/api/revenue-bonus/live?storeId=DOSII-LTP&businessDate=${date}`, { token: f.tokens.admin })
+      expect(response.status, JSON.stringify(response.body)).toBe(200)
+      expect(response.body.snapshot).toMatchObject({ percentagePoolVnd, revenueBonusConfig: { configId: config.id } })
+    }
+    const finalized = await finalizeAutomaticRevenueBonuses(f.env(), {
+      now: '2026-10-16T03:00:00.000Z', trigger: 'test', storeId: 'DOSII-LTP', businessDate: '2026-10-15',
+    })
+    expect(finalized).toMatchObject({ failed: 0 })
+    const records = f.sql("SELECT value_json FROM state_entities WHERE collection_key = 'revenueBonusDaily'")
+      .map(({ value_json: value }) => JSON.parse(value))
+    expect(records).toContainEqual(expect.objectContaining({
+      storeId: 'DOSII-LTP', businessDate: '2026-10-15', percentagePoolVnd: 90_000,
+      revenueBonusConfig: expect.objectContaining({ configId: scoped.body.revenueBonusConfig.id, storeId: 'DOSII-LTP' }),
+    }))
+  }, 30_000)
+
   it('lets only Admin write and read the configuration and ignores client-supplied audit metadata', async () => {
     const f = await fixture()
     const before = f.version()

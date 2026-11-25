@@ -48,6 +48,7 @@ import {
 import { DonutChart, FinancialChart } from '../../components/Charts'
 import { adminSeries } from '../../data'
 import { financeSummaryFromState } from '../../domain'
+import { displayStoreCode, storeDirectoryBrand, STORE_BRAND_LABELS } from '../../domain/storeDirectory'
 import { localAccountAvatarSource, mergeAccountPersonnelProfile, optimizeAccountAvatar, validateAccountAvatarSource } from '../../domain/accountAvatar'
 import { invalidateEmployeeAvatarCache } from '../../services/employeeAvatarCache'
 import { apiGetFinanceOverview } from '../../services/idosiApi'
@@ -66,7 +67,7 @@ const normalizeFinanceSummary = (summary = {}) => {
     : revenue > 0 ? (profit / revenue) * 100 : 0
   return { revenue, expense, profit, marginPercent }
 }
-const emptyStoreForm = { name: '', location: '', address: '' }
+const emptyStoreForm = { name: '', location: '', address: '', storeBrand: '' }
 const initialAvatarCrop = Object.freeze({ positionX: 0, positionY: 0, zoom: 1 })
 
 function PasswordField({ id, label, visible, onToggle, ...props }) {
@@ -182,7 +183,7 @@ export function AdminStores() {
     }).catch(() => {})
     return () => { active = false }
   }, [financePeriod, remoteFinance])
-  const filtered = stores.filter((item) => `${item.name} ${item.location} ${item.address}`.toLowerCase().includes(query.toLowerCase()))
+  const filtered = stores.filter((item) => `${item.name} ${displayStoreCode(item)} ${item.location} ${item.address}`.toLowerCase().includes(query.toLowerCase()))
   const remoteFinanceByStore = new Map(financeOverview.summaries.map((summary) => [String(summary.storeId), summary]))
   const financeByStore = new Map(stores.map((store) => [store.id, normalizeFinanceSummary(remoteFinance
     ? remoteFinanceByStore.get(String(store.id))
@@ -242,12 +243,13 @@ export function AdminStores() {
       address: form.address.trim(),
     }
     if (!payload.name || !payload.location || !payload.address) return notify('Vui lòng nhập đầy đủ tên, khu vực và địa chỉ cửa hàng.', 'info')
+    if (!editingStore && !form.storeBrand) return notify('Vui lòng chọn loại cửa hàng Dosii hoặc SM.', 'info')
     const duplicate = stores.some((store) => store.id !== editingStore?.id && store.name.trim().toLowerCase() === payload.name.toLowerCase())
     if (duplicate) return notify('Tên cửa hàng đã tồn tại.', 'info')
     const action = editingStore ? updateStore : addStore
     if (typeof action !== 'function') return notify('Chức năng lưu cửa hàng chưa sẵn sàng.', 'info')
     try {
-      const result = editingStore ? await action(editingStore.id, payload) : await action(payload)
+      const result = editingStore ? await action(editingStore.id, payload) : await action({ ...payload, storeBrand: form.storeBrand })
       if (!result?.ok) return notify(result?.message || 'Không thể lưu thông tin cửa hàng.', 'info')
       closeForm()
     } catch (error) {
@@ -334,7 +336,7 @@ export function AdminStores() {
               return (
               <tr key={store.id}>
                 <td>{index + 1}</td>
-                <td><div className="store-cell"><StoreIllustration name={store.name} accent={store.accent} /><button type="button" className="store-directory-link" onClick={() => manageStore(store)} aria-label={`Mở cửa hàng ${store.name}`}><strong>{store.name}</strong><small>Mở trang cửa hàng</small></button></div></td>
+                <td><div className="store-cell"><StoreIllustration name={store.name} accent={store.accent} /><button type="button" className="store-directory-link" onClick={() => manageStore(store)} aria-label={`Mở cửa hàng ${store.name}`}><strong>{store.name}</strong><small>{displayStoreCode(store)}</small></button></div></td>
                 <td className="address-cell"><strong>{store.address || store.location}</strong>{store.address && store.location && <small className="table-note">{store.location}</small>}</td>
                 <td><strong className="green-text">{employeeCountByStore.get(store.id) || 0}</strong><small className="table-sub">nhân viên</small></td>
                 <td className="green-text"><strong>{money(storeFinance.revenue)}</strong></td>
@@ -352,7 +354,13 @@ export function AdminStores() {
 
       {canManageStoreDirectory && <Modal open={open} onClose={closeForm} title={editingStore ? 'Cập nhật cửa hàng' : 'Thêm cửa hàng mới'} footer={<><Button variant="outline" onClick={closeForm}>Hủy</Button><Button icon={Save} onClick={save}>{editingStore ? 'Lưu thay đổi' : 'Lưu cửa hàng'}</Button></>}>
         <form className="form-grid" onSubmit={save}>
-          <Field label="Tên cửa hàng" required><Input value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} placeholder="Ví dụ: Idosi Tô Ngọc Vân" /></Field>
+          {!editingStore && <Field label="Loại cửa hàng" required>
+            <Select aria-label="Loại cửa hàng" required value={form.storeBrand} onChange={(event) => setForm({ ...form, storeBrand: event.target.value })}>
+              <option value="">Chọn loại cửa hàng</option>
+              {Object.entries(STORE_BRAND_LABELS).map(([value, label]) => <option key={value} value={value}>{label}</option>)}
+            </Select>
+          </Field>}
+          <Field label="Tên cửa hàng" required><Input value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} placeholder="Ví dụ: SM Linh Trung" /></Field>
           <Field label="Khu vực" required><Input value={form.location} onChange={(event) => setForm({ ...form, location: event.target.value })} placeholder="Quận/Huyện, Tỉnh/Thành" /></Field>
           <Field label="Địa chỉ chi tiết" required className="span-2"><textarea value={form.address} onChange={(event) => setForm({ ...form, address: event.target.value })} placeholder="Nhập địa chỉ..." /></Field>
         </form>
@@ -362,7 +370,8 @@ export function AdminStores() {
         {viewingStore && <div className="form-stack">
           <InfoNote><strong>{viewingStore.name}</strong><br />{viewingStore.address || viewingStore.location}</InfoNote>
           <div className="summary-list">
-            <p><span>Mã cửa hàng</span><strong>{viewingStore.id}</strong></p>
+            <p><span>Mã cửa hàng</span><strong>{displayStoreCode(viewingStore)}</strong></p>
+            {storeDirectoryBrand(viewingStore) && <p><span>Loại cửa hàng</span><strong>{STORE_BRAND_LABELS[storeDirectoryBrand(viewingStore)]}</strong></p>}
             <p><span>Nhân viên</span><strong>{employeeCountByStore.get(viewingStore.id) || 0}</strong></p>
             <p><span>Doanh thu</span><strong>{money(financeByStore.get(viewingStore.id)?.revenue || 0)}</strong></p>
             <p><span>Chi phí</span><strong>{money(financeByStore.get(viewingStore.id)?.expense || 0)}</strong></p>

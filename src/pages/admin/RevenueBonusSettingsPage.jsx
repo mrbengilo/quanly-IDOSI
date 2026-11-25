@@ -11,6 +11,7 @@ import {
   Input,
   MoneyInput,
   PageHeader,
+  Select,
   TableWrap,
 } from '../../components/UI'
 import { useApp } from '../../state/AppContext'
@@ -25,7 +26,6 @@ import {
   REVENUE_BONUS_CONFIG_SOURCE,
   REVENUE_BONUS_CONFIG_STATUS,
   REVENUE_BONUS_CONFIG_STORE_POLICIES,
-  revenueBonusStorePolicyLabel,
   revenueBonusTiersFromThresholds,
   validateRevenueBonusEffectiveFrom,
   validateRevenueBonusTierRows,
@@ -56,6 +56,7 @@ const rowsFromThresholds = (thresholds = []) => thresholds.map((tier) => ({
 const initialDraft = (group, minimumEffectiveFrom) => {
   const pending = group?.pending?.[0] || null
   return {
+    baseVersion: group.headVersion,
     effectiveFrom: pending?.effectiveFrom || minimumEffectiveFrom || '',
     rows: rowsFromThresholds(pending?.tiers || group?.current?.tiers || []),
   }
@@ -106,6 +107,7 @@ export function RevenueBonusSettingsPage() {
   const isAdmin = String(app.session?.role || '') === 'admin'
   const [loadState, setLoadState] = useState({ status: 'loading', data: null, error: '' })
   const [activePolicy, setActivePolicy] = useState(REVENUE_BONUS_CONFIG_STORE_POLICIES[0])
+  const [selectedStoreIds, setSelectedStoreIds] = useState({})
   const [drafts, setDrafts] = useState({})
   const [baseDrafts, setBaseDrafts] = useState({})
   const [submitAttempted, setSubmitAttempted] = useState({})
@@ -115,24 +117,29 @@ export function RevenueBonusSettingsPage() {
   const [previewRevenue, setPreviewRevenue] = useState('')
   const loadSequence = useRef(0)
 
-  const applyData = useCallback((data, { resetPolicies = REVENUE_BONUS_CONFIG_STORE_POLICIES } = {}) => {
+  const applyData = useCallback((data, { keepDraftIds = [] } = {}) => {
     setLoadState({ status: 'ready', data, error: '' })
-    const groupsByPolicy = new Map((data?.groups || []).map((group) => [group.storePolicy, group]))
-    const fresh = Object.fromEntries(resetPolicies.map((policy) => [policy, initialDraft(groupsByPolicy.get(policy), data?.minimumEffectiveFrom)]))
-    setDrafts((current) => ({ ...current, ...fresh }))
-    setBaseDrafts((current) => ({ ...current, ...fresh }))
-    setSubmitAttempted((current) => ({ ...current, ...Object.fromEntries(resetPolicies.map((policy) => [policy, false])) }))
-    setServerErrors((current) => ({ ...current, ...Object.fromEntries(resetPolicies.map((policy) => [policy, null])) }))
+    const stores = data.groups.flatMap((group) => group.stores)
+    const keep = new Set(keepDraftIds)
+    const fresh = Object.fromEntries(stores.map((store) => [store.storeId, initialDraft(store, data.minimumEffectiveFrom)]))
+    const updateDrafts = (current) => Object.fromEntries(stores.map(({ storeId }) => [
+      storeId, keep.has(storeId) && current[storeId] ? current[storeId] : fresh[storeId],
+    ]))
+    setDrafts(updateDrafts)
+    setBaseDrafts(updateDrafts)
+    const reset = Object.fromEntries(stores.filter(({ storeId }) => !keep.has(storeId)).map(({ storeId }) => [storeId, null]))
+    setSubmitAttempted((current) => ({ ...current, ...reset }))
+    setServerErrors((current) => ({ ...current, ...reset }))
   }, [])
 
-  const load = useCallback(async ({ resetPolicies } = {}) => {
+  const load = useCallback(async ({ keepDraftIds } = {}) => {
     const sequence = loadSequence.current + 1
     loadSequence.current = sequence
     setLoadState((current) => ({ ...current, status: current.data ? 'refreshing' : 'loading', error: '' }))
     try {
       const data = await apiGetRevenueBonusConfigs()
       if (loadSequence.current !== sequence) return
-      applyData(data, resetPolicies ? { resetPolicies } : undefined)
+      applyData(data, { keepDraftIds })
     } catch (error) {
       if (loadSequence.current !== sequence) return
       setLoadState((current) => ({
@@ -149,19 +156,19 @@ export function RevenueBonusSettingsPage() {
     return () => { loadSequence.current += 1 }
   }, [isAdmin, load])
 
-  const dirtyPolicies = useMemo(() => REVENUE_BONUS_CONFIG_STORE_POLICIES.filter((policy) => (
-    drafts[policy] && baseDrafts[policy] && draftSignature(drafts[policy]) !== draftSignature(baseDrafts[policy])
+  const dirtyStoreIds = useMemo(() => Object.keys(drafts).filter((id) => (
+    baseDrafts[id] && draftSignature(drafts[id]) !== draftSignature(baseDrafts[id])
   )), [drafts, baseDrafts])
 
   useEffect(() => {
-    if (!dirtyPolicies.length) return undefined
+    if (!dirtyStoreIds.length) return undefined
     const warn = (event) => {
       event.preventDefault()
       event.returnValue = ''
     }
     window.addEventListener('beforeunload', warn)
     return () => window.removeEventListener('beforeunload', warn)
-  }, [dirtyPolicies.length])
+  }, [dirtyStoreIds.length])
 
   if (!isAdmin || loadState.status === 'unauthorized') {
     return <div className="page revenue-settings-page">
@@ -174,13 +181,17 @@ export function RevenueBonusSettingsPage() {
   }
 
   const data = loadState.data
-  const group = data?.groups?.find((entry) => entry.storePolicy === activePolicy) || null
-  const draft = drafts[activePolicy] || { effectiveFrom: '', rows: [] }
-  const policyLabel = revenueBonusStorePolicyLabel(activePolicy)
+  const activeGroup = data?.groups.find((entry) => entry.storePolicy === activePolicy)
+  const stores = activeGroup?.stores || []
+  const group = stores.find((store) => store.storeId === selectedStoreIds[activePolicy])
+    || (stores.length === 1 ? stores[0] : null)
+  const storeId = group?.storeId || ''
+  const draft = drafts[storeId] || { effectiveFrom: '', rows: [] }
+  const storeName = group?.name || ''
   const parsed = parseDraftRows(draft.rows)
   const effectiveFromCheck = data ? validateRevenueBonusEffectiveFrom(draft.effectiveFrom, { now: Date.parse(`${data.today}T12:00:00+07:00`) }) : { ok: false }
-  const showErrors = Boolean(submitAttempted[activePolicy])
-  const serverError = serverErrors[activePolicy]
+  const showErrors = Boolean(submitAttempted[storeId])
+  const serverError = serverErrors[storeId]
   const serverRowErrors = new Map((serverError?.details?.rowErrors || []).map(({ index, ...errors }) => [index, errors]))
   const rowErrorFor = (index) => ({
     ...(showErrors ? parsed.rowErrors[index] : {}),
@@ -198,14 +209,14 @@ export function RevenueBonusSettingsPage() {
   const previewTier = previewTiers && previewRevenueVnd != null && group
     ? selectRevenueBonusTier({ programId: group.programId, revenueVnd: previewRevenueVnd, tiers: previewTiers })
     : null
-  const isDirty = dirtyPolicies.includes(activePolicy)
-  const isSaving = saving === activePolicy
-  const groupFeedback = feedback[activePolicy] || null
+  const isDirty = dirtyStoreIds.includes(storeId)
+  const isSaving = saving === storeId
+  const groupFeedback = feedback[storeId] || null
 
   const updateDraft = (updater) => {
-    setDrafts((current) => ({ ...current, [activePolicy]: updater(current[activePolicy] || draft) }))
-    setServerErrors((current) => ({ ...current, [activePolicy]: null }))
-    setFeedback((current) => ({ ...current, [activePolicy]: current[activePolicy]?.tone === 'red' && current[activePolicy]?.conflict ? current[activePolicy] : null }))
+    setDrafts((current) => ({ ...current, [storeId]: updater(current[storeId] || draft) }))
+    setServerErrors((current) => ({ ...current, [storeId]: null }))
+    setFeedback((current) => ({ ...current, [storeId]: current[storeId]?.conflict ? current[storeId] : null }))
   }
   const updateRow = (key, field, value) => updateDraft((current) => ({
     ...current,
@@ -223,53 +234,54 @@ export function RevenueBonusSettingsPage() {
     }),
   }))
   const cancelEdit = () => {
-    setDrafts((current) => ({ ...current, [activePolicy]: baseDrafts[activePolicy] }))
-    setSubmitAttempted((current) => ({ ...current, [activePolicy]: false }))
-    setServerErrors((current) => ({ ...current, [activePolicy]: null }))
-    setFeedback((current) => ({ ...current, [activePolicy]: null }))
+    setDrafts((current) => ({ ...current, [storeId]: baseDrafts[storeId] }))
+    setSubmitAttempted((current) => ({ ...current, [storeId]: false }))
+    setServerErrors((current) => ({ ...current, [storeId]: null }))
+    setFeedback((current) => ({ ...current, [storeId]: null }))
   }
 
   const save = async () => {
-    setSubmitAttempted((current) => ({ ...current, [activePolicy]: true }))
-    setFeedback((current) => ({ ...current, [activePolicy]: null }))
-    if (!group || !parsed.valid || !effectiveFromCheck.ok) return
+    if (saving || loadState.status !== 'ready' || !group) return
+    setSubmitAttempted((current) => ({ ...current, [storeId]: true }))
+    setFeedback((current) => ({ ...current, [storeId]: null }))
+    if (!parsed.valid || !effectiveFromCheck.ok) return
     if (typeof app.saveRevenueBonusConfig !== 'function') {
-      setFeedback((current) => ({ ...current, [activePolicy]: { tone: 'red', message: 'Cần kết nối máy chủ để lưu cấu hình thưởng doanh thu.' } }))
+      setFeedback((current) => ({ ...current, [storeId]: { tone: 'red', message: 'Cần kết nối máy chủ để lưu cấu hình thưởng doanh thu.' } }))
       return
     }
     const confirmed = window.confirm(
-      `Lưu cấu hình thưởng doanh thu ${policyLabel} áp dụng từ ${displayDate(effectiveFromCheck.value)}?`
+      `Lưu cấu hình thưởng doanh thu cho ${storeName} từ ${displayDate(effectiveFromCheck.value)}?`
       + (group.pending?.length ? ' Cấu hình đang chờ áp dụng sẽ được thay thế.' : '')
-      + ' Các ngày trước đó và thưởng đã chốt không thay đổi.',
     )
     if (!confirmed) return
-    const savingPolicy = activePolicy
-    setSaving(savingPolicy)
+    setSaving(storeId)
     try {
       const result = await app.saveRevenueBonusConfig({
-        storePolicy: savingPolicy,
+        storePolicy: activePolicy,
+        storeId,
         effectiveFrom: effectiveFromCheck.value,
         tiers: parsed.tiers,
-        baseVersion: group.headVersion,
+        baseVersion: draft.baseVersion,
       })
       const savedConfig = result?.revenueBonusConfig
-      if (result?.groups) applyData(result, { resetPolicies: [savingPolicy] })
-      else await load({ resetPolicies: [savingPolicy] })
+      const keepDraftIds = dirtyStoreIds.filter((id) => id !== storeId)
+      if (result?.groups) applyData(result, { keepDraftIds })
+      else await load({ keepDraftIds })
       setFeedback((current) => ({
         ...current,
-        [savingPolicy]: {
+        [storeId]: {
           tone: 'green',
-          message: `Đã lưu phiên bản ${savedConfig?.version ?? ''} cho ${revenueBonusStorePolicyLabel(savingPolicy)}, áp dụng từ ${displayDate(savedConfig?.effectiveFrom)}.`,
+          message: `Đã lưu phiên bản ${savedConfig?.version ?? ''} cho ${storeName}, áp dụng từ ${displayDate(savedConfig?.effectiveFrom)}.`,
         },
       }))
     } catch (error) {
       if (error?.code === 'REVENUE_BONUS_CONFIG_CONFLICT') {
-        setFeedback((current) => ({ ...current, [savingPolicy]: { tone: 'red', conflict: true, message: error.message } }))
+        setFeedback((current) => ({ ...current, [storeId]: { tone: 'red', conflict: true, message: error.message } }))
       } else if (error?.code === 'REVENUE_BONUS_CONFIG_VALIDATION') {
-        setServerErrors((current) => ({ ...current, [savingPolicy]: { details: error.details || {} } }))
-        setFeedback((current) => ({ ...current, [savingPolicy]: { tone: 'red', message: error.message } }))
+        setServerErrors((current) => ({ ...current, [storeId]: { details: error.details || {} } }))
+        setFeedback((current) => ({ ...current, [storeId]: { tone: 'red', message: error.message } }))
       } else {
-        setFeedback((current) => ({ ...current, [savingPolicy]: { tone: 'red', message: error?.message || 'Không thể lưu cấu hình thưởng doanh thu.' } }))
+        setFeedback((current) => ({ ...current, [storeId]: { tone: 'red', message: error?.message || 'Không thể lưu cấu hình thưởng doanh thu.' } }))
       }
     } finally {
       setSaving('')
@@ -277,16 +289,16 @@ export function RevenueBonusSettingsPage() {
   }
 
   const reloadLatest = async () => {
-    setFeedback((current) => ({ ...current, [activePolicy]: null }))
-    await load({ resetPolicies: [activePolicy] })
+    setFeedback((current) => ({ ...current, [storeId]: null }))
+    await load({ keepDraftIds: dirtyStoreIds.filter((id) => id !== storeId) })
   }
 
   return <div className="page revenue-settings-page">
     <PageHeader
       title="Cấu hình thưởng doanh thu ngày"
-      subtitle="Mốc doanh thu ngày và tỷ lệ % thưởng theo nhóm cửa hàng. Thưởng mốc đội nhóm, điều kiện chốt và cách chia theo giờ làm không đổi tại đây."
+      subtitle="Chọn cửa hàng để đặt mốc doanh thu, tỷ lệ thưởng và ngày bắt đầu áp dụng."
       icon={Percent}
-      actions={<Button variant="outline" icon={RefreshCcw} onClick={() => load({ resetPolicies: REVENUE_BONUS_CONFIG_STORE_POLICIES.filter((policy) => !dirtyPolicies.includes(policy)) })} disabled={loadState.status === 'loading' || loadState.status === 'refreshing'}>Tải lại</Button>}
+      actions={<Button variant="outline" icon={RefreshCcw} onClick={() => load({ keepDraftIds: dirtyStoreIds })} disabled={Boolean(saving) || loadState.status === 'loading' || loadState.status === 'refreshing'}>Tải lại</Button>}
     />
 
     {loadState.status === 'loading' && <Card><p className="revenue-settings-status" role="status">Đang tải cấu hình thưởng doanh thu…</p></Card>}
@@ -295,10 +307,10 @@ export function RevenueBonusSettingsPage() {
       <div className="revenue-settings-actions"><Button icon={RefreshCcw} onClick={() => load()}>Thử lại</Button></div>
     </Card>}
 
-    {data && group && <>
+    {data && activeGroup && <>
       <div className="tabs revenue-settings-tabs" role="tablist" aria-label="Nhóm cửa hàng">
         {(data.groups || []).map((entry) => {
-          const dirty = dirtyPolicies.includes(entry.storePolicy)
+          const dirty = entry.stores.some((store) => dirtyStoreIds.includes(store.storeId))
           return <button
             key={entry.storePolicy}
             type="button"
@@ -306,16 +318,39 @@ export function RevenueBonusSettingsPage() {
             id={`revenue-settings-tab-${entry.storePolicy}`}
             aria-controls="revenue-settings-panel"
             aria-selected={entry.storePolicy === activePolicy}
+            tabIndex={entry.storePolicy === activePolicy ? 0 : -1}
             className={entry.storePolicy === activePolicy ? 'active' : ''}
-            onClick={() => setActivePolicy(entry.storePolicy)}
+            onClick={() => { setActivePolicy(entry.storePolicy); setPreviewRevenue('') }}
+            onKeyDown={(event) => {
+              if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return
+              event.preventDefault()
+              const tabs = [...event.currentTarget.parentElement.querySelectorAll('[role="tab"]')]
+              const next = event.key === 'Home' ? tabs[0]
+                : event.key === 'End' ? tabs.at(-1)
+                  : tabs.find((tab) => tab !== event.currentTarget)
+              next?.click()
+              next?.focus()
+            }}
           >
-            {revenueBonusStorePolicyLabel(entry.storePolicy)}
+            {entry.label}
             {dirty && <span className="revenue-settings-dirty">Chưa lưu</span>}
           </button>
         })}
       </div>
 
       <div id="revenue-settings-panel" role="tabpanel" aria-labelledby={`revenue-settings-tab-${activePolicy}`} className="revenue-settings-panel">
+        {stores.length ? <Card className="revenue-settings-store-picker">
+          <Field label="Cửa hàng" required>
+            <Select aria-label="Cửa hàng" value={storeId} onChange={(event) => {
+              setSelectedStoreIds((current) => ({ ...current, [activePolicy]: event.target.value }))
+              setPreviewRevenue('')
+            }}>
+              <option value="" disabled>Chọn cửa hàng</option>
+              {stores.map((store) => <option key={store.storeId} value={store.storeId}>{store.name} · {store.code}</option>)}
+            </Select>
+          </Field>
+        </Card> : <EmptyState title="Chưa có cửa hàng đang hoạt động trong nhóm này" />}
+        {group && <>
         {groupFeedback && <InfoNote tone={groupFeedback.tone}>
           <span role={groupFeedback.tone === 'red' ? 'alert' : 'status'}>{groupFeedback.message}</span>
           {groupFeedback.conflict && <span className="revenue-settings-inline-action">
@@ -330,14 +365,14 @@ export function RevenueBonusSettingsPage() {
             title={`Đang áp dụng hôm nay (${displayDate(data.today)})`}
             action={group.current.source === REVENUE_BONUS_CONFIG_SOURCE.LEGACY
               ? <Badge tone="blue">Bảng mặc định hệ thống</Badge>
-              : <Badge tone="green">Phiên bản {group.current.version}</Badge>}
+              : <Badge tone="green">{group.currentRecord?.storeId ? 'Phiên bản' : 'Cấu hình nhóm · Phiên bản'} {group.current.version}</Badge>}
           >
             <p className="revenue-settings-meta">
               {group.current.source === REVENUE_BONUS_CONFIG_SOURCE.LEGACY
                 ? 'Chưa có cấu hình nào của Admin có hiệu lực; hệ thống dùng bảng thưởng mặc định trước đây.'
                 : <>Áp dụng từ {displayDate(group.current.effectiveFrom)} · Cập nhật bởi {actorName(group.currentRecord?.createdBy)} lúc {shortDateTime24(group.currentRecord?.createdAt)}</>}
             </p>
-            <TierRangeTable tiers={group.current.tiers} label={`Cấu hình ${policyLabel} đang áp dụng`} />
+            <TierRangeTable tiers={group.current.tiers} label={`Cấu hình ${storeName} đang áp dụng`} />
             {group.pending?.map((record) => <InfoNote key={record.id} tone="orange">
               Cấu hình phiên bản {record.version} sẽ áp dụng từ {displayDate(record.effectiveFrom)} (bởi {actorName(record.createdBy)} lúc {shortDateTime24(record.createdAt)}). Lưu cấu hình mới sẽ thay thế bản chờ này.
             </InfoNote>)}
@@ -363,9 +398,10 @@ export function RevenueBonusSettingsPage() {
 
         <Card
           className="revenue-settings-editor"
-          title={`Soạn cấu hình mới cho ${policyLabel}`}
+          title={`Soạn cấu hình mới cho ${storeName}`}
           action={isDirty ? <Badge tone="orange">Có thay đổi chưa lưu</Badge> : <Badge tone="blue">Chưa thay đổi</Badge>}
         >
+          <fieldset className="revenue-settings-fields" disabled={Boolean(saving) || loadState.status === 'refreshing'}>
           <InfoNote tone="blue">
             Mốc đầu tiên áp dụng <strong>từ</strong> đúng mức doanh thu đó; mỗi mốc sau áp dụng khi doanh thu <strong>trên</strong> mốc. Tại đúng một mốc sau, tỷ lệ của khoảng trước vẫn được dùng. Một tỷ lệ duy nhất áp dụng cho toàn bộ doanh thu ngày, không cộng dồn hay lũy tiến; phần lẻ dưới 1 đồng được làm tròn xuống.
           </InfoNote>
@@ -381,7 +417,7 @@ export function RevenueBonusSettingsPage() {
             </Field>
           </div>
           {formErrors.map((message) => <InfoNote key={message} tone="red"><span role="alert">{message}</span></InfoNote>)}
-          {draft.rows.length ? <TableWrap className="revenue-settings-editor-table" tableLabel={`Bản nháp mốc thưởng ${policyLabel}`} paginate={false}>
+          {draft.rows.length ? <TableWrap className="revenue-settings-editor-table" tableLabel={`Bản nháp mốc thưởng ${storeName}`} paginate={false}>
             <thead><tr><th>STT</th><th>Mốc doanh thu (đồng)</th><th>Tỷ lệ thưởng (%)</th><th>Khoảng áp dụng thực tế</th><th>Xóa</th></tr></thead>
             <tbody>{draft.rows.map((row, index) => {
               const errors = rowErrorFor(index)
@@ -429,12 +465,13 @@ export function RevenueBonusSettingsPage() {
             <Button variant="outline" icon={ArrowDownUp} onClick={sortRows} disabled={draft.rows.length < 2}>Sắp xếp tăng dần</Button>
             <span className="revenue-settings-spacer" />
             <Button variant="outline" icon={RotateCcw} onClick={cancelEdit} disabled={!isDirty || isSaving}>Hủy chỉnh sửa</Button>
-            <Button icon={Save} loading={isSaving} disabled={Boolean(saving)} onClick={save}>{isSaving ? 'Đang lưu…' : 'Lưu cấu hình'}</Button>
+            <Button icon={Save} loading={isSaving} disabled={Boolean(saving) || loadState.status !== 'ready'} onClick={save}>{isSaving ? 'Đang lưu…' : 'Lưu cấu hình'}</Button>
           </div>
+          </fieldset>
         </Card>
 
-        <Card className="revenue-settings-history" title={<><History size={18} aria-hidden="true" /> Lịch sử cấu hình {policyLabel}</>}>
-          {group.history?.length ? <TableWrap tableLabel={`Lịch sử cấu hình ${policyLabel}`} paginate={false}>
+        <Card className="revenue-settings-history" title={<><History size={18} aria-hidden="true" /> Lịch sử cấu hình {storeName}</>}>
+          {group.history?.length ? <TableWrap tableLabel={`Lịch sử cấu hình ${storeName}`} paginate={false}>
             <thead><tr><th>Phiên bản</th><th>Áp dụng từ</th><th>Trạng thái</th><th>Mốc và tỷ lệ</th><th>Người tạo</th></tr></thead>
             <tbody>{group.history.map((record) => {
               const status = statusOf(record, group, data.today)
@@ -446,8 +483,9 @@ export function RevenueBonusSettingsPage() {
                 <td>{actorName(record.createdBy)}<small className="revenue-settings-note">{shortDateTime24(record.createdAt)}</small></td>
               </tr>
             })}</tbody>
-          </TableWrap> : <p className="revenue-settings-meta">Chưa có cấu hình nào được lưu; các ngày đang dùng bảng mặc định hệ thống.</p>}
+          </TableWrap> : <p className="revenue-settings-meta">Chưa có cấu hình riêng nào được lưu cho cửa hàng này.</p>}
         </Card>
+        </>}
       </div>
     </>}
   </div>

@@ -138,7 +138,7 @@ export const isHourlyStoreEmploymentType = (value) => {
   return type === STORE_EMPLOYMENT_TYPE.PART_TIME || type === STORE_EMPLOYMENT_TYPE.PROBATION
 }
 
-const storeIsOperational = (store = {}) => {
+export const storeIsOperational = (store = {}) => {
   if (!store || typeof store !== 'object') return false
   if (store.deletedAt || store.archivedAt) return false
   if (store.isOperational === false || store.operational === false || store.isActive === false || store.active === false) return false
